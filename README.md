@@ -16,26 +16,30 @@ cargo build --release
 cargo test
 ```
 
+The release binary is written to `target/release/locho`. Run it directly with
+`./target/release/locho`, or copy it to a directory on your `PATH` to use the
+`locho` commands below.
+
 ## Usage
 
 Start a host and point it at an HTTPS upstream:
 
 ```sh
-cargo run -- host --upstream https://example.com
+locho host --upstream https://example.com
 ```
 
 The host prints an attach command containing its node ID and a generated
 secret. Run that command on another machine:
 
 ```sh
-cargo run -- attach <host-id> <secret>
+locho attach <host-id> <secret>
 ```
 
 The local proxy listens on `127.0.0.1:8765` by default. Change the address
 with `--listen`:
 
 ```sh
-cargo run -- attach <host-id> <secret> --listen 127.0.0.1:9000
+locho attach <host-id> <secret> --listen 127.0.0.1:9000
 ```
 
 Then send requests to the local proxy:
@@ -47,7 +51,7 @@ curl http://127.0.0.1:8765/path
 A reusable secret can be supplied to the host with `--secret`:
 
 ```sh
-cargo run -- host --upstream https://example.com --secret '<secret>'
+locho host --upstream https://example.com --secret '<secret>'
 ```
 
 ## Security notes
