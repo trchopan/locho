@@ -4,6 +4,27 @@
 Run a host next to an HTTPS upstream, then attach from another machine and
 access that upstream through a local HTTP proxy.
 
+## How it works
+
+```text
+  Client machine                              Host machine
++------------------+                    +------------------+
+| curl / HTTP app  |                    | locho host       |
++--------+---------+                    |                  |
+         |                              |  HTTPS upstream  |
+         v                              |        ^         |
++------------------+     iroh tunnel    |        |         |
+| locho attach     |===================>|  request proxy   |
+| 127.0.0.1:8765   |  auth + HTTP data  +--------+---------+
++------------------+                             |
+                                                 v
+                                          +--------------+
+                                          | https://...  |
+                                          +--------------+
+
+          attach uses the host ID and secret printed by `locho host`
+```
+
 ## Requirements
 
 - Rust stable with Cargo
