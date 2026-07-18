@@ -12,6 +12,7 @@ pub async fn run(upstream: Url) -> Result<()> {
     if upstream.scheme() != "https" || upstream.host().is_none() {
         bail!("upstream must be an HTTPS URL with a host")
     }
+    let _state_lock = crate::state::acquire_state_lock()?;
     let host_secret_key = crate::state::load_or_create_host_secret_key()?;
     let endpoint = Endpoint::builder()
         .discovery_n0()

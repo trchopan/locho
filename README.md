@@ -86,6 +86,8 @@ run:
 locho rotate-secret
 ```
 
+Identity reset and secret rotation fail while a host is running.
+
 This preserves the host ID and invalidates the previous attach secret. To
 replace the host identity as well, stop the host and run:
 
