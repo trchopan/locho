@@ -49,7 +49,7 @@ Start a host and point it at an HTTPS upstream:
 locho host --upstream https://example.com
 ```
 
-The host prints an attach command containing its node ID and a generated
+The host prints an attach command containing its persistent node ID and attach
 secret. Run that command on another machine:
 
 ```sh
@@ -69,15 +69,37 @@ Then send requests to the local proxy:
 curl http://127.0.0.1:8765/path
 ```
 
-A reusable secret can be supplied to the host with `--secret`:
+Host identity and attach credentials are stored in:
 
 ```sh
-locho host --upstream https://example.com --secret '<secret>'
+~/.local/share/locho/
 ```
+
+The `host.key` file contains the persistent iroh identity and
+`host_state.json` contains the attach secret. Set `LOCHO_STATE_DIR` to use an
+alternate directory for development or testing.
+
+Rotate an attach secret after it has been exposed. Stop the host first, then
+run:
+
+```sh
+locho rotate-secret
+```
+
+This preserves the host ID and invalidates the previous attach secret. To
+replace the host identity as well, stop the host and run:
+
+```sh
+locho reset-identity
+```
+
+The next `locho host` start will generate a new host ID and attach secret.
 
 ## Security notes
 
 - The attach secret authorizes requests and should be treated as a credential.
+- Rotate the attach secret if it leaks; reset the identity if the private host
+  key leaks.
 - Do not commit secrets or expose the local proxy beyond the intended machine.
 - Only HTTPS upstream URLs are accepted.
 - Request and response bodies are limited to 32 MiB.

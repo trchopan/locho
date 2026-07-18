@@ -8,19 +8,19 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{error, info, warn};
 use url::Url;
 
-pub async fn run(upstream: Url, configured_secret: Option<String>) -> Result<()> {
+pub async fn run(upstream: Url) -> Result<()> {
     if upstream.scheme() != "https" || upstream.host().is_none() {
         bail!("upstream must be an HTTPS URL with a host")
     }
-    if configured_secret.as_deref().is_some_and(str::is_empty) {
-        bail!("secret must not be empty")
-    }
+    let host_secret_key = crate::state::load_or_create_host_secret_key()?;
     let endpoint = Endpoint::builder()
         .discovery_n0()
         .alpns(vec![ALPN.to_vec()])
+        .secret_key(host_secret_key)
         .bind()
         .await?;
-    let secret = configured_secret.unwrap_or_else(auth::generate_secret);
+    let persisted_state = crate::state::load_or_create_host_state(endpoint.node_id())?;
+    let secret = persisted_state.attach_secret;
     info!(upstream = %upstream, "host started");
     println!("locho host started\n\nUpstream:\n{}\n\nAttach from another machine with:\n\nlocho attach {} {}", upstream, endpoint.node_id(), secret);
 

@@ -3,6 +3,7 @@ mod auth;
 mod host;
 mod http_utils;
 mod protocol;
+mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -21,9 +22,9 @@ enum Command {
     Host {
         #[arg(long, default_value = "https://example.com")]
         upstream: Url,
-        #[arg(long, help = "Reusable attach secret; generated randomly when omitted")]
-        secret: Option<String>,
     },
+    ResetIdentity,
+    RotateSecret,
     Attach {
         host_id: String,
         secret: String,
@@ -36,7 +37,9 @@ enum Command {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     match Cli::parse().command {
-        Command::Host { upstream, secret } => host::run(upstream, secret).await,
+        Command::Host { upstream } => host::run(upstream).await,
+        Command::ResetIdentity => state::reset_identity(),
+        Command::RotateSecret => state::rotate_secret(),
         Command::Attach {
             host_id,
             secret,
