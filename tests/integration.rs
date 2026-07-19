@@ -362,23 +362,24 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
                 "timed out waiting for upstream requests"
             );
 
-            match upstream_listener.accept() {
-                Ok((stream, _)) => {
-                    stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-                    stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-                    let results_sender = results_sender.clone();
-                    handlers.push(thread::spawn(move || {
-                        let result = std::panic::catch_unwind(|| handle_http_upstream(stream))
-                            .map_err(|_| "mock upstream handler panicked".to_string())
-                            .and_then(|result| result);
-                        results_sender.send(result).unwrap();
-                    }));
-                }
+            let (stream, _) = match upstream_listener.accept() {
+                Ok(connection) => connection,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(10));
+                    continue;
                 }
                 Err(error) => panic!("failed to accept upstream request: {error}"),
-            }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            let results_sender = results_sender.clone();
+            handlers.push(thread::spawn(move || {
+                let result = std::panic::catch_unwind(|| handle_http_upstream(stream))
+                    .map_err(|_| "mock upstream handler panicked".to_string())
+                    .and_then(|result| result);
+                results_sender.send(result).unwrap();
+            }));
         }
         for handler in handlers {
             handler.join().unwrap();
