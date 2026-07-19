@@ -1,10 +1,12 @@
 [package]
 name = "locho"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Quang Tran <m@chop.dev>"]
 description = "HTTP reverse proxy over an iroh tunnel"
 license = "MIT"
+repository = "https://github.com/trchopan/locho"
+readme = "README.md"
 
 [features]
 integration-test = []
@@ -37,3 +39,8 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 url = "2"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

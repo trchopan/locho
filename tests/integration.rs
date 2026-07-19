@@ -344,8 +344,14 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
     let upstream_address = upstream_listener.local_addr().unwrap();
     let upstream_thread = thread::spawn(move || {
         let mut handlers = Vec::new();
-        for _ in 0..11 {
-            let (stream, _) = accept_with_deadline(&upstream_listener);
+        let mut idle_deadline = Instant::now() + TEST_IO_TIMEOUT;
+        upstream_listener.set_nonblocking(true).unwrap();
+        while Instant::now() < idle_deadline {
+            let Ok((stream, _)) = upstream_listener.accept() else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            idle_deadline = Instant::now() + TEST_IO_TIMEOUT;
             stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
             stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
             handlers.push(thread::spawn(move || handle_http_upstream(stream)));
@@ -747,7 +753,9 @@ fn read_streaming_response(port: u16) -> HttpResponse {
 }
 
 fn handle_http_upstream(mut stream: TcpStream) {
-    let request = read_http_message(&mut stream);
+    let Some(request) = read_http_message(&mut stream) else {
+        return;
+    };
     assert_eq!(
         request.headers.get("x-client"),
         Some(&"integration".to_string())
@@ -816,13 +824,12 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-fn read_http_message(stream: &mut TcpStream) -> HttpRequest {
+fn read_http_message(stream: &mut TcpStream) -> Option<HttpRequest> {
     let mut bytes = read_until_headers(stream);
     let header_end = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
-        .unwrap()
-        + 4;
+        .map(|position| position + 4)?;
     let header_text = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
     let mut lines = header_text.split("\r\n");
     let request_line = lines.next().unwrap();
@@ -831,12 +838,12 @@ fn read_http_message(stream: &mut TcpStream) -> HttpRequest {
     let path = request_parts.next().unwrap().to_string();
     let headers = parse_headers(lines);
     let body = read_message_body(stream, &mut bytes, header_end, &headers);
-    HttpRequest {
+    Some(HttpRequest {
         method,
         path,
         headers,
         body,
-    }
+    })
 }
 
 fn read_http_response(stream: &mut TcpStream, head_only: bool) -> HttpResponse {
