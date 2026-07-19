@@ -115,6 +115,12 @@ An HTTP service is used through its local HTTP endpoint:
 curl http://127.0.0.1:8765/path
 ```
 
+HTTP request and response bodies are streamed through the tunnel. Known-length
+bodies use length framing; chunked bodies use bounded chunk framing. Individual
+bodies are limited to 32 MiB, and HTTP requests have a 30-second upstream
+timeout. Hop-by-hop headers are not forwarded. WebSocket upgrades are not
+supported.
+
 A TCP service is attached to a local port and used by its native client:
 
 ```sh

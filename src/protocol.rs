@@ -4,13 +4,14 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{sleep, Instant};
 
-pub const ALPN: &[u8] = b"locho/2";
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const ALPN: &[u8] = b"locho/3";
+pub const PROTOCOL_VERSION: u8 = 3;
 pub const MAX_BODY_LEN: usize = 32 * 1024 * 1024;
 pub const MAX_HEAD_LEN: usize = 1024 * 1024;
 pub const MAX_TCP_CONNECTIONS: usize = 128;
 pub const TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub const BODY_CHUNK_LEN: usize = 16 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TcpRequestHead {
@@ -81,6 +82,41 @@ pub async fn write_body<W: AsyncWrite + Unpin>(writer: &mut W, body: &[u8]) -> R
     writer.write_all(body).await?;
     writer.flush().await?;
     Ok(())
+}
+
+pub async fn write_body_chunk<W: AsyncWrite + Unpin>(writer: &mut W, body: &[u8]) -> Result<()> {
+    let len = u32::try_from(body.len()).context("body chunk is too large")?;
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(body).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+pub async fn write_body_end<W: AsyncWrite + Unpin>(writer: &mut W) -> Result<()> {
+    writer.write_all(&0u32.to_be_bytes()).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+pub async fn read_body_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Bytes>> {
+    let mut prefix = [0u8; 4];
+    reader
+        .read_exact(&mut prefix)
+        .await
+        .context("read body chunk length")?;
+    let len = u32::from_be_bytes(prefix) as usize;
+    if len > BODY_CHUNK_LEN {
+        bail!("body chunk exceeds limit")
+    }
+    if len == 0 {
+        return Ok(None);
+    }
+    let mut data = vec![0u8; len];
+    reader
+        .read_exact(&mut data)
+        .await
+        .context("read body chunk")?;
+    Ok(Some(Bytes::from(data)))
 }
 
 pub async fn read_body_with_limit<R: AsyncRead + Unpin>(
@@ -225,5 +261,48 @@ mod tests {
         assert!(read_json_head::<StreamRequestHead, _>(&mut b, MAX_HEAD_LEN)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn chunked_body_roundtrip() {
+        let (mut a, mut b) = duplex(4096);
+        write_body_chunk(&mut a, b"abc").await.unwrap();
+        write_body_chunk(&mut a, b"def").await.unwrap();
+        write_body_end(&mut a).await.unwrap();
+        assert_eq!(
+            read_body_chunk(&mut b).await.unwrap(),
+            Some(Bytes::from_static(b"abc"))
+        );
+        assert_eq!(
+            read_body_chunk(&mut b).await.unwrap(),
+            Some(Bytes::from_static(b"def"))
+        );
+        assert_eq!(read_body_chunk(&mut b).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_chunk_is_rejected() {
+        let (mut a, mut b) = duplex(4096);
+        let len = (BODY_CHUNK_LEN + 1) as u32;
+        a.write_all(&len.to_be_bytes()).await.unwrap();
+        assert!(read_body_chunk(&mut b).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn chunked_body_preserves_large_payload_boundaries() {
+        let (mut a, mut b) = duplex(BODY_CHUNK_LEN * 2);
+        let payload = vec![b'x'; BODY_CHUNK_LEN + 1];
+        write_body_chunk(&mut a, &payload[..BODY_CHUNK_LEN])
+            .await
+            .unwrap();
+        write_body_chunk(&mut a, &payload[BODY_CHUNK_LEN..])
+            .await
+            .unwrap();
+        write_body_end(&mut a).await.unwrap();
+        let first = read_body_chunk(&mut b).await.unwrap().unwrap();
+        let second = read_body_chunk(&mut b).await.unwrap().unwrap();
+        assert_eq!(first.len(), BODY_CHUNK_LEN);
+        assert_eq!(second.len(), 1);
+        assert_eq!(read_body_chunk(&mut b).await.unwrap(), None);
     }
 }
