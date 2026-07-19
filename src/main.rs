@@ -32,6 +32,8 @@ enum Command {
         host_id: String,
         service: String,
         secret: String,
+        #[arg(long)]
+        tcp: bool,
         #[arg(long, default_value = "127.0.0.1:8765")]
         listen: SocketAddr,
     },
@@ -48,7 +50,8 @@ async fn main() -> Result<()> {
             host_id,
             service,
             secret,
+            tcp,
             listen,
-        } => attach::run(host_id, service, secret, listen).await,
+        } => attach::run(host_id, service, secret, tcp, listen).await,
     }
 }

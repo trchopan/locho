@@ -8,7 +8,9 @@ use hyper_util::rt::TokioIo;
 use iroh::{endpoint::Connection, Endpoint, NodeId};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tracing::{error, info};
 
 type HttpResponse = Response<Full<Bytes>>;
@@ -17,6 +19,7 @@ pub async fn run(
     host_id: String,
     service: String,
     secret: String,
+    tcp: bool,
     listen: SocketAddr,
 ) -> Result<()> {
     if service.is_empty() {
@@ -29,6 +32,9 @@ pub async fn run(
         .await
         .context("connect to host")?;
     let listener = TcpListener::bind(listen).await?;
+    if tcp {
+        return run_tcp_listener(listener, connection, service, secret).await;
+    }
     println!(
         "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
         service, listen, listen
@@ -56,6 +62,74 @@ pub async fn run(
             }
         });
     }
+}
+
+async fn run_tcp_listener(
+    listener: TcpListener,
+    connection: Connection,
+    service: String,
+    secret: String,
+) -> Result<()> {
+    let tcp_connections = std::sync::Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
+    println!(
+        "locho attached\n\nService: {}\nLocal TCP listener: {}",
+        service,
+        listener.local_addr()?
+    );
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        let connection = connection.clone();
+        let service = service.clone();
+        let secret = secret.clone();
+        let permit = match tcp_connections.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(stream);
+                error!(?peer, "TCP connection limit reached");
+                continue;
+            }
+        };
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(error) = handle_tcp_connection(stream, connection, service, secret).await {
+                error!(%error, ?peer, "local TCP connection failed");
+            }
+        });
+    }
+}
+
+async fn handle_tcp_connection(
+    local: TcpStream,
+    connection: Connection,
+    service: String,
+    secret: String,
+) -> Result<()> {
+    let (mut writer, mut reader) = connection.open_bi().await?;
+    write_json_head(
+        &mut writer,
+        &StreamRequestHead::Tcp(TcpRequestHead {
+            version: PROTOCOL_VERSION,
+            service,
+            secret_proof: auth::secret_proof(&secret),
+        }),
+    )
+    .await?;
+    let response: LochoResponseHead = timeout(
+        TCP_CONNECT_TIMEOUT,
+        read_json_head(&mut reader, MAX_HEAD_LEN),
+    )
+    .await
+    .context("TCP attachment handshake timed out")??;
+    if response.status != 200 {
+        return Err(anyhow!(
+            "TCP attachment rejected with status {}",
+            response.status
+        ));
+    }
+    read_body_with_limit(&mut reader, response.body_len, MAX_BODY_LEN).await?;
+    let remote = tokio::io::join(reader, writer);
+    relay_with_idle_timeout(local, remote).await?;
+    Ok(())
 }
 
 async fn handle_request(
@@ -120,7 +194,7 @@ async fn tunnel_request(
         headers,
         body_len: Some(body.len() as u64),
     };
-    write_json_head(&mut writer, &head).await?;
+    write_json_head(&mut writer, &StreamRequestHead::Http(head)).await?;
     write_body(&mut writer, &body).await?;
     let response: LochoResponseHead = read_json_head(&mut reader, MAX_HEAD_LEN).await?;
     if response.version != PROTOCOL_VERSION {
