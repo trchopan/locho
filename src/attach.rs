@@ -11,6 +11,8 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
+#[cfg(feature = "integration-test")]
+use iroh::NodeAddr;
 use iroh::{endpoint::Connection, Endpoint, NodeId};
 use std::net::SocketAddr;
 use std::{convert::Infallible, pin::Pin};
@@ -36,9 +38,17 @@ pub async fn run(
     }
     let node_id: NodeId = host_id.parse().context("invalid host ID")?;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let connection = endpoint
-        .connect(node_id, ALPN)
+    #[cfg(feature = "integration-test")]
+    if let Some(address) = std::env::var_os("LOCHO_TEST_DIRECT_ADDR") {
+        let address = address
+            .to_string_lossy()
+            .parse()
+            .context("invalid LOCHO_TEST_DIRECT_ADDR")?;
+        endpoint.add_node_addr(NodeAddr::new(node_id).with_direct_addresses([address]))?;
+    }
+    let connection = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(node_id, ALPN))
         .await
+        .context("connect to host timed out")?
         .context("connect to host")?;
     let listener = TcpListener::bind(listen).await?;
     let result = if tcp {

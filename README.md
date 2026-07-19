@@ -192,6 +192,19 @@ cargo build --release
 cargo test
 ```
 
+The test suite includes process-level HTTP and TCP integration tests covering
+request proxying, concurrent attachments, host restart and identity persistence,
+and service capability rotation. Before merging a change or preparing a release,
+run the same checks as CI:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release
+cargo test --test integration --features integration-test
+```
+
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE).

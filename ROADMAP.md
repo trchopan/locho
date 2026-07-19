@@ -118,6 +118,11 @@ Acceptance criteria:
 - End-to-end tests cover HTTP, TCP, concurrency, restart, and credential
   rotation behavior.
 
+The current release gate is tracked by CI and includes formatting, Clippy, unit
+tests, a release build, and process-level HTTP and TCP integration tests. The
+integration tests use a test-only feature for deterministic local peer
+connectivity; normal and release builds do not enable it.
+
 ## Non-Goals
 
 The following are outside the product boundary:

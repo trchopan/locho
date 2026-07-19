@@ -9,6 +9,8 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh::Endpoint;
 use reqwest::Client;
+#[cfg(feature = "integration-test")]
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -27,12 +29,27 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     let config = Config::load(&config_path)?;
     let _state_lock = crate::state::acquire_state_lock()?;
     let host_secret_key = crate::state::load_or_create_host_secret_key()?;
-    let endpoint = Endpoint::builder()
+    let endpoint_builder = Endpoint::builder()
         .discovery_n0()
         .alpns(vec![ALPN.to_vec()])
-        .secret_key(host_secret_key)
-        .bind()
-        .await?;
+        .secret_key(host_secret_key);
+    #[cfg(feature = "integration-test")]
+    let endpoint_builder = {
+        let mut endpoint_builder = endpoint_builder;
+        if let Some(address) = std::env::var_os("LOCHO_TEST_BIND_ADDR") {
+            let address: SocketAddr = address
+                .to_string_lossy()
+                .parse()
+                .context("invalid LOCHO_TEST_BIND_ADDR")?;
+            let address = match address {
+                SocketAddr::V4(address) => address,
+                SocketAddr::V6(_) => anyhow::bail!("LOCHO_TEST_BIND_ADDR must be an IPv4 address"),
+            };
+            endpoint_builder = endpoint_builder.bind_addr_v4(address);
+        }
+        endpoint_builder
+    };
+    let endpoint = endpoint_builder.bind().await?;
     let mut persisted_state = crate::state::load_or_create_host_state(endpoint.node_id())?;
     let active_names = config
         .services
@@ -55,6 +72,10 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     });
     info!(config = %config_path.display(), services = services.config.services.len(), "host started");
     println!("locho host started\n\nAttach from another machine with:");
+    #[cfg(feature = "integration-test")]
+    if let Some(address) = std::env::var_os("LOCHO_TEST_BIND_ADDR") {
+        println!("locho direct-address {}", address.to_string_lossy());
+    }
     for service in &services.config.services {
         let secret = services.secrets.get(&service.name).unwrap();
         println!(
