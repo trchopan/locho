@@ -6,6 +6,9 @@ authors = ["Quang Tran <m@chop.dev>"]
 description = "HTTP reverse proxy over an iroh tunnel"
 license = "MIT"
 
+[features]
+integration-test = []
+
 [dependencies]
 anyhow = "1"
 async-stream = "0.3"

@@ -58,7 +58,12 @@ impl Config {
                     let upstream = service.upstream.as_ref().with_context(|| {
                         format!("HTTP service {:?} requires upstream", service.name)
                     })?;
-                    if upstream.scheme() != "https" || upstream.host().is_none() {
+                    let local_test_http = cfg!(feature = "integration-test")
+                        && upstream.scheme() == "http"
+                        && upstream.host_str() == Some("127.0.0.1");
+                    if (upstream.scheme() != "https" && !local_test_http)
+                        || upstream.host().is_none()
+                    {
                         bail!(
                             "HTTP service {:?} upstream must be an HTTPS URL with a host",
                             service.name
