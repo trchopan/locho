@@ -179,18 +179,18 @@ fn remove_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_private_file(path: &Path) -> Result<()> {
+fn ensure_private_file(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let metadata =
-            fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        let metadata = fs::metadata(_path)
+            .with_context(|| format!("failed to inspect {}", _path.display()))?;
         if metadata.permissions().mode() & 0o077 != 0 {
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o600);
-            fs::set_permissions(path, permissions)
-                .with_context(|| format!("failed to secure {}", path.display()))?;
+            fs::set_permissions(_path, permissions)
+                .with_context(|| format!("failed to secure {}", _path.display()))?;
         }
     }
     Ok(())

@@ -110,6 +110,7 @@ impl ProcessOutput {
         assert!(status.success());
     }
 
+    #[cfg(unix)]
     fn wait_for_exit(&mut self) {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         loop {
