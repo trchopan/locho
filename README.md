@@ -72,13 +72,44 @@ availability guarantee.
 The host configuration defines multiple named HTTP and TCP services. The host
 prints or otherwise provides an attachment capability for each service:
 
-```sh
-# host: conceptual configuration
-locho host --config locho.yaml
+```toml
+# locho.toml
+[[services]]
+name = "api"
+type = "http"
+upstream = "https://example.com"
 
-# client: attach one selected service locally
-locho attach <host-id> <service-capability> --listen 127.0.0.1:8765
+[[services]]
+name = "database"
+type = "tcp"
+endpoint = "127.0.0.1:5432"
 ```
+
+Start the host with the validated configuration:
+
+```sh
+locho host --config locho.toml
+```
+
+The host prints one independent capability per service. Attach one selected
+service locally:
+
+```sh
+locho attach <host-id> api <service-capability> --listen 127.0.0.1:8765
+```
+
+TCP service configuration is accepted and reserved for the TCP forwarding
+milestone; attaching a TCP service currently returns an explicit unsupported
+response rather than forwarding it as HTTP.
+
+Rotate one service capability without affecting other services:
+
+```sh
+locho rotate-secret api
+```
+
+The host holds its state lock while running, so stop the host before rotating a
+capability, then start it again to load the replacement.
 
 An HTTP service is used through its local HTTP endpoint:
 
@@ -89,12 +120,14 @@ curl http://127.0.0.1:8765/path
 A TCP service is attached to a local port and used by its native client:
 
 ```sh
-locho attach <host-id> <service-capability> --listen 127.0.0.1:5432
+locho attach <host-id> database <service-capability> --listen 127.0.0.1:5432
 psql --host 127.0.0.1 --port 5432
 ```
 
-The exact configuration and service-management commands are part of the CLI
-contract. They must preserve the service-scoped capability model shown above.
+Configuration is loaded and fully validated before the host starts. Service
+names are unique, limited to letters, numbers, `-`, and `_`, HTTP upstreams
+must use HTTPS, and each service must define only the endpoint field matching
+its type.
 
 ## Security model
 

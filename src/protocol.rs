@@ -4,12 +4,14 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const ALPN: &[u8] = b"locho/1";
+pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_BODY_LEN: usize = 32 * 1024 * 1024;
 pub const MAX_HEAD_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LochoRequestHead {
     pub version: u8,
+    pub service: String,
     pub secret_proof: String,
     pub method: String,
     pub path_and_query: String,
@@ -86,7 +88,7 @@ mod tests {
     async fn headers_and_body_roundtrip() {
         let (mut a, mut b) = duplex(4096);
         let head = LochoResponseHead {
-            version: 1,
+            version: PROTOCOL_VERSION,
             status: 200,
             headers: vec![("x-test".into(), "yes".into())],
             body_len: Some(3),
@@ -109,7 +111,7 @@ mod tests {
         write_json_head(
             &mut a,
             &LochoResponseHead {
-                version: 1,
+                version: PROTOCOL_VERSION,
                 status: 200,
                 headers: vec![],
                 body_len: Some(3),

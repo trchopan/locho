@@ -40,6 +40,17 @@ Database service -> capability B
 
 Capability A cannot be used to attach the database service.
 
+The host loads this model from a TOML file using `locho host --config`. Service
+names must be unique and safe, HTTP services require HTTPS `upstream` URLs, and
+TCP services require an explicit `endpoint`. TCP forwarding is implemented in a
+later milestone; configuration validation is available now.
+
+Use `locho rotate-secret <service>` to revoke the previous capability for one
+service and issue a replacement. Existing tunnel streams are not retroactively
+closed; new requests must use the replacement capability. Stop the host before
+running the command because the host holds the state lock while running, then
+restart it to load the replacement.
+
 ## Can one host expose multiple services?
 
 Yes. A single host process can expose multiple explicitly configured HTTP and

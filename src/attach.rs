@@ -13,7 +13,15 @@ use tracing::{error, info};
 
 type HttpResponse = Response<Full<Bytes>>;
 
-pub async fn run(host_id: String, secret: String, listen: SocketAddr) -> Result<()> {
+pub async fn run(
+    host_id: String,
+    service: String,
+    secret: String,
+    listen: SocketAddr,
+) -> Result<()> {
+    if service.is_empty() {
+        return Err(anyhow!("service name cannot be empty"));
+    }
     let node_id: NodeId = host_id.parse().context("invalid host ID")?;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let connection = endpoint
@@ -22,19 +30,23 @@ pub async fn run(host_id: String, secret: String, listen: SocketAddr) -> Result<
         .context("connect to host")?;
     let listener = TcpListener::bind(listen).await?;
     println!(
-        "locho attached\n\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
-        listen, listen
+        "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
+        service, listen, listen
     );
     info!(%listen, "local proxy listening");
     loop {
         let (stream, peer) = listener.accept().await?;
         let connection = connection.clone();
+        let service_name = service.clone();
         let secret = secret.clone();
         tokio::spawn(async move {
             let service = service_fn(move |request| {
                 let connection = connection.clone();
+                let service = service_name.clone();
                 let secret = secret.clone();
-                async move { Ok::<_, Infallible>(handle_request(request, connection, secret).await) }
+                async move {
+                    Ok::<_, Infallible>(handle_request(request, connection, service, secret).await)
+                }
             });
             if let Err(error) = http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
@@ -49,6 +61,7 @@ pub async fn run(host_id: String, secret: String, listen: SocketAddr) -> Result<
 async fn handle_request(
     request: Request<Incoming>,
     connection: Connection,
+    service: String,
     secret: String,
 ) -> HttpResponse {
     let method = request.method().clone();
@@ -73,21 +86,24 @@ async fn handle_request(
         }
         Err(_) => return error_response(StatusCode::BAD_REQUEST),
     };
-    match tunnel_request(connection, secret, method, path, headers, body).await {
+    match tunnel_request(connection, service, secret, method, path, headers, body).await {
         Ok(response) => response,
         Err(error) => {
             error!(%error, "tunnel request failed");
-            error_response(if error.to_string().contains("403") {
-                StatusCode::FORBIDDEN
+            if error.to_string().contains("403") {
+                error_response(StatusCode::FORBIDDEN)
+            } else if error.to_string().contains("501") {
+                error_response(StatusCode::NOT_IMPLEMENTED)
             } else {
-                StatusCode::BAD_GATEWAY
-            })
+                error_response(StatusCode::BAD_GATEWAY)
+            }
         }
     }
 }
 
 async fn tunnel_request(
     connection: Connection,
+    service: String,
     secret: String,
     method: http::Method,
     path: String,
@@ -96,7 +112,8 @@ async fn tunnel_request(
 ) -> Result<HttpResponse> {
     let (mut writer, mut reader) = connection.open_bi().await?;
     let head = LochoRequestHead {
-        version: 1,
+        version: PROTOCOL_VERSION,
+        service,
         secret_proof: auth::secret_proof(&secret),
         method: method.to_string(),
         path_and_query: path,
@@ -106,6 +123,12 @@ async fn tunnel_request(
     write_json_head(&mut writer, &head).await?;
     write_body(&mut writer, &body).await?;
     let response: LochoResponseHead = read_json_head(&mut reader, MAX_HEAD_LEN).await?;
+    if response.version != PROTOCOL_VERSION {
+        return Err(anyhow!(
+            "unsupported tunnel response version {}",
+            response.version
+        ));
+    }
     let body = read_body_with_limit(&mut reader, response.body_len, MAX_BODY_LEN).await?;
     let status =
         StatusCode::from_u16(response.status).map_err(|_| anyhow!("invalid response status"))?;
