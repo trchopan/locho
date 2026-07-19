@@ -77,11 +77,11 @@ fn report_state_file(path: &std::path::Path, label: &str) -> Result<()> {
         return Ok(());
     }
 
-    let metadata =
-        std::fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
         let mode = metadata.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
             anyhow::bail!(
@@ -89,6 +89,8 @@ fn report_state_file(path: &std::path::Path, label: &str) -> Result<()> {
             )
         }
     }
+    #[cfg(not(unix))]
+    std::fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
     println!("{label}: present and private");
     Ok(())
 }

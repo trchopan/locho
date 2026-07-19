@@ -218,6 +218,11 @@ cargo build --release
 cargo test --test integration --features integration-test
 ```
 
+CI also runs the process-level integration suite against a release-profile test
+binary on Ubuntu, macOS, and Windows. The test-only feature enables deterministic
+local peer addresses and timeout overrides; the shipped release build is still
+built without that feature.
+
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE).

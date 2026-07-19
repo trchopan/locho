@@ -309,7 +309,17 @@ where
         Ok(permit) => permit,
         Err(_) => return write_error(&mut writer, 429).await,
     };
-    let upstream = match timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(endpoint)).await {
+    let connect_timeout = test_tcp_connect_timeout();
+    let upstream = if connect_timeout.is_zero() {
+        timeout(
+            connect_timeout,
+            std::future::pending::<Result<TcpStream, std::io::Error>>(),
+        )
+        .await
+    } else {
+        timeout(connect_timeout, TcpStream::connect(endpoint)).await
+    };
+    let upstream = match upstream {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => {
             error!(service = %service.name, %endpoint, %error, "TCP upstream unavailable");
@@ -334,6 +344,16 @@ where
     let tunnel = tokio::io::join(reader, writer);
     relay_with_idle_timeout(tunnel, upstream).await?;
     Ok(())
+}
+
+fn test_tcp_connect_timeout() -> std::time::Duration {
+    #[cfg(feature = "integration-test")]
+    if let Some(milliseconds) = std::env::var_os("LOCHO_TEST_TCP_CONNECT_TIMEOUT_MS") {
+        if let Ok(milliseconds) = milliseconds.to_string_lossy().parse::<u64>() {
+            return std::time::Duration::from_millis(milliseconds);
+        }
+    }
+    TCP_CONNECT_TIMEOUT
 }
 
 async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, status: u16) -> Result<()> {

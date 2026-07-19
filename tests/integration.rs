@@ -1,6 +1,6 @@
 #![cfg(feature = "integration-test")]
 
-use iroh::SecretKey;
+use iroh::{Endpoint, NodeAddr, NodeId, SecretKey};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -99,6 +99,27 @@ impl ProcessOutput {
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    #[cfg(unix)]
+    fn interrupt(&mut self) {
+        let status = Command::new("kill")
+            .args(["-INT", &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(&mut self) {
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        loop {
+            if self.child.try_wait().unwrap().is_some() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "process did not exit");
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
     fn output(&self) -> Vec<String> {
@@ -201,6 +222,118 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
     assert!(upstream_thread.join().is_ok());
     restarted_host.stop();
     new_attachment.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn tcp_attachment_reports_unavailable_upstream() {
+    let state_dir = TestDir::new();
+    let healthy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let healthy_address = healthy_listener.local_addr().unwrap();
+    let healthy_thread = thread::spawn(move || {
+        let (mut stream, _) = healthy_listener.accept().unwrap();
+        let mut request = [0u8; 5];
+        stream.read_exact(&mut request).unwrap();
+        stream.write_all(&request).unwrap();
+    });
+    let unused_address = free_port();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:{unused_address}\"\n\n[[services]]\nname = \"healthy\"\ntype = \"tcp\"\nendpoint = \"{healthy_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let healthy_attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_ready_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+
+    assert_rejected(attach_port);
+    attachment.wait_for("TCP attachment rejected with status 502");
+
+    let healthy_port = free_port();
+    let mut healthy_attachment = start_ready_attachment(
+        state_dir.path(),
+        &healthy_attach_command,
+        healthy_port,
+        &direct_address,
+    );
+    assert_round_trip(healthy_port, b"works");
+    assert!(healthy_thread.join().is_ok());
+
+    attachment.stop();
+    healthy_attachment.stop();
+    host.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn host_rejects_oversized_tunnel_header_without_stopping() {
+    let state_dir = TestDir::new();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:{}\"\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+
+    assert_eq!(
+        send_oversized_tunnel_header(&attach_command, &direct_address),
+        400
+    );
+    assert!(host.child.try_wait().unwrap().is_none());
+
+    host.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn tcp_attachment_reports_connect_timeout() {
+    let state_dir = TestDir::new();
+    let unused_address = free_port();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:{unused_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host =
+        start_host_with_tcp_timeout(state_dir.path(), &config_path, &direct_address, "0");
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_ready_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+
+    assert_rejected(attach_port);
+    attachment.wait_for("TCP attachment rejected with status 504");
+
+    attachment.stop();
+    host.stop();
 }
 
 #[cfg(feature = "integration-test")]
@@ -409,7 +542,7 @@ fn diagnose_reports_configuration_without_capabilities() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_locho"))
+    let output = Command::new(locho_binary())
         .env("LOCHO_STATE_DIR", state_dir.path())
         .args(["diagnose", "--config"])
         .arg(&config_path)
@@ -428,7 +561,7 @@ fn diagnose_reports_configuration_without_capabilities() {
         "[[services]]\nname = \"database\"\ntype = \"tcp\"\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_locho"))
+    let output = Command::new(locho_binary())
         .env("LOCHO_STATE_DIR", state_dir.path())
         .args(["diagnose", "--config"])
         .arg(&config_path)
@@ -437,7 +570,7 @@ fn diagnose_reports_configuration_without_capabilities() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("configuration check failed"));
 
-    let output = Command::new(env!("CARGO_BIN_EXE_locho"))
+    let output = Command::new(locho_binary())
         .env("LOCHO_STATE_DIR", state_dir.path())
         .args(["diagnose", "--host-id", "not-a-host-id"])
         .output()
@@ -446,7 +579,7 @@ fn diagnose_reports_configuration_without_capabilities() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid host ID"));
 }
 
-#[cfg(feature = "integration-test")]
+#[cfg(all(feature = "integration-test", unix))]
 #[test]
 fn http_attachment_stops_active_request_with_host_shutdown() {
     let state_dir = TestDir::new();
@@ -485,6 +618,53 @@ fn http_attachment_stops_active_request_with_host_shutdown() {
     host.stop();
     let response = request_thread.join().unwrap();
     assert!(matches!(response.status, 502 | 504));
+    assert!(upstream_thread.join().is_ok());
+    attachment.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn tcp_attachment_closes_active_connection_on_host_shutdown() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let (accepted_sender, accepted_receiver) = mpsc::channel();
+    let upstream_thread = thread::spawn(move || {
+        let (_stream, _) = accept_with_deadline(&upstream_listener);
+        accepted_sender.send(()).unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_ready_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+
+    let mut local = connect_with_retry(attach_port);
+    accepted_receiver
+        .recv_timeout(STARTUP_TIMEOUT)
+        .expect("host did not connect to the TCP upstream");
+    host.interrupt();
+    host.wait_for_exit();
+
+    let mut byte = [0u8; 1];
+    let result = local.read(&mut byte);
+    assert!(matches!(result, Ok(0) | Err(_)));
+
     assert!(upstream_thread.join().is_ok());
     attachment.stop();
 }
@@ -788,7 +968,7 @@ fn start_host_with_timeout(
     direct_address: &str,
     timeout_milliseconds: Option<&str>,
 ) -> ProcessOutput {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_locho"));
+    let mut command = Command::new(locho_binary());
     command
         .env("LOCHO_STATE_DIR", state_dir)
         .env("LOCHO_TEST_BIND_ADDR", direct_address)
@@ -801,13 +981,30 @@ fn start_host_with_timeout(
     ProcessOutput::spawn(command)
 }
 
+fn start_host_with_tcp_timeout(
+    state_dir: &Path,
+    config_path: &Path,
+    direct_address: &str,
+    timeout_milliseconds: &str,
+) -> ProcessOutput {
+    let mut command = Command::new(locho_binary());
+    command
+        .env("LOCHO_STATE_DIR", state_dir)
+        .env("LOCHO_TEST_BIND_ADDR", direct_address)
+        .env("LOCHO_TEST_TCP_CONNECT_TIMEOUT_MS", timeout_milliseconds)
+        .arg("host")
+        .arg("--config")
+        .arg(config_path);
+    ProcessOutput::spawn(command)
+}
+
 fn start_attachment(
     state_dir: &Path,
     command_line: &str,
     port: u16,
     direct_address: &str,
 ) -> ProcessOutput {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_locho"));
+    let mut command = Command::new(locho_binary());
     command
         .env("LOCHO_STATE_DIR", state_dir)
         .env("LOCHO_TEST_DIRECT_ADDR", direct_address);
@@ -827,7 +1024,7 @@ fn start_http_attachment(
     port: u16,
     direct_address: &str,
 ) -> ProcessOutput {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_locho"));
+    let mut command = Command::new(locho_binary());
     command
         .env("LOCHO_STATE_DIR", state_dir)
         .env("LOCHO_TEST_DIRECT_ADDR", direct_address);
@@ -861,7 +1058,7 @@ fn start_ready_attachment(
 }
 
 fn run_cli<const N: usize>(state_dir: &Path, arguments: [&str; N]) {
-    let status = Command::new(env!("CARGO_BIN_EXE_locho"))
+    let status = Command::new(locho_binary())
         .env("LOCHO_STATE_DIR", state_dir)
         .args(arguments)
         .status()
@@ -878,6 +1075,55 @@ fn parse_attach_command(line: &str) -> (String, String, String) {
         parts.next().unwrap().to_string(),
         parts.next().unwrap().to_string(),
     )
+}
+
+fn locho_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("LOCHO_TEST_BINARY") {
+        #[cfg(windows)]
+        {
+            let mut path = PathBuf::from(path);
+            if !path.exists() {
+                path.set_extension("exe");
+            }
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from(path)
+        }
+    } else {
+        PathBuf::from(env!("CARGO_BIN_EXE_locho"))
+    }
+}
+
+fn send_oversized_tunnel_header(attach_command: &str, direct_address: &str) -> u16 {
+    let (host_id, _, _) = parse_attach_command(attach_command);
+    let host_id: NodeId = host_id.parse().unwrap();
+    let direct_address = direct_address.parse().unwrap();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async move {
+            let endpoint = Endpoint::builder().discovery_n0().bind().await.unwrap();
+            endpoint
+                .add_node_addr(NodeAddr::new(host_id).with_direct_addresses([direct_address]))
+                .unwrap();
+            let connection = endpoint.connect(host_id, b"locho/3").await.unwrap();
+            let (mut writer, mut reader) = connection.open_bi().await.unwrap();
+            writer
+                .write_all(&(1024 * 1024 + 1u32).to_be_bytes())
+                .await
+                .unwrap();
+
+            let mut length = [0u8; 4];
+            reader.read_exact(&mut length).await.unwrap();
+            let length = u32::from_be_bytes(length) as usize;
+            let mut response = vec![0u8; length];
+            reader.read_exact(&mut response).await.unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            connection.close(0u32.into(), b"test complete");
+            endpoint.close().await;
+            response["status"].as_u64().unwrap() as u16
+        })
 }
 
 fn free_port() -> u16 {
@@ -954,7 +1200,15 @@ fn assert_rejected(port: u16) {
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
             let mut byte = [0u8; 1];
-            assert_eq!(stream.read(&mut byte).unwrap(), 0);
+            match stream.read(&mut byte) {
+                Ok(count) => assert_eq!(count, 0),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => panic!("unexpected rejection read error: {error}"),
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
         Err(error) => panic!("unexpected connection error: {error}"),
