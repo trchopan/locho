@@ -12,7 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{error, info, warn};
+use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
+use tracing::{error, info};
 use url::Url;
 
 pub async fn run(config_path: PathBuf) -> Result<()> {
@@ -40,7 +43,11 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     }
     persisted_state.service_secrets = secrets.clone();
     crate::state::save_host_state(&persisted_state)?;
-    let services = Arc::new(HostServices { config, secrets });
+    let services = Arc::new(HostServices {
+        config,
+        secrets,
+        tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
+    });
     info!(config = %config_path.display(), services = services.config.services.len(), "host started");
     println!("locho host started\n\nAttach from another machine with:");
     for service in &services.config.services {
@@ -80,6 +87,7 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
 struct HostServices {
     config: Config,
     secrets: std::collections::HashMap<String, String>,
+    tcp_connections: Arc<Semaphore>,
 }
 
 async fn handle_stream<W, R>(
@@ -91,55 +99,37 @@ where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
-    let req = match read_json_head::<LochoRequestHead, _>(&mut reader, MAX_HEAD_LEN).await {
-        Ok(req) => req,
+    let head = match read_json_head::<StreamRequestHead, _>(&mut reader, MAX_HEAD_LEN).await {
+        Ok(head) => head,
         Err(error) => {
             error!(%error, "malformed request header");
-            let response = LochoResponseHead {
-                version: PROTOCOL_VERSION,
-                status: 400,
-                headers: vec![],
-                body_len: Some(0),
-            };
-            write_json_head(&mut writer, &response).await?;
-            write_body(&mut writer, &[]).await?;
+            write_error(&mut writer, 400).await?;
             return Ok(());
         }
     };
-    if req.version != PROTOCOL_VERSION {
-        return write_error(&mut writer, 400).await;
+    match head {
+        StreamRequestHead::Http(req) => handle_http_stream(writer, reader, req, services).await,
+        StreamRequestHead::Tcp(req) => handle_tcp_stream(writer, reader, req, services).await,
     }
-    let service = match services
-        .config
-        .services
-        .iter()
-        .find(|service| service.name == req.service)
-    {
-        Some(service) => service,
-        None => {
-            warn!(service = %req.service, "unknown service requested");
-            return write_error(&mut writer, 404).await;
-        }
+}
+
+async fn handle_http_stream<W, R>(
+    mut writer: W,
+    mut reader: R,
+    req: LochoRequestHead,
+    services: Arc<HostServices>,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let req = match validate_http_request(req, &services) {
+        Ok(body) => body,
+        Err(status) => return write_error(&mut writer, status).await,
     };
-    let secret = match services.secrets.get(&service.name) {
-        Some(secret) => secret,
-        None => return write_error(&mut writer, 403).await,
-    };
-    if auth::verify_secret_proof(secret, &req.secret_proof).is_err() {
-        warn!("auth failure");
-        let response = LochoResponseHead {
-            version: PROTOCOL_VERSION,
-            status: 403,
-            headers: vec![],
-            body_len: Some(0),
-        };
-        write_json_head(&mut writer, &response).await?;
-        write_body(&mut writer, &[]).await?;
-        return Ok(());
-    }
     info!(method = %req.method, path = %req.path_and_query, "authenticated stream accepted");
     let body = match read_body_with_limit(&mut reader, req.body_len, MAX_BODY_LEN).await {
-        Ok(body) => body,
+        Ok(req) => req,
         Err(error) => {
             let status = if error.to_string().contains("exceeds limit") {
                 413
@@ -147,17 +137,15 @@ where
                 400
             };
             error!(%error, "invalid request body");
-            let response = LochoResponseHead {
-                version: PROTOCOL_VERSION,
-                status,
-                headers: vec![],
-                body_len: Some(0),
-            };
-            write_json_head(&mut writer, &response).await?;
-            write_body(&mut writer, &[]).await?;
-            return Ok(());
+            return write_error(&mut writer, status).await;
         }
     };
+    let service = services
+        .config
+        .services
+        .iter()
+        .find(|service| service.name == req.service)
+        .expect("validated HTTP service must exist");
     let upstream = match (&service.service_type, &service.upstream) {
         (ServiceType::Http, Some(upstream)) => upstream.clone(),
         (ServiceType::Tcp, _) => return write_error(&mut writer, 501).await,
@@ -185,6 +173,91 @@ where
     };
     write_json_head(&mut writer, &response).await?;
     write_body(&mut writer, &response_body).await
+}
+
+fn validate_http_request(
+    req: LochoRequestHead,
+    services: &HostServices,
+) -> Result<LochoRequestHead, u16> {
+    if req.version != PROTOCOL_VERSION {
+        return Err(400);
+    }
+    let service = services
+        .config
+        .services
+        .iter()
+        .find(|service| service.name == req.service)
+        .ok_or(404u16)?;
+    if !matches!(service.service_type, ServiceType::Http) {
+        return Err(400);
+    }
+    let secret = services.secrets.get(&service.name).ok_or(403u16)?;
+    auth::verify_secret_proof(secret, &req.secret_proof).map_err(|_| 403u16)?;
+    Ok(req)
+}
+
+async fn handle_tcp_stream<W, R>(
+    mut writer: W,
+    reader: R,
+    req: TcpRequestHead,
+    services: Arc<HostServices>,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    if req.version != PROTOCOL_VERSION {
+        return write_error(&mut writer, 400).await;
+    }
+    let service = match services
+        .config
+        .services
+        .iter()
+        .find(|service| service.name == req.service)
+    {
+        Some(service) => service,
+        None => return write_error(&mut writer, 404).await,
+    };
+    let secret = services
+        .secrets
+        .get(&service.name)
+        .ok_or_else(|| anyhow::anyhow!("missing service secret"))?;
+    if auth::verify_secret_proof(secret, &req.secret_proof).is_err() {
+        return write_error(&mut writer, 403).await;
+    }
+    let endpoint = match (&service.service_type, service.endpoint) {
+        (ServiceType::Tcp, Some(endpoint)) => endpoint,
+        _ => return write_error(&mut writer, 400).await,
+    };
+    let _permit = match services.tcp_connections.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return write_error(&mut writer, 429).await,
+    };
+    let upstream = match timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(endpoint)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) => {
+            error!(service = %service.name, %endpoint, %error, "TCP upstream unavailable");
+            return write_error(&mut writer, 502).await;
+        }
+        Err(_) => {
+            error!(service = %service.name, %endpoint, "TCP upstream connection timed out");
+            return write_error(&mut writer, 504).await;
+        }
+    };
+    write_json_head(
+        &mut writer,
+        &LochoResponseHead {
+            version: PROTOCOL_VERSION,
+            status: 200,
+            headers: vec![],
+            body_len: Some(0),
+        },
+    )
+    .await?;
+    write_body(&mut writer, &[]).await?;
+    let tunnel = tokio::io::join(reader, writer);
+    relay_with_idle_timeout(tunnel, upstream).await?;
+    Ok(())
 }
 
 async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, status: u16) -> Result<()> {
@@ -245,7 +318,8 @@ mod tests {
     use super::*;
     use crate::config::{Config, ServiceConfig, ServiceType};
     use std::collections::HashMap;
-    use tokio::io::duplex;
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn services() -> Arc<HostServices> {
         Arc::new(HostServices {
@@ -258,6 +332,22 @@ mod tests {
                 }],
             },
             secrets: HashMap::from([("api".into(), "correct".into())]),
+            tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
+        })
+    }
+
+    fn tcp_services(endpoint: std::net::SocketAddr) -> Arc<HostServices> {
+        Arc::new(HostServices {
+            config: Config {
+                services: vec![ServiceConfig {
+                    name: "database".into(),
+                    service_type: ServiceType::Tcp,
+                    upstream: None,
+                    endpoint: Some(endpoint),
+                }],
+            },
+            secrets: HashMap::from([("database".into(), "correct".into())]),
+            tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
         })
     }
 
@@ -266,7 +356,10 @@ mod tests {
         let (mut client_reader, mut client_writer) = tokio::io::split(client);
         let (server_reader, server_writer) = tokio::io::split(server);
         let task = tokio::spawn(handle_stream(server_writer, server_reader, services()));
-        write_json_head(&mut client_writer, &request).await.unwrap();
+        write_json_head(&mut client_writer, &StreamRequestHead::Http(request))
+            .await
+            .unwrap();
+        write_body(&mut client_writer, &[]).await.unwrap();
         let response = read_json_head(&mut client_reader, MAX_HEAD_LEN)
             .await
             .unwrap();
@@ -304,5 +397,105 @@ mod tests {
         request.version = PROTOCOL_VERSION + 1;
         let response = request_response(request).await;
         assert_eq!(response.status, 400);
+    }
+
+    #[tokio::test]
+    async fn tcp_mode_rejects_an_http_service() {
+        let (client, server) = duplex(4096);
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let task = tokio::spawn(handle_stream(server_writer, server_reader, services()));
+        write_json_head(
+            &mut client_writer,
+            &StreamRequestHead::Tcp(TcpRequestHead {
+                version: PROTOCOL_VERSION,
+                service: "api".into(),
+                secret_proof: auth::secret_proof("correct"),
+            }),
+        )
+        .await
+        .unwrap();
+        let response: LochoResponseHead = read_json_head(&mut client_reader, MAX_HEAD_LEN)
+            .await
+            .unwrap();
+        assert_eq!(response.status, 400);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn tcp_forwards_data_bidirectionally() {
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.unwrap();
+            let mut request = [0u8; 4];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+
+        let (client, server) = duplex(4096);
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let task = tokio::spawn(handle_stream(
+            server_writer,
+            server_reader,
+            tcp_services(upstream_addr),
+        ));
+        write_json_head(
+            &mut client_writer,
+            &StreamRequestHead::Tcp(TcpRequestHead {
+                version: PROTOCOL_VERSION,
+                service: "database".into(),
+                secret_proof: auth::secret_proof("correct"),
+            }),
+        )
+        .await
+        .unwrap();
+        let response: LochoResponseHead = read_json_head(&mut client_reader, MAX_HEAD_LEN)
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+        read_body_with_limit(&mut client_reader, response.body_len, MAX_BODY_LEN)
+            .await
+            .unwrap();
+        client_writer.write_all(b"ping").await.unwrap();
+        client_writer.shutdown().await.unwrap();
+        let mut reply = [0u8; 4];
+        client_reader.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"pong");
+        task.await.unwrap().unwrap();
+        upstream.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tcp_reports_unavailable_upstream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        drop(listener);
+        let (client, server) = duplex(4096);
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let task = tokio::spawn(handle_stream(
+            server_writer,
+            server_reader,
+            tcp_services(endpoint),
+        ));
+        write_json_head(
+            &mut client_writer,
+            &StreamRequestHead::Tcp(TcpRequestHead {
+                version: PROTOCOL_VERSION,
+                service: "database".into(),
+                secret_proof: auth::secret_proof("correct"),
+            }),
+        )
+        .await
+        .unwrap();
+        let response: LochoResponseHead = read_json_head(&mut client_reader, MAX_HEAD_LEN)
+            .await
+            .unwrap();
+        assert_eq!(response.status, 502);
+        task.await.unwrap().unwrap();
     }
 }

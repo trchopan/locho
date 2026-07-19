@@ -98,9 +98,7 @@ service locally:
 locho attach <host-id> api <service-capability> --listen 127.0.0.1:8765
 ```
 
-TCP service configuration is accepted and reserved for the TCP forwarding
-milestone; attaching a TCP service currently returns an explicit unsupported
-response rather than forwarding it as HTTP.
+TCP services are attached to a local TCP listener and forward bidirectionally:
 
 Rotate one service capability without affecting other services:
 
@@ -120,9 +118,15 @@ curl http://127.0.0.1:8765/path
 A TCP service is attached to a local port and used by its native client:
 
 ```sh
-locho attach <host-id> database <service-capability> --listen 127.0.0.1:5432
+locho attach <host-id> database <service-capability> --tcp --listen 127.0.0.1:5432
 psql --host 127.0.0.1 --port 5432
 ```
+
+TCP attachments use a 10-second upstream connection timeout and close idle
+connections after 5 minutes. At most 128 TCP connections are active per host
+and per attachment process. If the configured endpoint is unavailable, the
+attachment reports a gateway failure; it never connects to an arbitrary
+address.
 
 Configuration is loaded and fully validated before the host starts. Service
 names are unique, limited to letters, numbers, `-`, and `_`, HTTP upstreams

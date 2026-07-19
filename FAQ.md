@@ -42,8 +42,7 @@ Capability A cannot be used to attach the database service.
 
 The host loads this model from a TOML file using `locho host --config`. Service
 names must be unique and safe, HTTP services require HTTPS `upstream` URLs, and
-TCP services require an explicit `endpoint`. TCP forwarding is implemented in a
-later milestone; configuration validation is available now.
+TCP services require an explicit `endpoint`.
 
 Use `locho rotate-secret <service>` to revoke the previous capability for one
 service and issue a replacement. Existing tunnel streams are not retroactively
@@ -95,8 +94,15 @@ to that local port:
 psql --host 127.0.0.1 --port 5432
 ```
 
+Start the TCP attachment with `locho attach ... --tcp --listen 127.0.0.1:5432`.
+
 locho forwards the selected TCP service only. It does not provide arbitrary IP
 connectivity or a way to reach other ports on the host.
+
+TCP connections have a 10-second upstream connection timeout, a 5-minute idle
+timeout, and a limit of 128 active connections per host and attachment process.
+EOF and half-close behavior is propagated between the local listener and the
+configured endpoint.
 
 ## Does locho create a VPN?
 

@@ -2,11 +2,29 @@ use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::{sleep, Instant};
 
-pub const ALPN: &[u8] = b"locho/1";
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const ALPN: &[u8] = b"locho/2";
+pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_BODY_LEN: usize = 32 * 1024 * 1024;
 pub const MAX_HEAD_LEN: usize = 1024 * 1024;
+pub const MAX_TCP_CONNECTIONS: usize = 128;
+pub const TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TcpRequestHead {
+    pub version: u8,
+    pub service: String,
+    pub secret_proof: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum StreamRequestHead {
+    Http(LochoRequestHead),
+    Tcp(TcpRequestHead),
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LochoRequestHead {
@@ -79,6 +97,46 @@ pub async fn read_body_with_limit<R: AsyncRead + Unpin>(
     Ok(Bytes::from(data))
 }
 
+pub async fn relay_with_idle_timeout<A, B>(a: A, b: B) -> Result<()>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut a_reader, mut a_writer) = tokio::io::split(a);
+    let (mut b_reader, mut b_writer) = tokio::io::split(b);
+    let mut a_open = true;
+    let mut b_open = true;
+    let mut a_buffer = vec![0u8; 16 * 1024];
+    let mut b_buffer = vec![0u8; 16 * 1024];
+    let idle_deadline = sleep(TCP_IDLE_TIMEOUT);
+    tokio::pin!(idle_deadline);
+
+    while a_open || b_open {
+        tokio::select! {
+            result = a_reader.read(&mut a_buffer), if a_open => {
+                match result.context("read from first stream")? {
+                    0 => { a_open = false; b_writer.shutdown().await?; }
+                    len => {
+                        b_writer.write_all(&a_buffer[..len]).await.context("write to second stream")?;
+                        idle_deadline.as_mut().reset(Instant::now() + TCP_IDLE_TIMEOUT);
+                    }
+                }
+            }
+            result = b_reader.read(&mut b_buffer), if b_open => {
+                match result.context("read from second stream")? {
+                    0 => { b_open = false; a_writer.shutdown().await?; }
+                    len => {
+                        a_writer.write_all(&b_buffer[..len]).await.context("write to first stream")?;
+                        idle_deadline.as_mut().reset(Instant::now() + TCP_IDLE_TIMEOUT);
+                    }
+                }
+            }
+            _ = &mut idle_deadline => bail!("TCP tunnel idle timeout")
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +197,33 @@ mod tests {
         let (mut a, mut b) = duplex(64);
         a.write_all(b"abc").await.unwrap();
         assert!(read_body_with_limit(&mut b, Some(3), 2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_request_variants_roundtrip() {
+        let (mut a, mut b) = duplex(4096);
+        let request = StreamRequestHead::Tcp(TcpRequestHead {
+            version: PROTOCOL_VERSION,
+            service: "database".into(),
+            secret_proof: "proof".into(),
+        });
+        write_json_head(&mut a, &request).await.unwrap();
+        let decoded: StreamRequestHead = read_json_head(&mut b, MAX_HEAD_LEN).await.unwrap();
+        match decoded {
+            StreamRequestHead::Tcp(request) => assert_eq!(request.service, "database"),
+            StreamRequestHead::Http(_) => panic!("decoded wrong stream kind"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_stream_kind_is_rejected() {
+        let len = br#"{"kind":"udp"}"#.len() as u32;
+        let mut bytes = len.to_be_bytes().to_vec();
+        bytes.extend_from_slice(br#"{"kind":"udp"}"#);
+        let (mut a, mut b) = duplex(128);
+        a.write_all(&bytes).await.unwrap();
+        assert!(read_json_head::<StreamRequestHead, _>(&mut b, MAX_HEAD_LEN)
+            .await
+            .is_err());
     }
 }
