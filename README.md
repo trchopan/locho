@@ -149,7 +149,7 @@ supported `0.2.0` beta targets are:
 
 - Linux x86_64 and ARM64
 - macOS x86_64 and Apple silicon
-- Windows x86_64 and ARM64
+- Windows x86_64
 
 On Unix, download and inspect the installer before running it:
 
