@@ -141,6 +141,49 @@ locho attach <host-id> database <service-capability> --tcp --listen 127.0.0.1:54
 psql --host 127.0.0.1 --port 5432
 ```
 
+## Installation
+
+Released binaries are published on the
+[GitHub Releases page](https://github.com/trchopan/locho/releases). The
+supported `0.2.0` beta targets are:
+
+- Linux x86_64 and ARM64
+- macOS x86_64 and Apple silicon
+- Windows x86_64 and ARM64
+
+On Unix, download and inspect the installer before running it:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/trchopan/locho/releases/latest/download/locho-installer.sh \
+  -o locho-installer.sh
+less locho-installer.sh
+sh locho-installer.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+Invoke-WebRequest `
+  https://github.com/trchopan/locho/releases/latest/download/locho-installer.ps1 `
+  -OutFile locho-installer.ps1
+Get-Content .\locho-installer.ps1
+.\locho-installer.ps1
+```
+
+Manual installation is also supported: download the archive for the operating
+system and architecture, extract `locho` or `locho.exe` into a directory on
+your `PATH`, and verify the matching `.sha256` entry or the unified `sha256.sum`
+file. The release archive contains the binary, `README.md`, `CHANGELOG.md`, and
+`LICENSE`.
+
+Upgrading replaces only the executable. Host identity and service capabilities
+remain in the application state directory and are preserved across upgrades.
+Back up that directory before upgrading, protect capabilities like passwords,
+and rotate a capability if it may have been exposed. Release binaries need
+outbound network access for iroh discovery and relay connectivity; no locho
+account or hosted coordinator is required.
+
 TCP attachments use a 10-second handshake and upstream connection timeout and
 close idle connections after 5 minutes. At most 128 TCP connections are active
 per host and per attachment process. If the configured endpoint is unavailable,
@@ -217,6 +260,17 @@ cargo test --all-targets --all-features
 cargo build --release
 cargo test --test integration --features integration-test
 ```
+
+The release workflow is generated from `dist-workspace.toml`. To publish a
+release, merge the version and changelog changes, then push a matching tag:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow builds the configured targets, publishes archives and checksums,
+and creates shell and PowerShell installers on the GitHub Release.
 
 CI also runs the process-level integration suite against a release-profile test
 binary on Ubuntu, macOS, and Windows. The test-only feature enables deterministic
