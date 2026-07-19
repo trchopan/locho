@@ -98,6 +98,19 @@ service locally:
 locho attach <host-id> api <service-capability> --listen 127.0.0.1:8765
 ```
 
+Check local state and configuration without printing capabilities:
+
+```sh
+locho diagnose --config locho.toml
+locho diagnose --host-id <host-id>
+```
+
+The optional host probe reports whether iroh connected directly, through a
+relay, or using a mixed path. Attachments print the initial transport path and
+continue reporting path changes while running. A relay path is encrypted
+end-to-end, but relay availability and performance remain external
+infrastructure dependencies.
+
 TCP services are attached to a local TCP listener and forward bidirectionally:
 
 Rotate one service capability without affecting other services:

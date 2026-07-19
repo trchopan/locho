@@ -1,5 +1,6 @@
 #![cfg(feature = "integration-test")]
 
+use iroh::SecretKey;
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -371,6 +372,78 @@ fn http_attachment_reports_upstream_timeout() {
     assert!(upstream_thread.join().is_ok());
     attachment.stop();
     host.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn diagnose_reports_configuration_without_capabilities() {
+    let state_dir = TestDir::new();
+    let config_path = state_dir.path().join("locho.toml");
+    let host_key = SecretKey::generate(rand::rngs::OsRng);
+    fs::write(state_dir.path().join("host.key"), host_key.to_bytes()).unwrap();
+    fs::write(
+        state_dir.path().join("host_state.json"),
+        format!(
+            r#"{{"schema_version":2,"endpoint_id":"{}","attach_secret":"diagnostic-secret","service_secrets":{{"database":"service-secret"}}}}"#,
+            host_key.public()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in ["host.key", "host_state.json"] {
+            fs::set_permissions(
+                state_dir.path().join(path),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+    }
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:{}\"\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_locho"))
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["diagnose", "--config"])
+        .arg(&config_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("configuration: valid (1 services"));
+    assert!(stdout.contains("service: database (Tcp)"));
+    assert!(!stdout.contains("attach "));
+    assert!(!stdout.contains("diagnostic-secret"));
+    assert!(!stdout.contains("service-secret"));
+
+    fs::write(
+        &config_path,
+        "[[services]]\nname = \"database\"\ntype = \"tcp\"\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_locho"))
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["diagnose", "--config"])
+        .arg(&config_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("configuration check failed"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_locho"))
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["diagnose", "--host-id", "not-a-host-id"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid host ID"));
 }
 
 #[cfg(feature = "integration-test")]

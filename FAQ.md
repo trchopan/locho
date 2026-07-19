@@ -136,6 +136,11 @@ connectivity is unavailable.
 No manual inbound port forwarding is required, but both machines still need
 network access for discovery and relay connectivity.
 
+Run `locho diagnose --host-id <host-id>` to test connectivity and report the
+current iroh path. The result identifies a direct, relay, or mixed path without
+printing service capabilities. An attachment also logs and prints its selected
+transport path when it connects and when iroh changes paths.
+
 ## Can a relay read the application traffic?
 
 Relays carry encrypted iroh traffic and are not intended to read the tunneled
