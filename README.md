@@ -1,110 +1,147 @@
 # locho
 
-`locho` is an HTTP reverse proxy over an [iroh](https://iroh.computer/) tunnel.
-Run a host next to an HTTPS upstream, then attach from another machine and
-access that upstream through a local HTTP proxy.
+`locho` is a developer-oriented private tunnel for explicitly selected HTTP and
+TCP services. A host exposes one or more services, and an authorized machine
+attaches each service to a local endpoint. Connections use
+[iroh](https://iroh.computer/) for encrypted peer connectivity and NAT
+traversal.
+
+locho is deliberately a service tunnel, not a VPN or a hosted service platform:
+it does not create a virtual network, route subnets, publish public URLs, or
+require a locho account.
+
+## The Service Model
+
+```text
+Host process
+|-- API service   -> HTTP upstream   -> service capability A
+|-- Database      -> TCP endpoint    -> service capability B
+`-- Dev server    -> HTTP upstream   -> service capability C
+```
+
+Each service is configured explicitly and has an independent attachment
+capability. A machine with a capability can attach that service locally. The
+same capability may be used by multiple machines concurrently; locho does not
+provide per-user or per-machine authorization.
+
+```text
+Machine A -- capability A --+
+Machine B -- capability A --+--> API service on the host
+Machine C -- capability B ------> Database on the host
+```
+
+## When to use locho
+
+Use locho when developers need to:
+
+- Reach a specific private HTTP or TCP service from another machine.
+- Share selected services without exposing the host network.
+- Avoid an SSH login, VPN deployment, or hosted tunnel account.
+- Give several machines access to the same explicitly selected service.
+
+Use another tool when you need:
+
+- Remote shell administration: use SSH.
+- Machine, IP, or subnet connectivity: use a VPN or network overlay.
+- A public URL, webhooks, or public ingress: use a public tunnel provider.
+- Team identity, per-user policy, audit, or service management: use a platform
+  designed for those requirements.
 
 ## How it works
 
 ```text
-  Client machine                              Host machine
+Client machine                              Host machine
 +------------------+                    +------------------+
-| curl / HTTP app  |                    | locho host       |
-+--------+---------+                    |                  |
-         |                              |  HTTPS upstream  |
-         v                              |        ^         |
-+------------------+     iroh tunnel    |        |         |
-| locho attach     |===================>|  request proxy   |
-| 127.0.0.1:8765   |  auth + HTTP data  +--------+---------+
-+------------------+                             |
-                                                 v
-                                          +--------------+
-                                          | https://...  |
-                                          +--------------+
-
-          attach uses the host ID and secret printed by `locho host`
+| local HTTP proxy |                    | locho host       |
+| or TCP listener  |===================>| selected service |
++------------------+   iroh connection  +------------------+
+       ^                    encrypted             ^
+       |                                           |
+   local app                              HTTP upstream or
+                                          TCP endpoint
 ```
 
-## Requirements
-
-- Rust stable with Cargo
-- Network access for iroh node discovery and relay connectivity
-
-## Build and test
-
-```sh
-cargo build --release
-cargo test
-```
-
-The release binary is written to `target/release/locho`. Run it directly with
-`./target/release/locho`, or copy it to a directory on your `PATH` to use the
-`locho` commands below.
+The host owns the service configuration. An attachment capability authorizes
+access to one service only. iroh may establish a direct peer connection or use
+a relay when direct connectivity is unavailable. Relayed traffic remains
+end-to-end encrypted, but public relay infrastructure does not provide an
+availability guarantee.
 
 ## Usage
 
-Start a host and point it at an HTTPS upstream:
+The host configuration defines multiple named HTTP and TCP services. The host
+prints or otherwise provides an attachment capability for each service:
 
 ```sh
-locho host --upstream https://example.com
+# host: conceptual configuration
+locho host --config locho.yaml
+
+# client: attach one selected service locally
+locho attach <host-id> <service-capability> --listen 127.0.0.1:8765
 ```
 
-The host prints an attach command containing its persistent node ID and attach
-secret. Run that command on another machine:
-
-```sh
-locho attach <host-id> <secret>
-```
-
-The local proxy listens on `127.0.0.1:8765` by default. Change the address
-with `--listen`:
-
-```sh
-locho attach <host-id> <secret> --listen 127.0.0.1:9000
-```
-
-Then send requests to the local proxy:
+An HTTP service is used through its local HTTP endpoint:
 
 ```sh
 curl http://127.0.0.1:8765/path
 ```
 
-Host identity and attach credentials are stored in:
+A TCP service is attached to a local port and used by its native client:
 
 ```sh
-~/.local/share/locho/
+locho attach <host-id> <service-capability> --listen 127.0.0.1:5432
+psql --host 127.0.0.1 --port 5432
 ```
 
-The `host.key` file contains the persistent iroh identity and
-`host_state.json` contains the attach secret. Set `LOCHO_STATE_DIR` to use an
-alternate directory for development or testing.
+The exact configuration and service-management commands are part of the CLI
+contract. They must preserve the service-scoped capability model shown above.
 
-Rotate an attach secret after it has been exposed. Stop the host first, then
-run:
+## Security model
+
+- iroh provides encrypted transport and cryptographic peer identities.
+- locho capabilities provide application-level authorization for one service.
+- Possession of a capability grants access to its service; it does not identify
+  a human or independently identify a machine.
+- Capabilities can be rotated or revoked per service.
+- Multiple attached machines can use the same capability concurrently.
+- Upstream TLS verification and local listener binding remain security-critical
+  configuration choices.
+- Credentials and host private keys must be protected like passwords and keys.
+
+No locho account or application-managed coordinator is required. iroh discovery
+and relay infrastructure may still participate in establishing connectivity.
+
+## Scope
+
+Included:
+
+- Multiple explicitly configured HTTP and TCP services per host process.
+- Independent service-scoped attachment capabilities.
+- Concurrent attachments from multiple machines.
+- Persistent host identity, capability rotation, and service revocation.
+- Bounded resources, timeouts, diagnostics, and graceful lifecycle behavior.
+
+Not included:
+
+- Virtual network interfaces, subnet routing, or arbitrary host access.
+- Public ingress or provider-managed application endpoints.
+- Per-user identity, per-machine policy, team administration, or audit platform.
+- Service discovery, hosted accounts, or a centralized locho control plane.
+
+See [COMPARISON.md](COMPARISON.md), [FAQ.md](FAQ.md), and
+[ROADMAP.md](ROADMAP.md) for product decisions and future direction.
+
+## Development
+
+Requirements:
+
+- Rust stable with Cargo
+- Network access for iroh discovery and relay connectivity
 
 ```sh
-locho rotate-secret
+cargo build --release
+cargo test
 ```
-
-Identity reset and secret rotation fail while a host is running.
-
-This preserves the host ID and invalidates the previous attach secret. To
-replace the host identity as well, stop the host and run:
-
-```sh
-locho reset-identity
-```
-
-The next `locho host` start will generate a new host ID and attach secret.
-
-## Security notes
-
-- The attach secret authorizes requests and should be treated as a credential.
-- Rotate the attach secret if it leaks; reset the identity if the private host
-  key leaks.
-- Do not commit secrets or expose the local proxy beyond the intended machine.
-- Only HTTPS upstream URLs are accepted.
-- Request and response bodies are limited to 32 MiB.
 
 ## License
 
