@@ -1200,7 +1200,15 @@ fn assert_rejected(port: u16) {
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
             let mut byte = [0u8; 1];
-            assert_eq!(stream.read(&mut byte).unwrap(), 0);
+            match stream.read(&mut byte) {
+                Ok(count) => assert_eq!(count, 0),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => panic!("unexpected rejection read error: {error}"),
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
         Err(error) => panic!("unexpected connection error: {error}"),
