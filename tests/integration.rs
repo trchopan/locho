@@ -343,18 +343,42 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
     let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let upstream_address = upstream_listener.local_addr().unwrap();
     let upstream_thread = thread::spawn(move || {
+        const EXPECTED_REQUESTS: usize = 11;
+        let (results_sender, results_receiver) = mpsc::channel();
         let mut handlers = Vec::new();
-        let mut idle_deadline = Instant::now() + TEST_IO_TIMEOUT;
         upstream_listener.set_nonblocking(true).unwrap();
-        while Instant::now() < idle_deadline {
-            let Ok((stream, _)) = upstream_listener.accept() else {
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            };
-            idle_deadline = Instant::now() + TEST_IO_TIMEOUT;
-            stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-            stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-            handlers.push(thread::spawn(move || handle_http_upstream(stream)));
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        let mut completed_requests = 0;
+        while completed_requests < EXPECTED_REQUESTS {
+            while let Ok(result) = results_receiver.try_recv() {
+                match result {
+                    Ok(true) => completed_requests += 1,
+                    Ok(false) => {}
+                    Err(error) => panic!("upstream request failed: {error}"),
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for upstream requests"
+            );
+
+            match upstream_listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+                    stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+                    let results_sender = results_sender.clone();
+                    handlers.push(thread::spawn(move || {
+                        let result = std::panic::catch_unwind(|| handle_http_upstream(stream))
+                            .map_err(|_| "mock upstream handler panicked".to_string())
+                            .and_then(|result| result);
+                        results_sender.send(result).unwrap();
+                    }));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to accept upstream request: {error}"),
+            }
         }
         for handler in handlers {
             handler.join().unwrap();
@@ -752,31 +776,32 @@ fn read_streaming_response(port: u16) -> HttpResponse {
     }
 }
 
-fn handle_http_upstream(mut stream: TcpStream) {
+fn handle_http_upstream(mut stream: TcpStream) -> Result<bool, String> {
     let Some(request) = read_http_message(&mut stream) else {
-        return;
+        return Ok(false);
     };
-    assert_eq!(
-        request.headers.get("x-client"),
-        Some(&"integration".to_string())
-    );
-    assert_eq!(
-        request.headers.get("x-hop-by-hop"),
-        None,
-        "hop-by-hop headers must not cross the tunnel"
-    );
+    if request.headers.get("x-client") != Some(&"integration".to_string()) {
+        return Err("client header was not forwarded".to_string());
+    }
+    if request.headers.contains_key("x-hop-by-hop") {
+        return Err("hop-by-hop header was forwarded".to_string());
+    }
 
     let response_body = if request.path == "/chunked-response" {
-        assert_eq!(request.body, b"chunked-request-body");
+        if request.body != b"chunked-request-body" {
+            return Err("chunked request body was not forwarded".to_string());
+        }
         b"streamed-response-body".to_vec()
     } else if request.path == "/large-response" {
         vec![b'x'; BODY_CHUNK_LEN * 2 + 3]
     } else if request.method == "HEAD" {
         b"head-body-must-not-be-forwarded".to_vec()
     } else {
-        assert!(request.path.starts_with('/'));
-        if request.path == "/post" {
-            assert_eq!(request.body, b"request-body");
+        if !request.path.starts_with('/') {
+            return Err("upstream request path was invalid".to_string());
+        }
+        if request.path == "/post" && request.body != b"request-body" {
+            return Err("request body was not forwarded".to_string());
         }
         b"method-ok".to_vec()
     };
@@ -799,10 +824,10 @@ fn handle_http_upstream(mut stream: TcpStream) {
         .unwrap();
         for chunk in response_body.chunks(BODY_CHUNK_LEN) {
             if stream.write_all(chunk).is_err() {
-                return;
+                return Ok(true);
             }
             if stream.flush().is_err() {
-                return;
+                return Ok(true);
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -815,6 +840,7 @@ fn handle_http_upstream(mut stream: TcpStream) {
         .unwrap();
         stream.write_all(&response_body).unwrap();
     }
+    Ok(true)
 }
 
 struct HttpRequest {
