@@ -108,6 +108,14 @@ timeout, and a limit of 128 active connections per host and attachment process.
 EOF and half-close behavior is propagated between the local listener and the
 configured endpoint.
 
+## What happens when a process is stopped?
+
+Ctrl-C stops accepting new local or remote connections and closes active tunnel
+connections. The process waits up to 10 seconds for active tasks to finish
+before forcing termination. Tunnel handshakes have a 10-second timeout, HTTP
+upstream request/response operations have a 30-second timeout, and TCP sessions
+have a 5-minute idle timeout.
+
 ## Does locho create a VPN?
 
 No. locho does not:

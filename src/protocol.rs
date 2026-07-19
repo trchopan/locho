@@ -11,6 +11,9 @@ pub const MAX_HEAD_LEN: usize = 1024 * 1024;
 pub const MAX_TCP_CONNECTIONS: usize = 128;
 pub const TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const BODY_CHUNK_LEN: usize = 16 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -304,5 +307,28 @@ mod tests {
         assert_eq!(first.len(), BODY_CHUNK_LEN);
         assert_eq!(second.len(), 1);
         assert_eq!(read_body_chunk(&mut b).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn concurrent_relays_are_isolated() {
+        let mut tasks = Vec::new();
+        for value in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
+            let value = value.to_vec();
+            tasks.push(tokio::spawn(async move {
+                let (mut left, left_peer) = duplex(128);
+                let (mut right, right_peer) = duplex(128);
+                let relay = tokio::spawn(relay_with_idle_timeout(left_peer, right_peer));
+                left.write_all(&value).await.unwrap();
+                left.shutdown().await.unwrap();
+                let mut received = vec![0; value.len()];
+                right.read_exact(&mut received).await.unwrap();
+                right.shutdown().await.unwrap();
+                relay.await.unwrap().unwrap();
+                assert_eq!(received, value);
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
     }
 }

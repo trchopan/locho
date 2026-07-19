@@ -128,11 +128,17 @@ locho attach <host-id> database <service-capability> --tcp --listen 127.0.0.1:54
 psql --host 127.0.0.1 --port 5432
 ```
 
-TCP attachments use a 10-second upstream connection timeout and close idle
-connections after 5 minutes. At most 128 TCP connections are active per host
-and per attachment process. If the configured endpoint is unavailable, the
-attachment reports a gateway failure; it never connects to an arbitrary
+TCP attachments use a 10-second handshake and upstream connection timeout and
+close idle connections after 5 minutes. At most 128 TCP connections are active
+per host and per attachment process. If the configured endpoint is unavailable,
+the attachment reports a gateway failure; it never connects to an arbitrary
 address.
+
+Host and attachment processes handle Ctrl-C gracefully: they stop accepting new
+connections, close active tunnel connections, and wait up to 10 seconds for
+active tasks to finish before terminating remaining tasks. Tunnel handshakes
+also have a 10-second timeout, and HTTP clients enforce a 30-second upstream
+request/response timeout.
 
 Configuration is loaded and fully validated before the host starts. Service
 names are unique, limited to letters, numbers, `-`, and `_`, HTTP upstreams

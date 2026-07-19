@@ -16,8 +16,10 @@ use std::net::SocketAddr;
 use std::{convert::Infallible, pin::Pin};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
-use tracing::{error, info};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
 type HttpResponse = Response<StreamBody<HttpStream>>;
@@ -39,36 +41,73 @@ pub async fn run(
         .await
         .context("connect to host")?;
     let listener = TcpListener::bind(listen).await?;
-    if tcp {
-        return run_tcp_listener(listener, connection, service, secret).await;
-    }
-    println!(
-        "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
-        service, listen, listen
-    );
-    info!(%listen, "local proxy listening");
+    let result = if tcp {
+        run_tcp_listener(listener, connection, service, secret).await
+    } else {
+        println!(
+            "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
+            service, listen, listen
+        );
+        info!(%listen, "local proxy listening");
+        run_http_listener(listener, connection, service, secret).await
+    };
+    endpoint.close().await;
+    result
+}
+
+async fn run_http_listener(
+    listener: TcpListener,
+    connection: Connection,
+    service: String,
+    secret: String,
+) -> Result<()> {
+    let shutdown = CancellationToken::new();
+    let mut clients = JoinSet::new();
     loop {
-        let (stream, peer) = listener.accept().await?;
-        let connection = connection.clone();
-        let service_name = service.clone();
-        let secret = secret.clone();
-        tokio::spawn(async move {
-            let service = service_fn(move |request| {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, peer) = result?;
                 let connection = connection.clone();
-                let service = service_name.clone();
+                let service_name = service.clone();
                 let secret = secret.clone();
-                async move {
-                    Ok::<_, Infallible>(handle_request(request, connection, service, secret).await)
-                }
-            });
-            if let Err(error) = http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), service)
-                .await
-            {
-                error!(%error, ?peer, "local connection failed");
+                clients.spawn(async move {
+                    let service = service_fn(move |request| {
+                        let connection = connection.clone();
+                        let service = service_name.clone();
+                        let secret = secret.clone();
+                        async move {
+                            Ok::<_, Infallible>(handle_request(request, connection, service, secret).await)
+                        }
+                    });
+                    if let Err(error) = http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                    {
+                        error!(%error, ?peer, "local connection failed");
+                    }
+                });
             }
-        });
+            signal = tokio::signal::ctrl_c() => {
+                if signal.is_ok() {
+                    warn!("shutdown requested");
+                    shutdown.cancel();
+                }
+                break;
+            }
+        }
     }
+    shutdown.cancel();
+    connection.close(0u32.into(), b"locho shutdown");
+    if timeout(SHUTDOWN_TIMEOUT, async {
+        while clients.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        warn!("shutdown deadline reached; aborting active local connections");
+        clients.abort_all();
+    }
+    Ok(())
 }
 
 async fn run_tcp_listener(
@@ -83,26 +122,51 @@ async fn run_tcp_listener(
         service,
         listener.local_addr()?
     );
+    let shutdown = CancellationToken::new();
+    let mut clients = JoinSet::new();
     loop {
-        let (stream, peer) = listener.accept().await?;
-        let connection = connection.clone();
-        let service = service.clone();
-        let secret = secret.clone();
-        let permit = match tcp_connections.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                drop(stream);
-                error!(?peer, "TCP connection limit reached");
-                continue;
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, peer) = result?;
+                let connection = connection.clone();
+                let service = service.clone();
+                let secret = secret.clone();
+                let permit = match tcp_connections.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        drop(stream);
+                        error!(?peer, "TCP connection limit reached");
+                        continue;
+                    }
+                };
+                clients.spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = handle_tcp_connection(stream, connection, service, secret).await {
+                        error!(%error, ?peer, "local TCP connection failed");
+                    }
+                });
             }
-        };
-        tokio::spawn(async move {
-            let _permit = permit;
-            if let Err(error) = handle_tcp_connection(stream, connection, service, secret).await {
-                error!(%error, ?peer, "local TCP connection failed");
+            signal = tokio::signal::ctrl_c() => {
+                if signal.is_ok() {
+                    warn!("shutdown requested");
+                    shutdown.cancel();
+                }
+                break;
             }
-        });
+        }
     }
+    shutdown.cancel();
+    connection.close(0u32.into(), b"locho shutdown");
+    if timeout(SHUTDOWN_TIMEOUT, async {
+        while clients.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        warn!("shutdown deadline reached; aborting active local TCP connections");
+        clients.abort_all();
+    }
+    Ok(())
 }
 
 async fn handle_tcp_connection(
@@ -121,12 +185,10 @@ async fn handle_tcp_connection(
         }),
     )
     .await?;
-    let response: LochoResponseHead = timeout(
-        TCP_CONNECT_TIMEOUT,
-        read_json_head(&mut reader, MAX_HEAD_LEN),
-    )
-    .await
-    .context("TCP attachment handshake timed out")??;
+    let response: LochoResponseHead =
+        timeout(HANDSHAKE_TIMEOUT, read_json_head(&mut reader, MAX_HEAD_LEN))
+            .await
+            .context("TCP attachment handshake timed out")??;
     if response.status != 200 {
         return Err(anyhow!(
             "TCP attachment rejected with status {}",
