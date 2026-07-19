@@ -2,6 +2,7 @@ use crate::{auth, http_utils, protocol::*};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_core::Stream;
+use futures_util::StreamExt;
 use http::{Response, StatusCode};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -50,7 +51,29 @@ pub async fn run(
         .await
         .context("connect to host timed out")?
         .context("connect to host")?;
-    let listener = TcpListener::bind(listen).await?;
+    let transport_monitor = if let Ok(watcher) = endpoint.conn_type(node_id) {
+        Some(tokio::spawn(async move {
+            let mut paths = watcher.stream();
+            while let Some(connection_type) = paths.next().await {
+                info!(transport_path = %connection_type, "transport path changed");
+                println!("transport path: {connection_type}");
+            }
+        }))
+    } else {
+        warn!("connected to host but transport path is not yet available");
+        None
+    };
+    let listener = match TcpListener::bind(listen).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            endpoint.close().await;
+            if let Some(monitor) = transport_monitor {
+                monitor.abort();
+                let _ = monitor.await;
+            }
+            return Err(error.into());
+        }
+    };
     let result = if tcp {
         run_tcp_listener(listener, connection, service, secret).await
     } else {
@@ -62,6 +85,10 @@ pub async fn run(
         run_http_listener(listener, connection, service, secret).await
     };
     endpoint.close().await;
+    if let Some(monitor) = transport_monitor {
+        monitor.abort();
+        let _ = monitor.await;
+    }
     result
 }
 

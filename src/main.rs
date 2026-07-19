@@ -1,6 +1,7 @@
 mod attach;
 mod auth;
 mod config;
+mod diagnostics;
 mod host;
 mod http_utils;
 mod protocol;
@@ -28,6 +29,12 @@ enum Command {
     RotateSecret {
         service: String,
     },
+    Diagnose {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        host_id: Option<String>,
+    },
     Attach {
         host_id: String,
         service: String,
@@ -46,6 +53,7 @@ async fn main() -> Result<()> {
         Command::Host { config } => host::run(config).await,
         Command::ResetIdentity => state::reset_identity(),
         Command::RotateSecret { service } => state::rotate_secret(&service),
+        Command::Diagnose { config, host_id } => diagnostics::run(config, host_id).await,
         Command::Attach {
             host_id,
             service,
