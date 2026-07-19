@@ -579,7 +579,7 @@ fn diagnose_reports_configuration_without_capabilities() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid host ID"));
 }
 
-#[cfg(feature = "integration-test")]
+#[cfg(all(feature = "integration-test", unix))]
 #[test]
 fn http_attachment_stops_active_request_with_host_shutdown() {
     let state_dir = TestDir::new();
