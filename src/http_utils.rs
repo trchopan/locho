@@ -19,9 +19,18 @@ pub fn is_hop_by_hop_header(name: &HeaderName) -> bool {
 }
 
 pub fn headers_to_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
+    let connection_headers = headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>();
     headers
         .iter()
-        .filter(|(name, _)| !is_hop_by_hop_header(name))
+        .filter(|(name, _)| {
+            !is_hop_by_hop_header(name) && !connection_headers.contains(name.as_str())
+        })
         .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_string())))
         .collect()
 }
@@ -84,5 +93,19 @@ mod tests {
             join_upstream_url(&u, "/").unwrap().as_str(),
             "https://example.com/"
         );
+    }
+
+    #[test]
+    fn filters_headers_nominated_by_connection() {
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", "x-private, close".parse().unwrap());
+        headers.insert("x-private", "secret".parse().unwrap());
+        headers.insert("x-end-to-end", "yes".parse().unwrap());
+
+        let pairs = headers_to_pairs(&headers);
+        assert!(!pairs.iter().any(|(name, _)| name == "x-private"));
+        assert!(pairs
+            .iter()
+            .any(|(name, value)| name == "x-end-to-end" && value == "yes"));
     }
 }

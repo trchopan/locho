@@ -363,7 +363,8 @@ where
     let url = http_utils::join_upstream_url(&upstream, &req.path_and_query)?;
     let method =
         reqwest::Method::from_bytes(req.method.as_bytes()).context("invalid request method")?;
-    let client = Client::builder().timeout(HTTP_REQUEST_TIMEOUT).build()?;
+    let request_timeout = test_http_request_timeout();
+    let client = Client::builder().timeout(request_timeout).build()?;
     let mut request = client.request(method, url);
     if let Some(body_len) = req.body_len {
         request = request.header(reqwest::header::CONTENT_LENGTH, body_len);
@@ -475,6 +476,16 @@ where
     }
     info!(status, "upstream response");
     Ok(())
+}
+
+fn test_http_request_timeout() -> std::time::Duration {
+    #[cfg(feature = "integration-test")]
+    if let Some(milliseconds) = std::env::var_os("LOCHO_TEST_HTTP_TIMEOUT_MS") {
+        if let Ok(milliseconds) = milliseconds.to_string_lossy().parse::<u64>() {
+            return std::time::Duration::from_millis(milliseconds);
+        }
+    }
+    HTTP_REQUEST_TIMEOUT
 }
 
 struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);

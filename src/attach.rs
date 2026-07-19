@@ -247,6 +247,8 @@ async fn handle_request(
                 error_response(StatusCode::FORBIDDEN)
             } else if error.to_string().contains("501") {
                 error_response(StatusCode::NOT_IMPLEMENTED)
+            } else if error.to_string().contains("body exceeds limit") {
+                error_response(StatusCode::PAYLOAD_TOO_LARGE)
             } else {
                 error_response(StatusCode::BAD_GATEWAY)
             }
