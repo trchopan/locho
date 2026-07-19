@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth;
 
-const CURRENT_SCHEMA_VERSION: u8 = 1;
+const CURRENT_SCHEMA_VERSION: u8 = 2;
+const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 pub struct StateLock {
     file: File,
@@ -46,6 +47,8 @@ pub struct PersistedHostState {
     pub schema_version: u8,
     pub endpoint_id: String,
     pub attach_secret: String,
+    #[serde(default)]
+    pub service_secrets: std::collections::HashMap<String, String>,
 }
 
 pub fn app_data_dir() -> Result<PathBuf> {
@@ -97,14 +100,22 @@ pub fn load_or_create_host_state(endpoint_id: NodeId) -> Result<PersistedHostSta
             .with_context(|| format!("failed to read {}", state_path.display()))?;
         let state: PersistedHostState = serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to parse {}", state_path.display()))?;
-        if state.schema_version != CURRENT_SCHEMA_VERSION {
+        if state.schema_version != CURRENT_SCHEMA_VERSION
+            && state.schema_version != LEGACY_SCHEMA_VERSION
+        {
             bail!(
                 "unsupported host state schema version {} in {}",
                 state.schema_version,
                 state_path.display()
             );
         }
-        let (state, changed) = repair_host_state(state, endpoint_id);
+        let (mut state, mut changed) = repair_host_state(state, endpoint_id);
+        if state.schema_version == LEGACY_SCHEMA_VERSION {
+            // Legacy state had one host-wide secret. Service capabilities are
+            // intentionally generated per service on the next host start.
+            state.schema_version = CURRENT_SCHEMA_VERSION;
+            changed = true;
+        }
         if changed {
             write_host_state_file(&state_path, &state)?;
         }
@@ -115,9 +126,15 @@ pub fn load_or_create_host_state(endpoint_id: NodeId) -> Result<PersistedHostSta
         schema_version: CURRENT_SCHEMA_VERSION,
         endpoint_id: endpoint_id.to_string(),
         attach_secret: auth::generate_secret(),
+        service_secrets: std::collections::HashMap::new(),
     };
     write_host_state_file(&state_path, &state)?;
     Ok(state)
+}
+
+pub fn save_host_state(state: &PersistedHostState) -> Result<()> {
+    let path = host_state_path()?;
+    write_host_state_file(&path, state)
 }
 
 pub fn reset_identity() -> Result<()> {
@@ -130,18 +147,27 @@ pub fn reset_identity() -> Result<()> {
     Ok(())
 }
 
-pub fn rotate_secret() -> Result<()> {
+pub fn rotate_secret(service: &str) -> Result<()> {
     let _state_lock = acquire_state_lock()?;
     let secret_key = load_or_create_host_secret_key()?;
     let endpoint_id = NodeId::from(secret_key.public());
     let state_path = host_state_path()?;
     let mut state = load_or_create_host_state(endpoint_id)?;
     state.endpoint_id = endpoint_id.to_string();
-    state.attach_secret = auth::generate_secret();
+    if !state.service_secrets.contains_key(service) {
+        bail!(
+            "unknown service {:?}; rotate a service configured on the host",
+            service
+        );
+    }
+    let secret = auth::generate_secret();
+    state
+        .service_secrets
+        .insert(service.to_string(), secret.clone());
     write_host_state_file(&state_path, &state)?;
     println!(
-        "attach secret rotated\n\nAttach with:\n\nlocho attach {} {}",
-        endpoint_id, state.attach_secret
+        "attachment capability rotated for service {:?}\n\nAttach with:\n\nlocho attach {} {} {}",
+        service, endpoint_id, service, secret
     );
     Ok(())
 }
@@ -270,6 +296,7 @@ mod tests {
                 schema_version: CURRENT_SCHEMA_VERSION,
                 endpoint_id: "old".into(),
                 attach_secret: " ".into(),
+                service_secrets: std::collections::HashMap::new(),
             },
             id,
         );
@@ -285,6 +312,7 @@ mod tests {
             schema_version: CURRENT_SCHEMA_VERSION,
             endpoint_id: id.to_string(),
             attach_secret: "secret".into(),
+            service_secrets: std::collections::HashMap::new(),
         };
         let (repaired, changed) = repair_host_state(state, id);
         assert!(!changed);
@@ -301,7 +329,25 @@ mod tests {
         let second = load_or_create_host_state(NodeId::from(key.public())).unwrap();
         assert_eq!(first.endpoint_id, second.endpoint_id);
         assert_eq!(first.attach_secret, second.attach_secret);
+        assert_eq!(first.service_secrets, second.service_secrets);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rotating_one_service_preserves_other_capabilities() {
+        let mut state = PersistedHostState {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            endpoint_id: endpoint_id().to_string(),
+            attach_secret: "legacy".into(),
+            service_secrets: std::collections::HashMap::from([
+                ("api".into(), "api-old".into()),
+                ("db".into(), "db-old".into()),
+            ]),
+        };
+        let db_secret = state.service_secrets["db"].clone();
+        state.service_secrets.insert("api".into(), "api-new".into());
+        assert_eq!(state.service_secrets["api"], "api-new");
+        assert_eq!(state.service_secrets["db"], db_secret);
     }
 
     #[test]
@@ -311,7 +357,7 @@ mod tests {
         use_test_state_dir(&dir);
         fs::write(
             dir.join("host_state.json"),
-            r#"{"schema_version":2,"endpoint_id":"old","attach_secret":"secret"}"#,
+            r#"{"schema_version":3,"endpoint_id":"old","attach_secret":"secret"}"#,
         )
         .unwrap();
         assert!(load_or_create_host_state(endpoint_id()).is_err());
