@@ -11,15 +11,16 @@ use iroh::Endpoint;
 use reqwest::Client;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, info};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 use url::Url;
 
 pub async fn run(config_path: PathBuf) -> Result<()> {
@@ -64,28 +65,80 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
         );
     }
 
-    while let Some(incoming) = endpoint.accept().await {
-        let services = Arc::clone(&services);
-        tokio::spawn(async move {
-            match incoming.accept() {
-                Ok(connecting) => match connecting.await {
-                    Ok(connection) => {
-                        while let Ok((send, recv)) = connection.accept_bi().await {
-                            let services = Arc::clone(&services);
-                            tokio::spawn(async move {
-                                if let Err(error) = handle_stream(send, recv, services).await {
-                                    error!(%error, "tunnel stream failed");
-                                }
-                            });
-                        }
-                    }
-                    Err(error) => error!(%error, "tunnel connection failed"),
-                },
-                Err(error) => error!(%error, "invalid incoming connection"),
+    let shutdown = CancellationToken::new();
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            incoming = endpoint.accept() => {
+                let Some(incoming) = incoming else { break };
+                let services = Arc::clone(&services);
+                let shutdown = shutdown.clone();
+                connections.spawn(async move {
+                    handle_connection(incoming, services, shutdown).await;
+                });
             }
-        });
+            signal = tokio::signal::ctrl_c() => {
+                if signal.is_ok() {
+                    warn!("shutdown requested");
+                    shutdown.cancel();
+                }
+                break;
+            }
+        }
     }
+    info!("stopping new tunnel connections");
+    shutdown.cancel();
+    if timeout(SHUTDOWN_TIMEOUT, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        warn!("shutdown deadline reached; aborting active tunnel connections");
+        connections.abort_all();
+    }
+    endpoint.close().await;
     Ok(())
+}
+
+async fn handle_connection(
+    incoming: iroh::endpoint::Incoming,
+    services: Arc<HostServices>,
+    shutdown: CancellationToken,
+) {
+    let connecting = match incoming.accept() {
+        Ok(connecting) => connecting,
+        Err(error) => {
+            error!(%error, "invalid incoming connection");
+            return;
+        }
+    };
+    let connection = match connecting.await {
+        Ok(connection) => connection,
+        Err(error) => {
+            error!(%error, "tunnel connection failed");
+            return;
+        }
+    };
+    let mut streams = JoinSet::new();
+    loop {
+        tokio::select! {
+            result = connection.accept_bi() => match result {
+                Ok((send, recv)) => {
+                    let services = Arc::clone(&services);
+                    streams.spawn(async move {
+                        if let Err(error) = handle_stream(send, recv, services).await {
+                            error!(%error, "tunnel stream failed");
+                        }
+                    });
+                }
+                Err(_) => break,
+            },
+            _ = shutdown.cancelled() => break,
+        }
+    }
+    connection.close(0u32.into(), b"locho shutdown");
+    while streams.join_next().await.is_some() {}
 }
 
 struct HostServices {
@@ -103,8 +156,13 @@ where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin + Send + 'static,
 {
-    let head = match read_json_head::<StreamRequestHead, _>(&mut reader, MAX_HEAD_LEN).await {
+    let head = match read_request_head(&mut reader, HANDSHAKE_TIMEOUT).await {
         Ok(head) => head,
+        Err(error) if error.to_string().contains("timed out") => {
+            error!(%error, "tunnel request header timed out");
+            write_error(&mut writer, 408).await?;
+            return Ok(());
+        }
         Err(error) => {
             error!(%error, "malformed request header");
             write_error(&mut writer, 400).await?;
@@ -115,6 +173,18 @@ where
         StreamRequestHead::Http(req) => handle_http_stream(writer, reader, req, services).await,
         StreamRequestHead::Tcp(req) => handle_tcp_stream(writer, reader, req, services).await,
     }
+}
+
+async fn read_request_head<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    handshake_timeout: std::time::Duration,
+) -> Result<StreamRequestHead> {
+    timeout(
+        handshake_timeout,
+        read_json_head::<StreamRequestHead, _>(reader, MAX_HEAD_LEN),
+    )
+    .await
+    .context("tunnel request header timed out")?
 }
 
 async fn handle_http_stream<W, R>(
@@ -143,24 +213,21 @@ where
         (ServiceType::Tcp, _) => return write_error(&mut writer, 501).await,
         _ => return write_error(&mut writer, 500).await,
     };
-    let response = match forward_to_upstream(upstream, req, reader, &mut writer).await {
-        Ok(value) => value,
-        Err(error) => {
-            error!(%error, "upstream request failed");
-            let status = error
-                .downcast_ref::<reqwest::Error>()
-                .filter(|error| error.is_timeout())
-                .map(|_| 504)
-                .unwrap_or(502);
-            let status = if error.to_string().contains("body exceeds limit") {
-                413
-            } else {
-                status
-            };
-            return write_error(&mut writer, status).await;
-        }
-    };
-    write_json_head(&mut writer, &response).await
+    if let Err(error) = forward_to_upstream(upstream, req, reader, &mut writer).await {
+        error!(%error, "upstream request failed");
+        let status = error
+            .downcast_ref::<reqwest::Error>()
+            .filter(|error| error.is_timeout())
+            .map(|_| 504)
+            .unwrap_or(502);
+        let status = if error.to_string().contains("body exceeds limit") {
+            413
+        } else {
+            status
+        };
+        return write_error(&mut writer, status).await;
+    }
+    Ok(())
 }
 
 fn validate_http_request(
@@ -267,7 +334,7 @@ pub async fn forward_to_upstream<R, W>(
     req: LochoRequestHead,
     mut reader: R,
     writer: &mut W,
-) -> Result<LochoResponseHead>
+) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
@@ -275,7 +342,7 @@ where
     let url = http_utils::join_upstream_url(&upstream, &req.path_and_query)?;
     let method =
         reqwest::Method::from_bytes(req.method.as_bytes()).context("invalid request method")?;
-    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let client = Client::builder().timeout(HTTP_REQUEST_TIMEOUT).build()?;
     let mut request = client.request(method, url);
     if let Some(body_len) = req.body_len {
         request = request.header(reqwest::header::CONTENT_LENGTH, body_len);
@@ -292,7 +359,7 @@ where
     }
     let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
     let body_len = req.body_len;
-    let body_task = tokio::spawn(async move {
+    let mut body_task = AbortOnDrop::new(tokio::spawn(async move {
         let mut total = 0usize;
         if let Some(len) = body_len {
             if len > MAX_BODY_LEN as u64 {
@@ -322,7 +389,7 @@ where
             }
         }
         Ok::<_, anyhow::Error>(())
-    });
+    }));
     let response = match request
         .body(reqwest::Body::wrap_stream(ReceiverStream::new(
             body_receiver,
@@ -332,12 +399,14 @@ where
     {
         Ok(response) => response,
         Err(error) => {
-            body_task.abort();
-            let _ = body_task.await;
+            body_task.abort().await;
             return Err(error.into());
         }
     };
-    body_task.await.context("request body task failed")??;
+    body_task
+        .join()
+        .await
+        .context("request body task failed")??;
     let status = response.status().as_u16();
     let headers = http_utils::headers_to_pairs(response.headers());
     let body_len = response.content_length();
@@ -354,22 +423,64 @@ where
     let mut response_body = response.bytes_stream();
     let mut total = 0usize;
     while let Some(chunk) = response_body.next().await {
-        let chunk = chunk?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                error!(%error, "upstream response stream failed after headers");
+                return Ok(());
+            }
+        };
         total += chunk.len();
         if total > MAX_BODY_LEN {
-            bail!("upstream response exceeds limit")
+            error!("upstream response exceeds limit after headers");
+            return Ok(());
         }
         if body_len.is_some() {
-            write_body(writer, &chunk).await?;
+            if let Err(error) = write_body(writer, &chunk).await {
+                error!(%error, "tunnel response write failed after headers");
+                return Ok(());
+            }
         } else {
-            write_body_chunk(writer, &chunk).await?;
+            if let Err(error) = write_body_chunk(writer, &chunk).await {
+                error!(%error, "tunnel response write failed after headers");
+                return Ok(());
+            }
         }
     }
     if body_len.is_none() {
-        write_body_end(writer).await?;
+        if let Err(error) = write_body_end(writer).await {
+            error!(%error, "tunnel response end write failed after headers");
+        }
     }
     info!(status, "upstream response");
-    Ok(head)
+    Ok(())
+}
+
+struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
+
+impl<T> AbortOnDrop<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self(Some(handle))
+    }
+
+    async fn join(&mut self) -> Result<T, tokio::task::JoinError> {
+        self.0.take().expect("join handle already consumed").await
+    }
+
+    async fn abort(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -457,6 +568,14 @@ mod tests {
         request.version = PROTOCOL_VERSION + 1;
         let response = request_response(request).await;
         assert_eq!(response.status, 400);
+    }
+
+    #[tokio::test]
+    async fn request_header_timeout_is_bounded() {
+        let (_writer, mut reader) = duplex(64);
+        let result = read_request_head(&mut reader, std::time::Duration::from_millis(1)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
     }
 
     #[tokio::test]
@@ -602,7 +721,7 @@ mod tests {
             .await
             .unwrap();
         let (mut response_reader, mut response_writer) = duplex(BODY_CHUNK_LEN * 3);
-        let head = forward_to_upstream(
+        forward_to_upstream(
             Url::parse(&format!("http://{address}")).unwrap(),
             request,
             request_reader,
@@ -611,13 +730,11 @@ mod tests {
         .await
         .unwrap();
         drop(request_writer);
-        assert_eq!(head.status, 200);
-        assert_eq!(head.body_len, Some(expected_response.len() as u64));
         let received_head: LochoResponseHead = read_json_head(&mut response_reader, MAX_HEAD_LEN)
             .await
             .unwrap();
-        assert_eq!(received_head.status, head.status);
-        assert_eq!(received_head.body_len, head.body_len);
+        assert_eq!(received_head.status, 200);
+        assert_eq!(received_head.body_len, Some(expected_response.len() as u64));
         let mut received = vec![0u8; expected_response.len()];
         response_reader.read_exact(&mut received).await.unwrap();
         assert_eq!(received, expected_response);
