@@ -232,6 +232,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zero_length_header_is_rejected() {
+        let (mut a, mut b) = duplex(64);
+        a.write_all(&[0, 0, 0, 0]).await.unwrap();
+        assert!(read_json_head::<LochoResponseHead, _>(&mut b, MAX_HEAD_LEN)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn body_limit_is_enforced() {
         let (mut a, mut b) = duplex(64);
         a.write_all(b"abc").await.unwrap();

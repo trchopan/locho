@@ -13,6 +13,8 @@ use std::{
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const BODY_CHUNK_LEN: usize = 16 * 1024;
 
 struct TestDir(PathBuf);
 
@@ -202,27 +204,21 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
 
 #[cfg(feature = "integration-test")]
 #[test]
-fn http_attachment_proxies_requests_and_responses() {
+fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
     let state_dir = TestDir::new();
     let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let upstream_address = upstream_listener.local_addr().unwrap();
     let upstream_thread = thread::spawn(move || {
-        let (mut stream, _) = upstream_listener.accept().unwrap();
-        let mut request = Vec::new();
-        let mut buffer = [0u8; 1024];
-        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-            let count = stream.read(&mut buffer).unwrap();
-            assert!(count > 0);
-            request.extend_from_slice(&buffer[..count]);
+        let mut handlers = Vec::new();
+        for _ in 0..11 {
+            let (stream, _) = accept_with_deadline(&upstream_listener);
+            stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            handlers.push(thread::spawn(move || handle_http_upstream(stream)));
         }
-        let request = String::from_utf8(request).unwrap();
-        assert!(request.starts_with("POST /hello?value=1 HTTP/1.1\r\n"));
-        assert!(request.contains("x-client: integration\r\n"));
-        stream
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\nx-upstream: yes\r\nconnection: close\r\n\r\nhello world",
-            )
-            .unwrap();
+        for handler in handlers {
+            handler.join().unwrap();
+        }
     });
 
     let config_path = state_dir.path().join("locho.toml");
@@ -246,27 +242,479 @@ fn http_attachment_proxies_requests_and_responses() {
     );
     attachment.wait_for("Local proxy:");
 
-    let mut client = connect_with_retry(attach_port);
-    client
-        .write_all(
-            b"POST /hello?value=1 HTTP/1.1\r\nHost: localhost\r\nX-Client: integration\r\nContent-Length: 7\r\nConnection: close\r\n\r\nrequest",
-        )
-        .unwrap();
-    let mut response = String::new();
-    client.read_to_string(&mut response).unwrap();
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-    assert!(response.contains("x-upstream: yes"));
-    assert!(
-        response.contains("hello world"),
-        "unexpected response: {response:?}"
+    for (method, path, body) in [
+        ("GET", "/get", b"".as_slice()),
+        ("POST", "/post", b"request-body".as_slice()),
+        ("PUT", "/put", b"put-body".as_slice()),
+        ("PATCH", "/patch", b"patch-body".as_slice()),
+        ("DELETE", "/delete", b"".as_slice()),
+        ("OPTIONS", "/options", b"".as_slice()),
+    ] {
+        let response = send_http_request(attach_port, method, path, body, false);
+        assert_eq!(response.status, 200, "unexpected response for {method}");
+        assert_eq!(response.body, b"method-ok");
+        assert_eq!(response.headers.get("x-upstream"), Some(&"yes".to_string()));
+    }
+
+    let response = send_http_request(attach_port, "HEAD", "/head", b"", false);
+    assert_eq!(response.status, 200);
+    assert!(response.body.is_empty());
+
+    let response = send_http_request(
+        attach_port,
+        "POST",
+        "/chunked-response",
+        b"chunked-request-body",
+        true,
     );
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"streamed-response-body");
+    assert_eq!(
+        response.headers.get("x-upstream"),
+        Some(&"streamed".to_string())
+    );
+
+    let response = send_http_request(attach_port, "CONNECT", "/unsupported", b"", false);
+    assert_eq!(response.status, 405);
+
+    let response = read_streaming_response(attach_port);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.len(), BODY_CHUNK_LEN * 2 + 3);
+    assert!(response.body.iter().all(|byte| *byte == b'x'));
+
+    let response = send_oversized_request(attach_port);
+    assert_eq!(response.status, 413);
+
+    let first = thread::spawn({
+        move || send_http_request(attach_port, "GET", "/concurrent/one", b"", false)
+    });
+    let second =
+        thread::spawn(move || send_http_request(attach_port, "GET", "/concurrent/two", b"", false));
+    assert_eq!(first.join().unwrap().body, b"method-ok");
+    assert_eq!(second.join().unwrap().body, b"method-ok");
 
     assert!(upstream_thread.join().is_ok());
     attachment.stop();
     host.stop();
 }
 
+#[cfg(feature = "integration-test")]
+#[test]
+fn http_attachment_reports_unavailable_upstream() {
+    let state_dir = TestDir::new();
+    let unused_address = free_port();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://127.0.0.1:{unused_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+    attachment.wait_for("Local proxy:");
+
+    let response = send_http_request(attach_port, "GET", "/unavailable", b"", false);
+    assert_eq!(response.status, 502);
+    assert!(response.body.is_empty());
+
+    attachment.stop();
+    host.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn http_attachment_reports_upstream_timeout() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        let (stream, _) = accept_with_deadline(&upstream_listener);
+        stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+        thread::sleep(Duration::from_millis(500));
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host =
+        start_host_with_timeout(state_dir.path(), &config_path, &direct_address, Some("100"));
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+    attachment.wait_for("Local proxy:");
+
+    let response = send_http_request(attach_port, "GET", "/slow", b"", false);
+    assert_eq!(response.status, 504);
+    assert!(upstream_thread.join().is_ok());
+    attachment.stop();
+    host.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn http_attachment_stops_active_request_with_host_shutdown() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        let (stream, _) = accept_with_deadline(&upstream_listener);
+        stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+    attachment.wait_for("Local proxy:");
+
+    let request_thread =
+        thread::spawn(move || send_http_request(attach_port, "GET", "/active", b"", false));
+    thread::sleep(Duration::from_millis(100));
+    host.stop();
+    let response = request_thread.join().unwrap();
+    assert!(matches!(response.status, 502 | 504));
+    assert!(upstream_thread.join().is_ok());
+    attachment.stop();
+}
+
+struct HttpResponse {
+    status: u16,
+    headers: std::collections::HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+fn send_http_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    chunked: bool,
+) -> HttpResponse {
+    let mut stream = connect_with_retry(port);
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nX-Client: integration\r\nX-Hop-By-Hop: should-not-forward\r\nConnection: x-hop-by-hop, close\r\n"
+    )
+    .into_bytes();
+    if chunked {
+        request.extend_from_slice(b"Transfer-Encoding: chunked\r\n\r\n");
+        request.extend_from_slice(format!("{:x}\r\n", body.len()).as_bytes());
+        request.extend_from_slice(body);
+        request.extend_from_slice(b"\r\n0\r\n\r\n");
+    } else {
+        request.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+        request.extend_from_slice(body);
+    }
+    stream.write_all(&request).unwrap();
+    read_http_response(&mut stream, method == "HEAD")
+}
+
+fn send_oversized_request(port: u16) -> HttpResponse {
+    let mut stream = connect_with_retry(port);
+    stream
+        .write_all(
+            b"POST /oversized HTTP/1.1\r\nHost: localhost\r\nContent-Length: 33554433\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    read_http_response(&mut stream, false)
+}
+
+fn read_streaming_response(port: u16) -> HttpResponse {
+    let mut stream = connect_with_retry(port);
+    stream
+        .write_all(
+            b"GET /large-response HTTP/1.1\r\nHost: localhost\r\nX-Client: integration\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    let mut bytes = read_until_headers(&mut stream);
+    let header_end = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let header_text = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+    let mut lines = header_text.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let headers = parse_headers(lines);
+    let body = read_message_body(&mut stream, &mut bytes, header_end, &headers);
+    assert!(
+        !body.is_empty(),
+        "streamed response did not deliver an initial body chunk"
+    );
+    HttpResponse {
+        status,
+        headers,
+        body,
+    }
+}
+
+fn handle_http_upstream(mut stream: TcpStream) {
+    let request = read_http_message(&mut stream);
+    assert_eq!(
+        request.headers.get("x-client"),
+        Some(&"integration".to_string())
+    );
+    assert_eq!(
+        request.headers.get("x-hop-by-hop"),
+        None,
+        "hop-by-hop headers must not cross the tunnel"
+    );
+
+    let response_body = if request.path == "/chunked-response" {
+        assert_eq!(request.body, b"chunked-request-body");
+        b"streamed-response-body".to_vec()
+    } else if request.path == "/large-response" {
+        vec![b'x'; BODY_CHUNK_LEN * 2 + 3]
+    } else if request.method == "HEAD" {
+        b"head-body-must-not-be-forwarded".to_vec()
+    } else {
+        assert!(request.path.starts_with('/'));
+        if request.path == "/post" {
+            assert_eq!(request.body, b"request-body");
+        }
+        b"method-ok".to_vec()
+    };
+
+    if request.path == "/chunked-response" {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Upstream: streamed\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        write!(stream, "{:x}\r\n", response_body.len()).unwrap();
+        stream.write_all(&response_body).unwrap();
+        stream.write_all(b"\r\n0\r\n\r\n").unwrap();
+    } else if request.path == "/large-response" {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Upstream: large\r\nConnection: close\r\n\r\n",
+            response_body.len()
+        )
+        .unwrap();
+        for chunk in response_body.chunks(BODY_CHUNK_LEN) {
+            if stream.write_all(chunk).is_err() {
+                return;
+            }
+            if stream.flush().is_err() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    } else {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Upstream: yes\r\nConnection: close\r\n\r\n",
+            response_body.len()
+        )
+        .unwrap();
+        stream.write_all(&response_body).unwrap();
+    }
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+fn read_http_message(stream: &mut TcpStream) -> HttpRequest {
+    let mut bytes = read_until_headers(stream);
+    let header_end = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let header_text = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines.next().unwrap();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap().to_string();
+    let path = request_parts.next().unwrap().to_string();
+    let headers = parse_headers(lines);
+    let body = read_message_body(stream, &mut bytes, header_end, &headers);
+    HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    }
+}
+
+fn read_http_response(stream: &mut TcpStream, head_only: bool) -> HttpResponse {
+    let mut bytes = read_until_headers(stream);
+    let Some(header_end) = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+    else {
+        return HttpResponse {
+            status: 504,
+            headers: std::collections::HashMap::new(),
+            body: Vec::new(),
+        };
+    };
+    let header_text = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+    let mut lines = header_text.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let headers = parse_headers(lines);
+    if head_only {
+        return HttpResponse {
+            status,
+            headers,
+            body: Vec::new(),
+        };
+    }
+    let body = read_message_body(stream, &mut bytes, header_end, &headers);
+    HttpResponse {
+        status,
+        headers,
+        body,
+    }
+}
+
+fn read_until_headers(stream: &mut TcpStream) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 1024];
+    while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("failed to read HTTP headers: {error}"),
+        }
+    }
+    bytes
+}
+
+fn parse_headers<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> std::collections::HashMap<String, String> {
+    lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_string()))
+        .collect()
+}
+
+fn read_message_body(
+    stream: &mut TcpStream,
+    bytes: &mut Vec<u8>,
+    header_end: usize,
+    headers: &std::collections::HashMap<String, String>,
+) -> Vec<u8> {
+    let mut body = bytes.split_off(header_end);
+    if headers
+        .get("transfer-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+    {
+        while !body.windows(5).any(|window| window == b"0\r\n\r\n") {
+            let mut buffer = [0u8; 1024];
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "connection closed during chunked body");
+            body.extend_from_slice(&buffer[..count]);
+        }
+        decode_chunked_body(&body)
+    } else {
+        let length = headers
+            .get("content-length")
+            .map(|value| value.parse::<usize>().unwrap())
+            .unwrap_or(0);
+        while body.len() < length {
+            let mut buffer = [0u8; 1024];
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "connection closed during fixed-length body");
+            body.extend_from_slice(&buffer[..count]);
+        }
+        body.truncate(length);
+        body
+    }
+}
+
+fn decode_chunked_body(bytes: &[u8]) -> Vec<u8> {
+    let mut body = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let line_end = bytes[cursor..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .unwrap();
+        let length = usize::from_str_radix(
+            std::str::from_utf8(&bytes[cursor..cursor + line_end]).unwrap(),
+            16,
+        )
+        .unwrap();
+        cursor += line_end + 2;
+        if length == 0 {
+            break;
+        }
+        body.extend_from_slice(&bytes[cursor..cursor + length]);
+        cursor += length + 2;
+    }
+    body
+}
+
 fn start_host(state_dir: &Path, config_path: &Path, direct_address: &str) -> ProcessOutput {
+    start_host_with_timeout(state_dir, config_path, direct_address, None)
+}
+
+fn start_host_with_timeout(
+    state_dir: &Path,
+    config_path: &Path,
+    direct_address: &str,
+    timeout_milliseconds: Option<&str>,
+) -> ProcessOutput {
     let mut command = Command::new(env!("CARGO_BIN_EXE_locho"));
     command
         .env("LOCHO_STATE_DIR", state_dir)
@@ -274,6 +722,9 @@ fn start_host(state_dir: &Path, config_path: &Path, direct_address: &str) -> Pro
         .arg("host")
         .arg("--config")
         .arg(config_path);
+    if let Some(timeout_milliseconds) = timeout_milliseconds {
+        command.env("LOCHO_TEST_HTTP_TIMEOUT_MS", timeout_milliseconds);
+    }
     ProcessOutput::spawn(command)
 }
 
@@ -368,12 +819,37 @@ fn connect_with_retry(port: u16) -> TcpStream {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
         match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => return stream,
+            Ok(stream) => {
+                stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+                stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+                return stream;
+            }
             Err(error) if Instant::now() < deadline => {
                 assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
                 thread::sleep(Duration::from_millis(50));
             }
             Err(error) => panic!("failed to connect to attachment: {error}"),
+        }
+    }
+}
+
+fn accept_with_deadline(listener: &TcpListener) -> (TcpStream, std::net::SocketAddr) {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + TEST_IO_TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok(connection) => {
+                listener.set_nonblocking(false).unwrap();
+                return connection;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for upstream request"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("failed to accept upstream request: {error}"),
         }
     }
 }
