@@ -85,6 +85,10 @@ curl http://127.0.0.1:8765/path
 
 The host forwards requests to the explicitly configured HTTP upstream.
 
+Request and response bodies are streamed and limited to 32 MiB per body. The
+upstream request timeout is 30 seconds. WebSocket upgrades are not supported;
+use a TCP service when a non-HTTP protocol is required.
+
 ## How are TCP services used?
 
 A TCP service is attached to a local TCP listener. Native clients then connect

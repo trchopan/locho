@@ -1,19 +1,26 @@
 use crate::{auth, http_utils, protocol::*};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
+use futures_core::Stream;
 use http::{Response, StatusCode};
-use http_body_util::{BodyExt, Full};
-use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
+use http_body_util::{BodyExt, StreamBody};
+use hyper::{
+    body::{Body, Frame, Incoming},
+    server::conn::http1,
+    service::service_fn,
+    Request,
+};
 use hyper_util::rt::TokioIo;
 use iroh::{endpoint::Connection, Endpoint, NodeId};
-use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::{convert::Infallible, pin::Pin};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{error, info};
 
-type HttpResponse = Response<Full<Bytes>>;
+type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
+type HttpResponse = Response<StreamBody<HttpStream>>;
 
 pub async fn run(
     host_id: String,
@@ -150,17 +157,17 @@ async fn handle_request(
         return error_response(StatusCode::METHOD_NOT_ALLOWED);
     }
     let headers = http_utils::headers_to_pairs(request.headers());
-    let body = match request.into_body().collect().await {
-        Ok(collected) => {
-            let bytes = collected.to_bytes();
-            if bytes.len() > MAX_BODY_LEN {
-                return error_response(StatusCode::PAYLOAD_TOO_LARGE);
-            }
-            bytes
-        }
-        Err(_) => return error_response(StatusCode::BAD_REQUEST),
-    };
-    match tunnel_request(connection, service, secret, method, path, headers, body).await {
+    match tunnel_request(
+        connection,
+        service,
+        secret,
+        method,
+        path,
+        headers,
+        request.into_body(),
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => {
             error!(%error, "tunnel request failed");
@@ -182,7 +189,7 @@ async fn tunnel_request(
     method: http::Method,
     path: String,
     headers: Vec<(String, String)>,
-    body: Bytes,
+    body: Incoming,
 ) -> Result<HttpResponse> {
     let (mut writer, mut reader) = connection.open_bi().await?;
     let head = LochoRequestHead {
@@ -192,10 +199,48 @@ async fn tunnel_request(
         method: method.to_string(),
         path_and_query: path,
         headers,
-        body_len: Some(body.len() as u64),
+        body_len: body.size_hint().exact(),
     };
+    let body_len = head.body_len;
+    if body_len.is_some_and(|len| len > MAX_BODY_LEN as u64) {
+        return Err(anyhow!("request body exceeds limit"));
+    }
     write_json_head(&mut writer, &StreamRequestHead::Http(head)).await?;
-    write_body(&mut writer, &body).await?;
+    let mut body = body;
+    if let Some(body_len) = body_len {
+        let mut written = 0u64;
+        while let Some(chunk) = body.frame().await {
+            let frame = chunk?
+                .into_data()
+                .map_err(|_| anyhow!("request body contains trailers"))?;
+            let frame_len = frame.len() as u64;
+            if written + frame_len > body_len {
+                return Err(anyhow!("request body exceeds declared length"));
+            }
+            for chunk in frame.chunks(BODY_CHUNK_LEN) {
+                write_body(&mut writer, chunk).await?;
+            }
+            written += frame_len;
+        }
+        if written != body_len {
+            return Err(anyhow!("request body length changed during upload"));
+        }
+    } else {
+        let mut written = 0usize;
+        while let Some(chunk) = body.frame().await {
+            let frame = chunk?
+                .into_data()
+                .map_err(|_| anyhow!("request body contains trailers"))?;
+            written += frame.len();
+            if written > MAX_BODY_LEN {
+                return Err(anyhow!("request body exceeds limit"));
+            }
+            for chunk in frame.chunks(BODY_CHUNK_LEN) {
+                write_body_chunk(&mut writer, chunk).await?;
+            }
+        }
+        write_body_end(&mut writer).await?;
+    }
     let response: LochoResponseHead = read_json_head(&mut reader, MAX_HEAD_LEN).await?;
     if response.version != PROTOCOL_VERSION {
         return Err(anyhow!(
@@ -203,11 +248,29 @@ async fn tunnel_request(
             response.version
         ));
     }
-    let body = read_body_with_limit(&mut reader, response.body_len, MAX_BODY_LEN).await?;
     let status =
         StatusCode::from_u16(response.status).map_err(|_| anyhow!("invalid response status"))?;
+    let body_len = response.body_len;
+    let stream = Box::pin(async_stream::try_stream! {
+        if let Some(length) = body_len {
+            let mut remaining = length;
+            let mut buffer = vec![0u8; BODY_CHUNK_LEN];
+            while remaining > 0 {
+                let count = remaining.min(BODY_CHUNK_LEN as u64) as usize;
+                reader.read_exact(&mut buffer[..count]).await?;
+                yield Frame::data(Bytes::copy_from_slice(&buffer[..count]));
+                remaining -= count as u64;
+            }
+        } else {
+            while let Some(chunk) = read_body_chunk(&mut reader).await? {
+                yield Frame::data(chunk);
+            }
+        }
+    }) as HttpStream;
     info!(status = %status, "local response");
-    let mut output = Response::builder().status(status).body(Full::new(body))?;
+    let mut output = Response::builder()
+        .status(status)
+        .body(StreamBody::new(stream))?;
     for (name, value) in http_utils::pairs_to_headers(response.headers).iter() {
         if !http_utils::is_hop_by_hop_header(name) {
             output.headers_mut().append(name, value.clone());
@@ -219,6 +282,8 @@ async fn tunnel_request(
 fn error_response(status: StatusCode) -> HttpResponse {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::new()))
+        .body(StreamBody::new(
+            Box::pin(futures_util::stream::empty()) as HttpStream
+        ))
         .unwrap()
 }
