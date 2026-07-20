@@ -43,7 +43,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not extract $Archive"
 }
 
-$artifactDirectory = Join-Path $ExtractionDirectory $archiveName
+$nestedArtifactDirectory = Join-Path $ExtractionDirectory $archiveName
+$artifactDirectory = if (Test-Path -LiteralPath $nestedArtifactDirectory -PathType Container) {
+    $nestedArtifactDirectory
+} else {
+    $ExtractionDirectory
+}
 $binary = Join-Path $artifactDirectory "locho.exe"
 foreach ($requiredFile in @("README.md", "CHANGELOG.md", "LICENSE")) {
     $path = Join-Path $artifactDirectory $requiredFile
