@@ -10,7 +10,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::mpsc,
     sync::Arc,
     thread,
@@ -112,6 +112,27 @@ impl ProcessOutput {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+
+    #[cfg(unix)]
+    fn interrupt(&mut self) {
+        let status = Command::new("kill")
+            .args(["-INT", &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "process did not exit");
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 impl Drop for ProcessOutput {
@@ -128,7 +149,11 @@ struct HttpsUpstream {
 }
 
 impl HttpsUpstream {
-    fn start(state_dir: &Path) -> Self {
+    fn start_with_options(
+        state_dir: &Path,
+        expected_requests: usize,
+        response_delay: Duration,
+    ) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let ca_key_pair = rcgen::KeyPair::generate().unwrap();
         let mut ca_params =
@@ -154,46 +179,60 @@ impl HttpsUpstream {
         listener.set_nonblocking(true).unwrap();
         let (stop, stop_receiver) = mpsc::channel();
         let thread = thread::spawn(move || {
-            let deadline = Instant::now() + STARTUP_TIMEOUT;
-            let stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if stop_receiver.try_recv().is_ok() || Instant::now() >= deadline {
-                            return;
+            let tls_config = Arc::new(tls_config);
+            let mut handlers = Vec::new();
+            for _ in 0..expected_requests {
+                let deadline = Instant::now() + STARTUP_TIMEOUT;
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stop_receiver.try_recv().is_ok() || Instant::now() >= deadline {
+                                return;
+                            }
+                            thread::sleep(Duration::from_millis(10));
                         }
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => return,
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            let connection = ServerConnection::new(Arc::new(tls_config)).unwrap();
-            let mut stream = StreamOwned::new(connection, stream);
-            stream.get_ref().set_read_timeout(Some(IO_TIMEOUT)).unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let count = match stream.read(&mut buffer) {
-                    Ok(count) => count,
-                    Err(error) => {
-                        eprintln!("HTTPS fixture read failed: {error}");
-                        return;
+                        Err(_) => return,
                     }
                 };
-                if count == 0 {
-                    return;
-                }
-                request.extend_from_slice(&buffer[..count]);
+                let tls_config = Arc::clone(&tls_config);
+                handlers.push(thread::spawn(move || {
+                    stream.set_nonblocking(false).unwrap();
+                    let connection = ServerConnection::new(tls_config).unwrap();
+                    let mut stream = StreamOwned::new(connection, stream);
+                    stream.get_ref().set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 1024];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let count = match stream.read(&mut buffer) {
+                            Ok(count) => count,
+                            Err(error) => {
+                                eprintln!("HTTPS fixture read failed: {error}");
+                                return;
+                            }
+                        };
+                        if count == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    if !response_delay.is_zero() {
+                        thread::sleep(response_delay);
+                    }
+                    let body = b"release-smoke-https-response";
+                    let response = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Release-Smoke: yes\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    if response.is_ok() {
+                        let _ = stream.write_all(body);
+                    }
+                }));
             }
-            let body = b"release-smoke-https-response";
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Release-Smoke: yes\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(body).unwrap();
+            for handler in handlers {
+                let _ = handler.join();
+            }
         });
         Self {
             address,
@@ -218,7 +257,7 @@ impl Drop for HttpsUpstream {
 fn release_binary_completes_http_tcp_and_rotation_workflow() {
     let binary = release_binary();
     let state_dir = TestDir::new();
-    let https_upstream = HttpsUpstream::start(state_dir.path());
+    let https_upstream = HttpsUpstream::start_with_options(state_dir.path(), 3, Duration::ZERO);
     let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
     let upstream_address = upstream.local_addr().unwrap();
     let upstream_thread = thread::spawn(move || {
@@ -292,6 +331,15 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
         response.1,
         http.output()
     );
+    let first_http = thread::spawn(move || http_get(http_port, "/concurrent/one"));
+    let second_http = thread::spawn(move || http_get(http_port, "/concurrent/two"));
+    let first_response = first_http.join().unwrap();
+    let second_response = second_http.join().unwrap();
+    for (status, body) in [first_response, second_response] {
+        assert_eq!(status, 200);
+        assert!(body.contains("release-smoke-https-response"));
+        assert!(body.to_ascii_lowercase().contains("x-release-smoke: yes"));
+    }
 
     let unavailable_listener_port = free_port();
     let mut unavailable = start_attachment(
@@ -353,6 +401,20 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
     let (_, _, new_secret) = parse_attach_command(&rotated_command);
     assert_ne!(old_secret, new_secret);
 
+    let old_port = free_port();
+    let mut old_tcp = start_attachment(
+        &binary,
+        state_dir.path(),
+        &tcp_command,
+        &direct_address,
+        old_port,
+        true,
+    );
+    old_tcp.wait_for("Local TCP listener");
+    assert!(try_round_trip(old_port, b"stale").is_err());
+    old_tcp.wait_for("TCP attachment rejected with status 403");
+    old_tcp.stop();
+
     let new_port = free_port();
     let mut new_tcp = start_attachment(
         &binary,
@@ -374,6 +436,128 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
     assert!(replacement_upstream_thread.join().is_ok());
     restarted_host.stop();
     new_tcp.stop();
+}
+
+#[test]
+#[ignore = "requires a separately built release binary"]
+fn release_binary_reports_http_upstream_timeout() {
+    let binary = release_binary();
+    let state_dir = TestDir::new();
+    let https_upstream =
+        HttpsUpstream::start_with_options(state_dir.path(), 1, Duration::from_secs(31));
+    let config_path = state_dir.path().join("locho.toml");
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"web\"\ntype = \"http\"\nupstream = \"https://127.0.0.1:{}\"\nca_cert = \"{}\"\n",
+            https_upstream.address.port(),
+            toml_string(&https_upstream.ca_cert),
+        ),
+    )
+    .unwrap();
+
+    let mut host = start_process(
+        &binary,
+        state_dir.path(),
+        [
+            "host",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--bind-address",
+            &direct_address,
+        ],
+    );
+    let web_command = host.wait_for_attach("web");
+    let http_port = free_port();
+    let mut http = start_attachment(
+        &binary,
+        state_dir.path(),
+        &web_command,
+        &direct_address,
+        http_port,
+        false,
+    );
+    http.wait_for("Local proxy:");
+    assert_eq!(
+        http_get_with_timeout(http_port, "/slow", Duration::from_secs(35)).0,
+        504
+    );
+
+    http.stop();
+    host.stop();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires a separately built release binary"]
+fn release_binary_closes_active_tcp_session_on_host_shutdown() {
+    let binary = release_binary();
+    let state_dir = TestDir::new();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream.local_addr().unwrap();
+    let (accepted_sender, accepted_receiver) = mpsc::channel();
+    let upstream_thread = thread::spawn(move || {
+        let (_stream, _) = upstream.accept().unwrap();
+        accepted_sender.send(()).unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_process(
+        &binary,
+        state_dir.path(),
+        [
+            "host",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--bind-address",
+            &direct_address,
+        ],
+    );
+    let attach_command = host.wait_for_attach("database");
+    let tcp_port = free_port();
+    let mut attachment = start_attachment(
+        &binary,
+        state_dir.path(),
+        &attach_command,
+        &direct_address,
+        tcp_port,
+        true,
+    );
+    attachment.wait_for("Local TCP listener");
+    let mut local = connect_with_retry(tcp_port);
+    accepted_receiver.recv_timeout(STARTUP_TIMEOUT).unwrap();
+
+    host.interrupt();
+    assert!(
+        host.wait_for_exit().success(),
+        "host did not shut down cleanly"
+    );
+    let mut byte = [0u8; 1];
+    match local.read(&mut byte) {
+        Ok(0) => {}
+        Ok(count) => panic!("active TCP session remained open and returned {count} bytes"),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::NotConnected
+            ) => {}
+        Err(error) => panic!("active TCP session was not closed: {error}"),
+    }
+
+    attachment.stop();
+    assert!(upstream_thread.join().is_ok());
 }
 
 impl ProcessOutput {
@@ -488,12 +672,16 @@ fn toml_string(path: &Path) -> String {
 }
 
 fn connect_with_retry(port: u16) -> TcpStream {
+    connect_with_retry_timeout(port, IO_TIMEOUT)
+}
+
+fn connect_with_retry_timeout(port: u16, timeout: Duration) -> TcpStream {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
         match TcpStream::connect(("127.0.0.1", port)) {
             Ok(stream) => {
-                stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
-                stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
+                stream.set_read_timeout(Some(timeout)).unwrap();
+                stream.set_write_timeout(Some(timeout)).unwrap();
                 return stream;
             }
             Err(error) if Instant::now() < deadline => {
@@ -515,7 +703,11 @@ fn try_round_trip(port: u16, payload: &[u8]) -> std::io::Result<()> {
 }
 
 fn http_get(port: u16, path: &str) -> (u16, String) {
-    let mut stream = connect_with_retry(port);
+    http_get_with_timeout(port, path, IO_TIMEOUT)
+}
+
+fn http_get_with_timeout(port: u16, path: &str, timeout: Duration) -> (u16, String) {
+    let mut stream = connect_with_retry_timeout(port, timeout);
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
