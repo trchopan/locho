@@ -47,3 +47,8 @@ jobs:
         env:
           LOCHO_TEST_BINARY: target/integration-release/release/locho
         run: cargo test --test integration --features integration-test
+
+      - name: Run release-binary smoke test
+        env:
+          LOCHO_TEST_BINARY: target/release/locho
+        run: cargo test --test release_smoke -- --ignored

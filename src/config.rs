@@ -1,6 +1,10 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::{collections::HashSet, net::SocketAddr, path::Path};
+use std::{
+    collections::HashSet,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 use url::Url;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -17,6 +21,7 @@ pub struct ServiceConfig {
     #[serde(rename = "type")]
     pub service_type: ServiceType,
     pub upstream: Option<Url>,
+    pub ca_cert: Option<PathBuf>,
     pub endpoint: Option<SocketAddr>,
 }
 
@@ -58,6 +63,22 @@ impl Config {
                     let upstream = service.upstream.as_ref().with_context(|| {
                         format!("HTTP service {:?} requires upstream", service.name)
                     })?;
+                    if let Some(ca_cert) = &service.ca_cert {
+                        let certificate = std::fs::read(ca_cert).with_context(|| {
+                            format!(
+                                "HTTP service {:?} CA certificate cannot be read from {}",
+                                service.name,
+                                ca_cert.display()
+                            )
+                        })?;
+                        reqwest::Certificate::from_pem(&certificate).with_context(|| {
+                            format!(
+                                "HTTP service {:?} CA certificate is not valid PEM: {}",
+                                service.name,
+                                ca_cert.display()
+                            )
+                        })?;
+                    }
                     let local_test_http = cfg!(feature = "integration-test")
                         && upstream.scheme() == "http"
                         && upstream.host_str() == Some("127.0.0.1");
@@ -71,8 +92,11 @@ impl Config {
                     }
                 }
                 ServiceType::Tcp => {
-                    if service.upstream.is_some() {
-                        bail!("TCP service {:?} cannot define upstream", service.name)
+                    if service.upstream.is_some() || service.ca_cert.is_some() {
+                        bail!(
+                            "TCP service {:?} cannot define upstream or ca_cert",
+                            service.name
+                        )
                     }
                     if service.endpoint.is_none() {
                         bail!("TCP service {:?} requires endpoint", service.name)
@@ -110,6 +134,7 @@ mod tests {
             name: name.into(),
             service_type: ServiceType::Http,
             upstream: Some(Url::parse("https://example.com").unwrap()),
+            ca_cert: None,
             endpoint: None,
         }
     }
@@ -123,6 +148,7 @@ mod tests {
                     name: "database".into(),
                     service_type: ServiceType::Tcp,
                     upstream: None,
+                    ca_cert: None,
                     endpoint: Some("127.0.0.1:5432".parse().unwrap()),
                 },
             ],
@@ -147,6 +173,7 @@ mod tests {
                 name: "api".into(),
                 service_type: ServiceType::Http,
                 upstream: Some(Url::parse("http://example.com").unwrap()),
+                ca_cert: None,
                 endpoint: None,
             }],
         };
@@ -197,6 +224,7 @@ mod tests {
                 name: "database".into(),
                 service_type: ServiceType::Tcp,
                 upstream: None,
+                ca_cert: None,
                 endpoint: Some("127.0.0.1:0".parse().unwrap()),
             }],
         };

@@ -2,6 +2,15 @@
 
 All notable changes to `locho` are documented here.
 
+## [Unreleased]
+
+- Adds explicit direct-address hints for hosts and attachments when peer
+  discovery cannot advertise a reachable address.
+- Adds optional PEM CA configuration for private HTTPS upstreams while keeping
+  normal system-root validation as the default.
+- Adds cross-platform release-binary smoke coverage for HTTPS, TCP concurrency,
+  upstream failure, restart, and capability rotation.
+
 ## [0.2.0] - Beta
 
 This release establishes the first distributable beta of `locho`.

@@ -24,6 +24,8 @@ enum Command {
     Host {
         #[arg(long)]
         config: PathBuf,
+        #[arg(long)]
+        bind_address: Option<SocketAddr>,
     },
     ResetIdentity,
     RotateSecret {
@@ -40,6 +42,8 @@ enum Command {
         service: String,
         secret: String,
         #[arg(long)]
+        direct_address: Option<SocketAddr>,
+        #[arg(long)]
         tcp: bool,
         #[arg(long, default_value = "127.0.0.1:8765")]
         listen: SocketAddr,
@@ -50,7 +54,10 @@ enum Command {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     match Cli::parse().command {
-        Command::Host { config } => host::run(config).await,
+        Command::Host {
+            config,
+            bind_address,
+        } => host::run(config, bind_address).await,
         Command::ResetIdentity => state::reset_identity(),
         Command::RotateSecret { service } => state::rotate_secret(&service),
         Command::Diagnose { config, host_id } => diagnostics::run(config, host_id).await,
@@ -58,8 +65,9 @@ async fn main() -> Result<()> {
             host_id,
             service,
             secret,
+            direct_address,
             tcp,
             listen,
-        } => attach::run(host_id, service, secret, tcp, listen).await,
+        } => attach::run(host_id, service, secret, direct_address, tcp, listen).await,
     }
 }

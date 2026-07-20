@@ -9,7 +9,6 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh::Endpoint;
 use reqwest::Client;
-#[cfg(feature = "integration-test")]
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,30 +24,26 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
 
-pub async fn run(config_path: PathBuf) -> Result<()> {
+pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Result<()> {
     let config = Config::load(&config_path)?;
     let _state_lock = crate::state::acquire_state_lock()?;
     let host_secret_key = crate::state::load_or_create_host_secret_key()?;
-    let endpoint_builder = Endpoint::builder()
+    #[cfg(feature = "integration-test")]
+    let bind_address = match bind_address {
+        Some(address) => Some(address),
+        None => std::env::var_os("LOCHO_TEST_BIND_ADDR")
+            .map(|address| address.to_string_lossy().parse())
+            .transpose()
+            .context("invalid LOCHO_TEST_BIND_ADDR")?,
+    };
+    let mut endpoint_builder = Endpoint::builder()
         .discovery_n0()
         .alpns(vec![ALPN.to_vec()])
         .secret_key(host_secret_key);
-    #[cfg(feature = "integration-test")]
-    let endpoint_builder = {
-        let mut endpoint_builder = endpoint_builder;
-        if let Some(address) = std::env::var_os("LOCHO_TEST_BIND_ADDR") {
-            let address: SocketAddr = address
-                .to_string_lossy()
-                .parse()
-                .context("invalid LOCHO_TEST_BIND_ADDR")?;
-            let address = match address {
-                SocketAddr::V4(address) => address,
-                SocketAddr::V6(_) => anyhow::bail!("LOCHO_TEST_BIND_ADDR must be an IPv4 address"),
-            };
-            endpoint_builder = endpoint_builder.bind_addr_v4(address);
-        }
-        endpoint_builder
-    };
+    if let Some(address) = bind_address {
+        let address = validate_bind_address(address)?;
+        endpoint_builder = endpoint_builder.bind_addr_v4(address);
+    }
     let endpoint = endpoint_builder.bind().await?;
     let mut persisted_state = crate::state::load_or_create_host_state(endpoint.node_id())?;
     let active_names = config
@@ -64,25 +59,42 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
             .or_insert_with(crate::auth::generate_secret);
     }
     persisted_state.service_secrets = secrets.clone();
+    let ca_certificates = config
+        .services
+        .iter()
+        .filter_map(|service| {
+            service.ca_cert.as_ref().map(|path| {
+                let bytes = std::fs::read(path)
+                    .with_context(|| format!("read upstream CA certificate {}", path.display()))?;
+                let certificate = reqwest::Certificate::from_pem(&bytes)
+                    .with_context(|| format!("parse upstream CA certificate {}", path.display()))?;
+                Ok((service.name.clone(), certificate))
+            })
+        })
+        .collect::<Result<std::collections::HashMap<_, _>>>()?;
     crate::state::save_host_state(&persisted_state)?;
     let services = Arc::new(HostServices {
         config,
         secrets,
+        ca_certificates,
         tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
     });
     info!(config = %config_path.display(), services = services.config.services.len(), "host started");
     println!("locho host started\n\nAttach from another machine with:");
-    #[cfg(feature = "integration-test")]
-    if let Some(address) = std::env::var_os("LOCHO_TEST_BIND_ADDR") {
-        println!("locho direct-address {}", address.to_string_lossy());
+    if let Some(address) = bind_address {
+        println!("locho direct-address {address}");
     }
     for service in &services.config.services {
         let secret = services.secrets.get(&service.name).unwrap();
+        let direct_address = bind_address
+            .map(|address| format!(" --direct-address {address}"))
+            .unwrap_or_default();
         println!(
-            "\nlocho attach {} {} {}",
+            "\nlocho attach {} {} {}{}",
             endpoint.node_id(),
             service.name,
-            secret
+            secret,
+            direct_address
         );
     }
 
@@ -120,6 +132,20 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     }
     endpoint.close().await;
     Ok(())
+}
+
+fn validate_bind_address(address: SocketAddr) -> Result<std::net::SocketAddrV4> {
+    let address = match address {
+        SocketAddr::V4(address) => address,
+        SocketAddr::V6(_) => anyhow::bail!("--bind-address must be an IPv4 address"),
+    };
+    if address.ip().is_unspecified() {
+        anyhow::bail!("--bind-address must be a specific IPv4 address")
+    }
+    if address.port() == 0 {
+        anyhow::bail!("--bind-address must use a non-zero port")
+    }
+    Ok(address)
 }
 
 async fn handle_connection(
@@ -165,6 +191,7 @@ async fn handle_connection(
 struct HostServices {
     config: Config,
     secrets: std::collections::HashMap<String, String>,
+    ca_certificates: std::collections::HashMap<String, reqwest::Certificate>,
     tcp_connections: Arc<Semaphore>,
 }
 
@@ -229,12 +256,15 @@ where
         .iter()
         .find(|service| service.name == req.service)
         .expect("validated HTTP service must exist");
-    let upstream = match (&service.service_type, &service.upstream) {
-        (ServiceType::Http, Some(upstream)) => upstream.clone(),
+    let (upstream, ca_cert) = match (&service.service_type, &service.upstream) {
+        (ServiceType::Http, Some(upstream)) => (
+            upstream.clone(),
+            services.ca_certificates.get(&service.name),
+        ),
         (ServiceType::Tcp, _) => return write_error(&mut writer, 501).await,
         _ => return write_error(&mut writer, 500).await,
     };
-    if let Err(error) = forward_to_upstream(upstream, req, reader, &mut writer).await {
+    if let Err(error) = forward_to_upstream(upstream, ca_cert, req, reader, &mut writer).await {
         error!(%error, "upstream request failed");
         let status = error
             .downcast_ref::<reqwest::Error>()
@@ -372,6 +402,7 @@ async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, status: u16) -> Resu
 
 pub async fn forward_to_upstream<R, W>(
     upstream: Url,
+    ca_cert: Option<&reqwest::Certificate>,
     req: LochoRequestHead,
     mut reader: R,
     writer: &mut W,
@@ -384,7 +415,11 @@ where
     let method =
         reqwest::Method::from_bytes(req.method.as_bytes()).context("invalid request method")?;
     let request_timeout = test_http_request_timeout();
-    let client = Client::builder().timeout(request_timeout).build()?;
+    let mut client_builder = Client::builder().timeout(request_timeout);
+    if let Some(ca_cert) = ca_cert {
+        client_builder = client_builder.add_root_certificate(ca_cert.clone());
+    }
+    let client = client_builder.build()?;
     let mut request = client.request(method, url);
     if let Some(body_len) = req.body_len {
         request = request.header(reqwest::header::CONTENT_LENGTH, body_len);
@@ -551,12 +586,22 @@ mod tests {
                     name: "api".into(),
                     service_type: ServiceType::Http,
                     upstream: Some(Url::parse("https://example.com").unwrap()),
+                    ca_cert: None,
                     endpoint: None,
                 }],
             },
             secrets: HashMap::from([("api".into(), "correct".into())]),
+            ca_certificates: HashMap::new(),
             tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
         })
+    }
+
+    #[test]
+    fn bind_address_requires_specific_nonzero_ipv4_endpoint() {
+        assert!(validate_bind_address("127.0.0.1:12345".parse().unwrap()).is_ok());
+        assert!(validate_bind_address("0.0.0.0:12345".parse().unwrap()).is_err());
+        assert!(validate_bind_address("127.0.0.1:0".parse().unwrap()).is_err());
+        assert!(validate_bind_address("[::1]:12345".parse().unwrap()).is_err());
     }
 
     fn tcp_services(endpoint: std::net::SocketAddr) -> Arc<HostServices> {
@@ -566,10 +611,12 @@ mod tests {
                     name: "database".into(),
                     service_type: ServiceType::Tcp,
                     upstream: None,
+                    ca_cert: None,
                     endpoint: Some(endpoint),
                 }],
             },
             secrets: HashMap::from([("database".into(), "correct".into())]),
+            ca_certificates: HashMap::new(),
             tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
         })
     }
@@ -775,6 +822,7 @@ mod tests {
         let (mut response_reader, mut response_writer) = duplex(BODY_CHUNK_LEN * 3);
         forward_to_upstream(
             Url::parse(&format!("http://{address}")).unwrap(),
+            None,
             request,
             request_reader,
             &mut response_writer,

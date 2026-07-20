@@ -44,3 +44,7 @@ url = "2"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[dev-dependencies]
+rcgen = "0.13"
+rustls = "0.23"
