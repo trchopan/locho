@@ -13,7 +13,10 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use iroh::NodeAddr;
-use iroh::{endpoint::Connection, Endpoint, NodeId};
+use iroh::{
+    endpoint::{Connection, ConnectionType},
+    Endpoint, NodeId,
+};
 use std::net::SocketAddr;
 use std::{convert::Infallible, pin::Pin};
 use tokio::net::{TcpListener, TcpStream};
@@ -55,11 +58,21 @@ pub async fn run(
         .context("connect to host timed out")?
         .context("connect to host")?;
     let transport_monitor = if let Ok(watcher) = endpoint.conn_type(node_id) {
+        let initial_path = watcher.get().ok();
+        if let Some(connection_type) = &initial_path {
+            info!(transport_path = %connection_type, "transport path established");
+            println!("transport path: {connection_type}");
+        }
         Some(tokio::spawn(async move {
             let mut paths = watcher.stream();
+            let mut last_path = initial_path;
             while let Some(connection_type) = paths.next().await {
+                if !transport_path_changed(last_path.as_ref(), &connection_type) {
+                    continue;
+                }
                 info!(transport_path = %connection_type, "transport path changed");
                 println!("transport path: {connection_type}");
+                last_path = Some(connection_type);
             }
         }))
     } else {
@@ -93,6 +106,10 @@ pub async fn run(
         let _ = monitor.await;
     }
     result
+}
+
+fn transport_path_changed(previous: Option<&ConnectionType>, current: &ConnectionType) -> bool {
+    previous != Some(current)
 }
 
 async fn run_http_listener(
@@ -390,4 +407,31 @@ fn error_response(status: StatusCode) -> HttpResponse {
             Box::pin(futures_util::stream::empty()) as HttpStream
         ))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn transport_path_changes_ignore_duplicate_states() {
+        let direct = ConnectionType::Direct((IpAddr::V4(Ipv4Addr::LOCALHOST), 12345).into());
+        assert!(!transport_path_changed(Some(&direct), &direct));
+        assert!(transport_path_changed(None, &direct));
+
+        let relay = ConnectionType::Relay("https://relay.example.com".parse().unwrap());
+        let mixed = ConnectionType::Mixed(
+            (IpAddr::V4(Ipv4Addr::LOCALHOST), 12345).into(),
+            "https://relay.example.com".parse().unwrap(),
+        );
+        assert!(transport_path_changed(Some(&direct), &relay));
+        assert!(transport_path_changed(Some(&relay), &mixed));
+        assert_eq!(direct.to_string(), "direct(127.0.0.1:12345)");
+        assert_eq!(relay.to_string(), "relay(https://relay.example.com./)");
+        assert_eq!(
+            mixed.to_string(),
+            "mixed(udp: 127.0.0.1:12345, relay: https://relay.example.com./)"
+        );
+    }
 }

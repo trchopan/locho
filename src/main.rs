@@ -36,6 +36,8 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long)]
         host_id: Option<String>,
+        #[arg(long)]
+        direct_address: Option<SocketAddr>,
     },
     Attach {
         host_id: String,
@@ -60,7 +62,11 @@ async fn main() -> Result<()> {
         } => host::run(config, bind_address).await,
         Command::ResetIdentity => state::reset_identity(),
         Command::RotateSecret { service } => state::rotate_secret(&service),
-        Command::Diagnose { config, host_id } => diagnostics::run(config, host_id).await,
+        Command::Diagnose {
+            config,
+            host_id,
+            direct_address,
+        } => diagnostics::run(config, host_id, direct_address).await,
         Command::Attach {
             host_id,
             service,

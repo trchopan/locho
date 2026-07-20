@@ -119,13 +119,16 @@ Check local state and configuration without printing capabilities:
 ```sh
 locho diagnose --config locho.toml
 locho diagnose --host-id <host-id>
+locho diagnose --host-id <host-id> --direct-address 192.0.2.10:12345
 ```
 
-The optional host probe reports whether iroh connected directly, through a
-relay, or using a mixed path. Attachments print the initial transport path and
-continue reporting path changes while running. A relay path is encrypted
-end-to-end, but relay availability and performance remain external
-infrastructure dependencies.
+The optional host probe reports the concrete iroh transport path. `direct(...)`
+means a direct UDP path, `relay(...)` means traffic is currently using a relay,
+and `mixed(...)` means iroh has both a direct and relay path available. An
+attachment prints its initial path and continues reporting path changes while
+running. Use `--direct-address` when discovery cannot advertise a reachable
+address to the probing machine. A relay path is encrypted end-to-end, but relay
+availability and performance remain external infrastructure dependencies.
 
 TCP services are attached to a local TCP listener and forward bidirectionally:
 
