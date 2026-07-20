@@ -4,6 +4,8 @@ All notable changes to `locho` are documented here.
 
 ## [Unreleased]
 
+- Adds CI verification for native cargo-dist archives, checksums, generated
+  installers, and the documented release-binary workflow.
 - Adds explicit direct-address hints for hosts and attachments when peer
   discovery cannot advertise a reachable address.
 - Adds optional PEM CA configuration for private HTTPS upstreams while keeping
