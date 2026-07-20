@@ -28,30 +28,14 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Run Unix release verification gate
+        if: runner.os != 'Windows'
+        run: scripts/verify-release.sh --skip-artifacts
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --all-targets --all-features
-
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Build release-profile test binary
-        run: cargo build --release --features integration-test --target-dir target/integration-release
-
-      - name: Run release-profile integration tests
-        env:
-          LOCHO_TEST_BINARY: target/integration-release/release/locho
-        run: cargo test --test integration --features integration-test
-
-      - name: Run release-binary smoke test
-        env:
-          LOCHO_TEST_BINARY: target/release/locho
-        run: cargo test --test release_smoke -- --ignored
+      - name: Run Windows release verification gate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\Verify-Release.ps1 -SkipArtifacts
 
   artifact-smoke:
     name: Packaged artifact smoke (${{ matrix.os }})

@@ -259,7 +259,7 @@ See [COMPARISON.md](COMPARISON.md), [FAQ.md](FAQ.md), and
 
 ## Development
 
-Requirements:
+Build requirements:
 
 - Rust stable with Cargo
 - Network access for iroh discovery and relay connectivity
@@ -269,46 +269,9 @@ cargo build --release
 cargo test
 ```
 
-The test suite includes process-level HTTP and TCP integration tests covering
-request proxying, concurrent attachments, host restart and identity persistence,
-and service capability rotation. Before merging a change or preparing a release,
-run the same checks as CI:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo build --release
-cargo test --test integration --features integration-test
-LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke -- --ignored
-```
-
-The release workflow is generated from `dist-workspace.toml`. To publish a
-release, merge the version and changelog changes, then push a matching tag:
-
-```sh
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-The workflow builds the configured targets, publishes archives and checksums,
-and creates shell and PowerShell installers on the GitHub Release.
-
-CI builds and validates a native cargo-dist archive on Linux, macOS, and
-Windows. It checks the archive checksum and contents, runs `locho --help` from
-the extracted binary, checks the generated shell and PowerShell installers, and
-runs the documented HTTP and TCP smoke workflow against the extracted binary.
-Before publishing `1.0.0`, repeat the same verification from a clean temporary
-environment using the published archive and installer on every supported
-operating system and architecture.
-
-CI also runs the process-level integration suite against a release-profile test
-binary on Ubuntu, macOS, and Windows. The test-only feature enables deterministic
-local peer addresses and timeout overrides; the shipped release build is still
-built without that feature. CI also runs `release_smoke` against the ordinary
-release binary, using normal iroh discovery and the production HTTPS validation
-path. Its HTTPS upstream is deterministic and local; iroh still requires the
-network access needed by its discovery and relay implementation.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, complete
+quality gate, integration tests, and release verification commands. Maintainers
+preparing a release should follow [RELEASE.md](RELEASE.md).
 
 ## License
 
