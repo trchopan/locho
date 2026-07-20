@@ -2,7 +2,7 @@
 
 All notable changes to `locho` are documented here.
 
-## [Unreleased]
+## [1.0.0] - 2026-07-21
 
 - Adds CI verification for native cargo-dist archives, checksums, generated
   installers, and the documented release-binary workflow.
@@ -13,9 +13,7 @@ All notable changes to `locho` are documented here.
 - Adds cross-platform release-binary smoke coverage for HTTPS, TCP concurrency,
   upstream failure, restart, and capability rotation.
 
-## [0.2.0] - Beta
-
-This release establishes the first distributable beta of `locho`.
+This is the first stable release of `locho`.
 
 - Supports multiple explicitly configured HTTP and TCP services.
 - Adds service-scoped bearer capabilities with persistence, rotation, and revocation.
