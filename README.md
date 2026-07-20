@@ -78,6 +78,8 @@ prints or otherwise provides an attachment capability for each service:
 name = "api"
 type = "http"
 upstream = "https://example.com"
+# Optional PEM CA certificate for a private HTTPS upstream.
+# ca_cert = "/path/to/upstream-ca.pem"
 
 [[services]]
 name = "database"
@@ -90,6 +92,20 @@ Start the host with the validated configuration:
 ```sh
 locho host --config locho.toml
 ```
+
+For a host that must provide an explicit reachable address to an attachment,
+bind it to that address and pass the same address to `locho attach` with
+`--direct-address`. This is useful for local testing or networks where peer
+discovery cannot advertise the host address:
+
+```sh
+locho host --config locho.toml --bind-address 192.0.2.10:12345
+locho attach <host-id> api <service-capability> \
+  --direct-address 192.0.2.10:12345 --listen 127.0.0.1:8765
+```
+
+Use a fixed reachable port instead of `0` when sharing the address with an
+attachment.
 
 The host prints one independent capability per service. Attach one selected
 service locally:
@@ -132,7 +148,9 @@ HTTP request and response bodies are streamed through the tunnel. Known-length
 bodies use length framing; chunked bodies use bounded chunk framing. Individual
 bodies are limited to 32 MiB, and HTTP requests have a 30-second upstream
 timeout. Hop-by-hop headers are not forwarded. WebSocket upgrades are not
-supported.
+supported. HTTPS certificates are validated against the normal system roots by
+default; `ca_cert` may explicitly add a PEM CA certificate for a private
+upstream.
 
 A TCP service is attached to a local port and used by its native client:
 
@@ -259,6 +277,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo build --release
 cargo test --test integration --features integration-test
+LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke -- --ignored
 ```
 
 The release workflow is generated from `dist-workspace.toml`. To publish a
@@ -272,10 +291,20 @@ git push origin v0.2.0
 The workflow builds the configured targets, publishes archives and checksums,
 and creates shell and PowerShell installers on the GitHub Release.
 
+Before publishing `1.0.0`, perform the release-artifact rehearsal on every
+supported operating system: install the generated archive or installer in a
+clean temporary environment, run `locho --help`, and execute the documented
+host, HTTP, and TCP quickstart against that installed binary. The CI smoke test
+uses the same release binary path, but does not replace this archive and
+installer rehearsal.
+
 CI also runs the process-level integration suite against a release-profile test
 binary on Ubuntu, macOS, and Windows. The test-only feature enables deterministic
 local peer addresses and timeout overrides; the shipped release build is still
-built without that feature.
+built without that feature. CI also runs `release_smoke` against the ordinary
+release binary, using normal iroh discovery and the production HTTPS validation
+path. Its HTTPS upstream is deterministic and local; iroh still requires the
+network access needed by its discovery and relay implementation.
 
 ## License
 

@@ -12,7 +12,6 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
-#[cfg(feature = "integration-test")]
 use iroh::NodeAddr;
 use iroh::{endpoint::Connection, Endpoint, NodeId};
 use std::net::SocketAddr;
@@ -31,6 +30,7 @@ pub async fn run(
     host_id: String,
     service: String,
     secret: String,
+    direct_address: Option<SocketAddr>,
     tcp: bool,
     listen: SocketAddr,
 ) -> Result<()> {
@@ -38,13 +38,16 @@ pub async fn run(
         return Err(anyhow!("service name cannot be empty"));
     }
     let node_id: NodeId = host_id.parse().context("invalid host ID")?;
-    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     #[cfg(feature = "integration-test")]
-    if let Some(address) = std::env::var_os("LOCHO_TEST_DIRECT_ADDR") {
-        let address = address
-            .to_string_lossy()
-            .parse()
-            .context("invalid LOCHO_TEST_DIRECT_ADDR")?;
+    let direct_address = match direct_address {
+        Some(address) => Some(address),
+        None => std::env::var_os("LOCHO_TEST_DIRECT_ADDR")
+            .map(|address| address.to_string_lossy().parse())
+            .transpose()
+            .context("invalid LOCHO_TEST_DIRECT_ADDR")?,
+    };
+    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+    if let Some(address) = direct_address {
         endpoint.add_node_addr(NodeAddr::new(node_id).with_direct_addresses([address]))?;
     }
     let connection = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(node_id, ALPN))

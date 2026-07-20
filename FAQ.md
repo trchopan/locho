@@ -87,7 +87,9 @@ The host forwards requests to the explicitly configured HTTP upstream.
 
 Request and response bodies are streamed and limited to 32 MiB per body. The
 upstream request timeout is 30 seconds. WebSocket upgrades are not supported;
-use a TCP service when a non-HTTP protocol is required.
+use a TCP service when a non-HTTP protocol is required. HTTPS uses normal root
+validation by default. A private HTTPS upstream may specify an explicit PEM
+`ca_cert` in its service configuration.
 
 ## How are TCP services used?
 
@@ -140,6 +142,11 @@ Run `locho diagnose --host-id <host-id>` to test connectivity and report the
 current iroh path. The result identifies a direct, relay, or mixed path without
 printing service capabilities. An attachment also logs and prints its selected
 transport path when it connects and when iroh changes paths.
+
+If peer discovery cannot advertise a reachable host address, start the host with
+`--bind-address ADDRESS` and pass that address to the attachment with
+`--direct-address ADDRESS`. This is an explicit address hint; it does not bypass
+service capability authorization.
 
 ## Can a relay read the application traffic?
 
