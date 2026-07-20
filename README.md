@@ -291,12 +291,13 @@ git push origin v0.2.0
 The workflow builds the configured targets, publishes archives and checksums,
 and creates shell and PowerShell installers on the GitHub Release.
 
-Before publishing `1.0.0`, perform the release-artifact rehearsal on every
-supported operating system: install the generated archive or installer in a
-clean temporary environment, run `locho --help`, and execute the documented
-host, HTTP, and TCP quickstart against that installed binary. The CI smoke test
-uses the same release binary path, but does not replace this archive and
-installer rehearsal.
+CI builds and validates a native cargo-dist archive on Linux, macOS, and
+Windows. It checks the archive checksum and contents, runs `locho --help` from
+the extracted binary, checks the generated shell and PowerShell installers, and
+runs the documented HTTP and TCP smoke workflow against the extracted binary.
+Before publishing `1.0.0`, repeat the same verification from a clean temporary
+environment using the published archive and installer on every supported
+operating system and architecture.
 
 CI also runs the process-level integration suite against a release-profile test
 binary on Ubuntu, macOS, and Windows. The test-only feature enables deterministic

@@ -52,3 +52,157 @@ jobs:
         env:
           LOCHO_TEST_BINARY: target/release/locho
         run: cargo test --test release_smoke -- --ignored
+
+  artifact-smoke:
+    name: Packaged artifact smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python for local artifact server
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install cargo-dist
+        run: cargo install cargo-dist --version 0.32.0 --locked
+
+      - name: Determine native target
+        id: host
+        shell: bash
+        run: |
+          echo "target=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_OUTPUT"
+
+      - name: Determine package version
+        id: package
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build packaged artifacts and installers
+        run: >-
+          dist build --artifacts=all
+          --target=${{ steps.host.outputs.target }}
+          --tag=v${{ steps.package.outputs.version }}
+          --allow-dirty
+
+      - name: Check generated installers (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          grep -F "locho-${{ steps.host.outputs.target }}.tar.xz" target/distrib/sha256.sum
+          sh -n target/distrib/locho-installer.sh
+          LOCHO_NO_MODIFY_PATH=1 sh target/distrib/locho-installer.sh --help >/dev/null
+
+      - name: Check generated installers (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Select-String -Path target\distrib\sha256.sum -Pattern "locho-${{ steps.host.outputs.target }}.zip" -Quiet)) {
+            throw "Native archive is missing from sha256.sum"
+          }
+          .\target\distrib\locho-installer.ps1 -Help | Out-Null
+
+      - name: Install generated shell installer (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+          python3 -m http.server "$port" --directory target/distrib >/tmp/locho-artifact-server.log 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent "http://127.0.0.1:$port/sha256.sum" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              cat /tmp/locho-artifact-server.log
+              exit 1
+            fi
+            sleep 0.25
+          done
+          rm -rf target/installer-smoke
+          LOCHO_DOWNLOAD_URL="http://127.0.0.1:$port" \
+            LOCHO_UNMANAGED_INSTALL="$PWD/target/installer-smoke" \
+            LOCHO_NO_MODIFY_PATH=1 \
+            sh target/distrib/locho-installer.sh
+          target/installer-smoke/locho --help >/dev/null
+
+      - name: Install generated PowerShell installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $probe.Start()
+          $port = $probe.LocalEndpoint.Port
+          $probe.Stop()
+          $server = Start-Process python -ArgumentList '-m', 'http.server', $port, '--directory', 'target/distrib' -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+              try {
+                Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/sha256.sum" | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 250
+              }
+            }
+            if (-not $ready) {
+              throw "Local artifact server did not become ready"
+            }
+            if (Test-Path -LiteralPath 'target/installer-smoke') {
+              Remove-Item -LiteralPath 'target/installer-smoke' -Recurse -Force
+            }
+            $env:LOCHO_DOWNLOAD_URL = "http://127.0.0.1:$port"
+            $env:LOCHO_UNMANAGED_INSTALL = "$PWD\target\installer-smoke"
+            $env:LOCHO_NO_MODIFY_PATH = '1'
+            .\target\distrib\locho-installer.ps1
+            & .\target\installer-smoke\locho.exe --help | Out-Null
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify and extract packaged archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          binary=$(scripts/verify-release-artifact.sh \
+            "target/distrib/locho-${{ steps.host.outputs.target }}.tar.xz" \
+            target/artifact-smoke)
+          echo "LOCHO_TEST_BINARY=$binary" >> "$GITHUB_ENV"
+
+      - name: Verify and extract packaged archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = & .\scripts\Verify-ReleaseArtifact.ps1 `
+            -Archive "target/distrib/locho-${{ steps.host.outputs.target }}.zip" `
+            -ExtractionDirectory "target/artifact-smoke"
+          "LOCHO_TEST_BINARY=$binary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run artifact verifier negative tests (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/test-verify-release-artifact.sh
+
+      - name: Run artifact verifier negative tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\Test-VerifyReleaseArtifact.ps1
+
+      - name: Run packaged binary smoke test
+        run: cargo test --test release_smoke -- --ignored
