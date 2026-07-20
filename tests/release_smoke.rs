@@ -10,12 +10,15 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc,
     sync::Arc,
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::process::ExitStatus;
 
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
