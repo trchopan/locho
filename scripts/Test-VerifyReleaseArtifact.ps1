@@ -8,7 +8,12 @@ New-Item -ItemType Directory -Path $fixtureDirectory | Out-Null
 try {
     $packageDirectory = Join-Path $fixtureDirectory "package"
     New-Item -ItemType Directory -Path $packageDirectory | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSHOME "pwsh.exe") -Destination (Join-Path $packageDirectory "locho.exe")
+    $sourceBinary = $env:LOCHO_TEST_BINARY
+    if ([string]::IsNullOrWhiteSpace($sourceBinary) -or
+        -not (Test-Path -LiteralPath $sourceBinary -PathType Leaf)) {
+        throw "LOCHO_TEST_BINARY must point to the extracted packaged binary"
+    }
+    Copy-Item -LiteralPath $sourceBinary -Destination (Join-Path $packageDirectory "locho.exe")
     foreach ($name in @("README.md", "CHANGELOG.md", "LICENSE")) {
         Set-Content -LiteralPath (Join-Path $packageDirectory $name) -Value "fixture"
     }
