@@ -1,12 +1,19 @@
 use crate::{config::Config, protocol::ALPN, state};
 use anyhow::{bail, Context, Result};
-use iroh::{Endpoint, NodeId, SecretKey};
-use std::{fs, path::PathBuf, time::Duration};
+use iroh::{endpoint::ConnectionType, Endpoint, NodeAddr, NodeId, SecretKey};
+use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::time::timeout;
 
 const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn run(config_path: Option<PathBuf>, host_id: Option<String>) -> Result<()> {
+pub async fn run(
+    config_path: Option<PathBuf>,
+    host_id: Option<String>,
+    direct_address: Option<SocketAddr>,
+) -> Result<()> {
+    if direct_address.is_some() && host_id.is_none() {
+        bail!("--direct-address requires --host-id");
+    }
     println!("locho diagnostics");
     println!("state directory: {}", state::app_data_dir()?.display());
 
@@ -41,6 +48,9 @@ pub async fn run(config_path: Option<PathBuf>, host_id: Option<String>) -> Resul
     if let Some(host_id) = host_id {
         let node_id = host_id.parse().context("invalid host ID")?;
         let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+        if let Some(address) = direct_address {
+            endpoint.add_node_addr(NodeAddr::new(node_id).with_direct_addresses([address]))?;
+        }
         let connection = match timeout(DEFAULT_PROBE_TIMEOUT, endpoint.connect(node_id, ALPN)).await
         {
             Ok(Ok(connection)) => connection,
@@ -57,11 +67,9 @@ pub async fn run(config_path: Option<PathBuf>, host_id: Option<String>) -> Resul
         let connection_type = endpoint
             .conn_type(node_id)
             .ok()
-            .and_then(|watcher| watcher.get().ok());
-        match connection_type {
-            Some(connection_type) => println!("transport path: {connection_type}"),
-            None => println!("transport path: pending"),
-        }
+            .and_then(|watcher| watcher.get().ok())
+            .unwrap_or(ConnectionType::None);
+        println!("transport path: {connection_type}");
         connection.close(0u32.into(), b"diagnostic complete");
         endpoint.close().await;
     } else {
@@ -183,5 +191,16 @@ mod tests {
         fs::write(&path, [0u8; 31]).unwrap();
         assert!(validate_host_key(&path).is_err());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn direct_address_requires_host_id() {
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(run(
+            None,
+            None,
+            Some("127.0.0.1:12345".parse().unwrap()),
+        ));
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("--direct-address requires --host-id"));
     }
 }

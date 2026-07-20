@@ -405,6 +405,7 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
         attach_port,
         &direct_address,
     );
+    attachment.wait_for("transport path: direct(");
     attachment.wait_for("Local proxy:");
 
     for (method, path, body) in [
@@ -608,6 +609,52 @@ fn diagnose_reports_configuration_without_capabilities() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid host ID"));
+
+    let output = Command::new(locho_binary())
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["diagnose", "--direct-address", "127.0.0.1:12345"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--direct-address requires --host-id"));
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn diagnose_reports_direct_transport_path_without_capabilities() {
+    let state_dir = TestDir::new();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:{}\"\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let (host_id, _, secret) = parse_attach_command(&attach_command);
+
+    let output = Command::new(locho_binary())
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["diagnose", "--host-id", &host_id, "--direct-address"])
+        .arg(&direct_address)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "diagnostics failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("connectivity: reachable"));
+    assert!(stdout.contains(&format!("transport path: direct({direct_address})")));
+    assert!(!stdout.contains(&secret));
+
+    host.stop();
 }
 
 #[cfg(all(feature = "integration-test", unix))]

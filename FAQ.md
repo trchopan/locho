@@ -139,9 +139,18 @@ No manual inbound port forwarding is required, but both machines still need
 network access for discovery and relay connectivity.
 
 Run `locho diagnose --host-id <host-id>` to test connectivity and report the
-current iroh path. The result identifies a direct, relay, or mixed path without
-printing service capabilities. An attachment also logs and prints its selected
-transport path when it connects and when iroh changes paths.
+current iroh path. If discovery cannot advertise the host address, provide the
+same explicit address used by an attachment:
+
+```bash
+locho diagnose --host-id <host-id> --direct-address 192.0.2.10:12345
+```
+
+The result identifies a `direct(...)`, `relay(...)`, or `mixed(...)` path without
+printing service capabilities. A `direct` path uses UDP peer connectivity, a
+`relay` path carries encrypted traffic through an iroh relay, and `mixed` means
+both paths are available. An attachment also logs and prints its initial
+transport path and any later path changes.
 
 If peer discovery cannot advertise a reachable host address, start the host with
 `--bind-address ADDRESS` and pass that address to the attachment with

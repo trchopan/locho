@@ -268,6 +268,27 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
     let unavailable_command = host.wait_for_attach("unavailable");
     let tcp_command = host.wait_for_attach("database");
 
+    let (host_id, _, web_secret) = parse_attach_command(&web_command);
+    let diagnostics = run_cli_output(
+        &binary,
+        state_dir.path(),
+        [
+            "diagnose",
+            "--host-id",
+            &host_id,
+            "--direct-address",
+            &direct_address,
+        ],
+    );
+    let diagnostics_stdout = String::from_utf8_lossy(&diagnostics.stdout);
+    assert!(diagnostics.status.success());
+    assert!(
+        diagnostics_stdout.contains(&format!("transport path: direct({direct_address})")),
+        "unexpected diagnostics output: {}",
+        diagnostics_stdout
+    );
+    assert!(!diagnostics_stdout.contains(&web_secret));
+
     let http_port = free_port();
     let mut http = start_attachment(
         &binary,
@@ -460,6 +481,18 @@ fn run_cli<const N: usize>(binary: &Path, state_dir: &Path, arguments: [&str; N]
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+fn run_cli_output<const N: usize>(
+    binary: &Path,
+    state_dir: &Path,
+    arguments: [&str; N],
+) -> std::process::Output {
+    Command::new(binary)
+        .env("LOCHO_STATE_DIR", state_dir)
+        .args(arguments)
+        .output()
+        .unwrap()
 }
 
 fn parse_attach_command(line: &str) -> (String, String, String) {
