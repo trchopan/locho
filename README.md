@@ -166,7 +166,7 @@ psql --host 127.0.0.1 --port 5432
 
 Released binaries are published on the
 [GitHub Releases page](https://github.com/trchopan/locho/releases). The
-supported `0.2.0` beta targets are:
+supported `1.0.0` targets are:
 
 - Linux x86_64 and ARM64
 - macOS x86_64 and Apple silicon
