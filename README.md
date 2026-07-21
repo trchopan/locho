@@ -1,14 +1,35 @@
-# locho
+# locho: Private HTTP and TCP Service Tunnel
 
-`locho` is a developer-oriented private tunnel for explicitly selected HTTP and
-TCP services. A host exposes one or more services, and an authorized machine
-attaches each service to a local endpoint. Connections use
-[iroh](https://iroh.computer/) for encrypted peer connectivity and NAT
-traversal.
+> local + echo = locho
+
+`locho` is an open-source, developer-oriented private service tunnel for
+connecting to selected HTTP APIs, web services, databases, and TCP endpoints
+from another machine. It works as an HTTP reverse proxy or local TCP port
+forwarder, using [iroh](https://iroh.computer/) for encrypted peer-to-peer
+connectivity and NAT traversal.
+
+locho gives an authorized machine a local endpoint for one explicitly selected
+service without exposing the host network. It is _a focused alternative_ to SSH
+port forwarding, a VPN, or a hosted tunnel when you need private access to a
+small set of development or infrastructure services.
+
+## Why locho?
+
+- Tunnel private HTTP and TCP services to local endpoints.
+- Authorize each service independently with a service capability.
+- Connect directly between peers or use encrypted relay connectivity when
+  direct networking is unavailable.
+- Share selected services without exposing the host network or other ports.
+- Use locho without an account or application-managed control plane.
+- Run on Linux, macOS, and Windows with a single Rust binary.
 
 locho is deliberately a service tunnel, not a VPN or a hosted service platform:
 it does not create a virtual network, route subnets, publish public URLs, or
-require a locho account.
+provide remote shell access.
+
+Start with the [installation instructions](#installation), see the
+[FAQ](FAQ.md) for common questions, or read the [comparison](COMPARISON.md) to
+choose the right tool for your use case.
 
 ## The Service Model
 
@@ -172,14 +193,10 @@ supported `1.0.0` targets are:
 - macOS x86_64 and Apple silicon
 - Windows x86_64
 
-On Unix, download and inspect the installer before running it:
+On Unix, install the latest release with:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/trchopan/locho/releases/latest/download/locho-installer.sh \
-  -o locho-installer.sh
-less locho-installer.sh
-sh locho-installer.sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/latest/download/locho-installer.sh | sh
 ```
 
 On Windows PowerShell:
