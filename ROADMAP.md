@@ -16,9 +16,9 @@ The core mental model is:
 Configure services -> Start host -> Share a service capability -> Attach locally
 ```
 
-## Core Contract
+## 1.0 Status: Complete
 
-The project must provide:
+The first stable release, `1.0.0`, delivers the core service-tunnel workflow:
 
 - Multiple named HTTP and TCP services in one host process.
 - Explicit service configuration and service lifecycle behavior.
@@ -27,101 +27,37 @@ The project must provide:
 - Local port forwarding for TCP services.
 - Multiple concurrent attachments from different machines.
 - Shared service capabilities rather than per-user authorization.
-- Per-service capability rotation and revocation.
+- Per-service capability rotation, which invalidates the previous capability
+  after the host restarts with the replacement state.
 - Persistent host identity and safe credential storage.
 - Encrypted iroh connectivity with direct-path and relay fallback behavior.
 - Bounded memory, connection, request, and response resources.
 - Timeouts, graceful shutdown, diagnostics, and actionable errors.
 - Cross-platform build, packaging, and operational documentation.
 
+The stable product contract is:
+
+- Configuration is loaded and validated before startup. Configuration changes
+  require stopping and restarting the host; live configuration reload is not
+  part of the current contract.
+- `rotate-secret SERVICE` is the capability revocation mechanism. It replaces
+  one service capability without changing other services. Existing streams are
+  not retroactively closed; new attachments must use the replacement after the
+  host restarts.
+- HTTP WebSocket upgrades are unsupported and documented. TCP services are the
+  supported option for non-HTTP protocols.
+- Direct and relay transport paths are observable through diagnostics and
+  attachment output. Relay availability and performance are external
+  infrastructure dependencies.
+- The release gate covers formatting, linting, unit tests, release builds,
+  process-level HTTP and TCP tests, and packaged artifact smoke tests.
+
+The release gate does not require deterministic end-to-end relay testing. Relay
+verification is environment-dependent because it depends on iroh discovery and
+relay infrastructure.
+
 The project does not promise individual machine identity, per-user policy,
 audit-grade access records, or a centralized locho account system.
-
-## Milestones
-
-### 1. Service Configuration
-
-Define a stable configuration format and CLI for multiple services.
-
-Acceptance criteria:
-
-- A host can load several HTTP and TCP services in one process.
-- Every service has a stable name and explicit endpoint configuration.
-- Invalid, duplicate, ambiguous, or unsafe configurations fail before startup.
-- Service configuration does not imply access to other host services.
-
-### 2. HTTP Tunnel
-
-Provide reliable local HTTP access to a selected private HTTP service.
-
-Acceptance criteria:
-
-- Requests and responses stream without an unnecessary whole-body limit.
-- Required HTTP methods, headers, keep-alive, and chunked bodies behave correctly.
-- Upstream TLS validation is explicit and safe by default.
-- WebSocket behavior is either supported and tested or clearly documented as
-  unsupported.
-- Request size, response size, timeout, and concurrency limits are documented.
-
-### 3. TCP Tunnel
-
-Provide bidirectional forwarding for explicitly selected TCP endpoints.
-
-Acceptance criteria:
-
-- A client can attach a named TCP service to a local listener.
-- Multiple concurrent TCP connections are isolated and supported.
-- EOF, cancellation, half-close, and remote failure behave predictably.
-- The host cannot be used to reach arbitrary ports or addresses.
-- Resource limits prevent one service or client from exhausting the host.
-
-### 4. Capabilities and Identity
-
-Make authorization service-scoped and operationally understandable.
-
-Acceptance criteria:
-
-- Each service has an independent attachment capability.
-- A capability for one service cannot authorize another service.
-- Multiple machines can use the same capability concurrently.
-- Capability values are not logged, accidentally persisted in insecure files, or
-  unnecessarily exposed in process output.
-- Rotation and revocation take effect according to documented semantics.
-- Host identity and service capabilities have separate lifecycle controls.
-
-The service model intentionally does not include per-user or per-machine policy.
-
-### 5. Reliability and Safety
-
-Make the tunnel suitable for serious developer workflows.
-
-Acceptance criteria:
-
-- Direct connectivity failure and relay use are observable and documented.
-- Connection, idle, upstream, and shutdown timeouts are defined.
-- Graceful shutdown stops accepting work and closes active sessions predictably.
-- Malformed protocol data, oversized messages, and invalid service requests are
-  rejected safely.
-- Concurrent request and connection behavior is covered by integration tests.
-
-### 6. Operations and Distribution
-
-Make the utility installable and diagnosable without a platform service.
-
-Acceptance criteria:
-
-- Structured logs and a human-readable diagnostic mode are available.
-- Startup, attachment, authentication, upstream, and relay failures have useful
-  messages.
-- Installation and release instructions cover supported operating systems.
-- The README quickstart can be followed using released binaries.
-- End-to-end tests cover HTTP, TCP, concurrency, restart, and credential
-  rotation behavior.
-
-The current release gate is tracked by CI and includes formatting, Clippy, unit
-tests, a release build, and process-level HTTP and TCP integration tests. The
-integration tests use a test-only feature for deterministic local peer
-connectivity; normal and release builds do not enable it.
 
 ## Non-Goals
 
@@ -142,7 +78,8 @@ workflow.
 ## Future Possibilities
 
 Future work may improve the developer utility without changing its service-level
-identity:
+identity. These are deliberately non-committal possibilities, not a schedule or
+promise for a particular release:
 
 - Better configuration and local service management.
 - Optional human-readable service exchange.
@@ -150,9 +87,13 @@ identity:
 - Performance improvements such as stream multiplexing.
 - LAN-first or self-hosted relay configuration.
 - Docker and CI examples.
+- Additional platform targets where packaging and native verification are
+  maintainable.
 
-These are possibilities, not commitments. Team identity, per-user policy, hosted
-discovery, and platform integrations require separate product decisions.
+Live configuration reload is not currently planned; the restart-required model
+is intentional and should remain the default unless a future product decision
+changes it. Team identity, per-user policy, hosted discovery, and platform
+integrations require separate product decisions.
 
 ## Decision Gates
 
@@ -163,3 +104,5 @@ discovery, and platform integrations require separate product decisions.
 - Do not add hosted coordination without revisiting the no-platform principle.
 - Do not add a new service type unless its authorization, isolation, resource,
   and failure semantics can be documented and tested.
+- Do not make relay testing a mandatory release gate unless locho controls a
+  deterministic relay test environment and can maintain it.
