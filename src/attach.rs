@@ -151,6 +151,9 @@ async fn run_http_listener(
                 }
                 break;
             }
+            _ = connection.closed() => {
+                return Err(anyhow!("tunnel connection closed"));
+            }
         }
     }
     shutdown.cancel();
@@ -209,6 +212,9 @@ async fn run_tcp_listener(
                     shutdown.cancel();
                 }
                 break;
+            }
+            _ = connection.closed() => {
+                return Err(anyhow!("tunnel connection closed"));
             }
         }
     }

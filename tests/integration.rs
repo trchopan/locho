@@ -747,6 +747,33 @@ fn tcp_attachment_closes_active_connection_on_host_shutdown() {
     attachment.stop();
 }
 
+#[cfg(unix)]
+#[test]
+fn tcp_attachment_exits_when_tunnel_closes() {
+    let state_dir = TestDir::new();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:1\"\n",
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_ready_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+
+    host.interrupt();
+    host.wait_for_exit();
+    attachment.wait_for_exit();
+}
+
 struct HttpResponse {
     status: u16,
     headers: std::collections::HashMap<String, String>,
