@@ -5,6 +5,7 @@ import time
 
 
 MAX_LATENCY_SAMPLES = 100_000
+MAX_FAILURE_EVENTS = 1_000
 
 
 def percentile(values, p):
@@ -84,7 +85,10 @@ async def main(args):
     lock = asyncio.Lock()
     latencies = []
     counts = {"success": 0, "failure": 0, "timeout": 0, "reset": 0}
+    interval_counts = {"success": 0, "failure": 0, "timeout": 0, "reset": 0}
+    interval_latencies = []
     events = 0
+    failure_events = 0
 
     with open(args.events, "w") as event_file:
         async def record(event):
@@ -94,47 +98,115 @@ async def main(args):
                 event_file.write(json.dumps(event) + "\n")
                 event_file.flush()
 
+        async def record_failure(event):
+            nonlocal events, failure_events
+            async with lock:
+                if failure_events >= MAX_FAILURE_EVENTS:
+                    return
+                failure_events += 1
+                events += 1
+                event_file.write(json.dumps(event) + "\n")
+                event_file.flush()
+
+        async def write_interval():
+            nonlocal events
+            async with lock:
+                if not any(interval_counts.values()):
+                    return
+                events += 1
+                event_file.write(json.dumps({
+                    "ts": time.time(),
+                    "type": "interval",
+                    "duration_seconds": args.interval,
+                    "counts": dict(interval_counts),
+                    "latency_ms": {
+                        "p50": percentile(interval_latencies, 50),
+                        "p95": percentile(interval_latencies, 95),
+                        "p99": percentile(interval_latencies, 99),
+                    },
+                }) + "\n")
+                event_file.flush()
+                for key in interval_counts:
+                    interval_counts[key] = 0
+                interval_latencies.clear()
+
+        async def interval_reporter():
+            while time.monotonic() < deadline:
+                await asyncio.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+                await write_interval()
+
         async def worker():
             stream = None
+            connected_at = None
             while time.monotonic() < deadline:
                 try:
                     if args.protocol == "http":
                         latency, stream = await http_once(args.request_size, args.size, args.timeout, stream)
                     else:
                         latency, stream = await tcp_once(args.size, args.timeout, stream)
+                    if connected_at is None:
+                        connected_at = time.monotonic()
                     latency_ms = latency * 1000
                     async with lock:
                         counts["success"] += 1
+                        interval_counts["success"] += 1
+                        if len(interval_latencies) < 10_000:
+                            interval_latencies.append(latency_ms)
                         if len(latencies) < MAX_LATENCY_SAMPLES:
                             latencies.append(latency_ms)
-                    await record({"ts": time.time(), "ok": True, "latency_ms": latency_ms})
+                        sample_success = counts["success"] % args.success_sample_rate == 0
+                    if sample_success:
+                        await record({"ts": time.time(), "ok": True, "latency_ms": latency_ms})
+                    if (
+                        args.churn_interval
+                        and connected_at is not None
+                        and time.monotonic() - connected_at >= args.churn_interval
+                    ):
+                        stream[1].close()
+                        stream = None
+                        connected_at = None
                 except asyncio.TimeoutError:
                     if stream is not None:
                         stream[1].close()
                         stream = None
+                        connected_at = None
                     async with lock:
                         counts["failure"] += 1
                         counts["timeout"] += 1
-                    await record({"ts": time.time(), "ok": False, "reason": "timeout"})
+                        interval_counts["failure"] += 1
+                        interval_counts["timeout"] += 1
+                    await record_failure({"ts": time.time(), "ok": False, "reason": "timeout"})
                 except (ConnectionResetError, BrokenPipeError, ConnectionRefusedError) as error:
                     if stream is not None:
                         stream[1].close()
                         stream = None
+                        connected_at = None
                     async with lock:
                         counts["failure"] += 1
                         counts["reset"] += 1
-                    await record({"ts": time.time(), "ok": False, "reason": type(error).__name__})
+                        interval_counts["failure"] += 1
+                        interval_counts["reset"] += 1
+                    await record_failure({"ts": time.time(), "ok": False, "reason": type(error).__name__})
                 except Exception as error:
                     if stream is not None:
                         stream[1].close()
                         stream = None
+                        connected_at = None
                     async with lock:
                         counts["failure"] += 1
-                    await record({"ts": time.time(), "ok": False, "reason": str(error)})
+                        interval_counts["failure"] += 1
+                    await record_failure({"ts": time.time(), "ok": False, "reason": str(error)})
             if stream is not None:
                 stream[1].close()
 
+        reporter = asyncio.create_task(interval_reporter())
         await asyncio.gather(*(worker() for _ in range(args.concurrency)))
+        reporter.cancel()
+        try:
+            await reporter
+        except asyncio.CancelledError:
+            pass
+        await write_interval()
 
     summary = {
         "protocol": args.protocol,
@@ -152,6 +224,10 @@ async def main(args):
         },
         "events": events,
         "latency_samples": len(latencies),
+        "failure_events_recorded": failure_events,
+        "failure_events_limited": counts["failure"] > failure_events,
+        "success_sample_rate": args.success_sample_rate,
+        "interval_seconds": args.interval,
     }
     with open(args.output, "w") as output:
         json.dump(summary, output, indent=2)
@@ -167,11 +243,22 @@ def parse_args():
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument("--request-size", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=10)
+    parser.add_argument("--churn-interval", type=float, default=0)
+    parser.add_argument("--success-sample-rate", type=int, default=1)
+    parser.add_argument("--interval", type=float, default=10)
     parser.add_argument("--output", required=True)
     parser.add_argument("--events", required=True)
     args = parser.parse_args()
-    if args.duration <= 0 or args.concurrency <= 0 or args.size < 0 or args.request_size < 0:
-        parser.error("duration and concurrency must be positive; sizes cannot be negative")
+    if (
+        args.duration <= 0
+        or args.concurrency <= 0
+        or args.size < 0
+        or args.request_size < 0
+        or args.churn_interval < 0
+        or args.success_sample_rate <= 0
+        or args.interval <= 0
+    ):
+        parser.error("duration, concurrency, sample rate, and interval must be positive; sizes and churn interval cannot be negative")
     return args
 
 
