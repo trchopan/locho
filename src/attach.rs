@@ -37,6 +37,17 @@ struct ActiveConnection {
 
 type ConnectionReceiver = watch::Receiver<Option<ActiveConnection>>;
 
+fn reap_finished<T: 'static>(tasks: &mut JoinSet<T>, task_kind: &'static str) -> usize {
+    let mut reaped = 0;
+    while let Some(result) = tasks.try_join_next() {
+        reaped += 1;
+        if let Err(error) = result {
+            error!(%error, task_kind, "task failed");
+        }
+    }
+    reaped
+}
+
 #[derive(Clone)]
 struct ConnectionState {
     receiver: ConnectionReceiver,
@@ -348,6 +359,12 @@ async fn run_http_listener(
                 break;
             }
             _ = shutdown.cancelled() => break,
+            completed = clients.join_next(), if !clients.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    error!(%error, "HTTP client task failed");
+                }
+                reap_finished(&mut clients, "HTTP client");
+            }
         }
     }
     shutdown.cancel();
@@ -408,6 +425,12 @@ async fn run_tcp_listener(
                 break;
             }
             _ = shutdown.cancelled() => break,
+            completed = clients.join_next(), if !clients.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    error!(%error, "TCP client task failed");
+                }
+                reap_finished(&mut clients, "TCP client");
+            }
         }
     }
     shutdown.cancel();

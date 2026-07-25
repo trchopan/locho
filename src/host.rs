@@ -132,6 +132,12 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
                 }
                 break;
             }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    error!(%error, "host connection task failed");
+                }
+                reap_finished(&mut connections, "host connection");
+            }
         }
     }
     info!("stopping new tunnel connections");
@@ -161,6 +167,17 @@ fn validate_bind_address(address: SocketAddr) -> Result<std::net::SocketAddrV4> 
         anyhow::bail!("--bind-address must use a non-zero port")
     }
     Ok(address)
+}
+
+fn reap_finished<T: 'static>(tasks: &mut JoinSet<T>, task_kind: &'static str) -> usize {
+    let mut reaped = 0;
+    while let Some(result) = tasks.try_join_next() {
+        reaped += 1;
+        if let Err(error) = result {
+            error!(%error, task_kind, "task failed");
+        }
+    }
+    reaped
 }
 
 async fn handle_connection(
@@ -197,6 +214,12 @@ async fn handle_connection(
                 Err(_) => break,
             },
             _ = shutdown.cancelled() => break,
+            completed = streams.join_next(), if !streams.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    error!(%error, "tunnel stream task failed");
+                }
+                reap_finished(&mut streams, "tunnel stream");
+            }
         }
     }
     connection.close(0u32.into(), b"locho shutdown");
@@ -701,6 +724,22 @@ mod tests {
         let result = read_request_head(&mut reader, std::time::Duration::from_millis(1)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn finished_task_handles_are_reaped() {
+        let mut tasks = JoinSet::new();
+        for _ in 0..8 {
+            tasks.spawn(async {});
+        }
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if tasks.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(reap_finished(&mut tasks, "test"), 8);
+        assert!(tasks.is_empty());
     }
 
     #[tokio::test]
