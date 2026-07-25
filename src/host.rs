@@ -195,19 +195,17 @@ async fn handle_connection(
                 Ok((send, recv)) => {
                     let services = Arc::clone(&services);
                     streams.spawn(async move {
-                        if let Err(error) = handle_stream(send, recv, services).await {
-                            error!(%error, "tunnel stream failed");
-                        }
+                        handle_stream(send, recv, services).await
                     });
                 }
                 Err(_) => break,
             },
             _ = shutdown.cancelled() => break,
             completed = streams.join_next(), if !streams.is_empty() => {
-                if let Some(Err(error)) = completed {
-                    error!(%error, "tunnel stream task failed");
+                if let Some(result) = completed {
+                    crate::task::log_result(result, "tunnel stream");
                 }
-                crate::task::reap_finished(&mut streams, "tunnel stream");
+                crate::task::reap_finished_results(&mut streams, "tunnel stream");
             }
         }
     }

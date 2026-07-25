@@ -347,10 +347,10 @@ async fn run_http_listener(
             }
             _ = shutdown.cancelled() => break,
             completed = clients.join_next(), if !clients.is_empty() => {
-                if let Some(Err(error)) = completed {
-                    error!(%error, "HTTP client task failed");
+                if let Some(result) = completed {
+                    crate::task::log_result(result, "HTTP client");
                 }
-                crate::task::reap_finished(&mut clients, "HTTP client");
+                crate::task::reap_finished_results(&mut clients, "HTTP client");
             }
         }
     }
@@ -411,10 +411,10 @@ async fn run_tcp_listener(
             }
             _ = shutdown.cancelled() => break,
             completed = clients.join_next(), if !clients.is_empty() => {
-                if let Some(Err(error)) = completed {
-                    error!(%error, "TCP client task failed");
+                if let Some(result) = completed {
+                    crate::task::log_result(result, "TCP client");
                 }
-                crate::task::reap_finished(&mut clients, "TCP client");
+                crate::task::reap_finished_results(&mut clients, "TCP client");
             }
         }
     }
