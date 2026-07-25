@@ -284,7 +284,8 @@ where
         _ => return write_error(&mut writer, 500).await,
     };
     if let Err(error) = forward_to_upstream(upstream, &client, req, reader, &mut writer).await {
-        error!(%error, ?error, "upstream request failed");
+        let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+        error!(%error, ?causes, "upstream request failed");
         let status = error
             .downcast_ref::<reqwest::Error>()
             .filter(|error| error.is_timeout())
@@ -447,56 +448,61 @@ where
             }
         }
     }
-    let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
     let body_len = req.body_len;
-    let mut body_task = AbortOnDrop::new(tokio::spawn(async move {
-        let mut total = 0usize;
-        if let Some(len) = body_len {
-            if len > MAX_BODY_LEN as u64 {
-                bail!("request body exceeds limit")
-            }
-            let mut remaining = len;
-            let mut buffer = vec![0u8; BODY_CHUNK_LEN];
-            while remaining > 0 {
-                let count = remaining.min(buffer.len() as u64) as usize;
-                reader.read_exact(&mut buffer[..count]).await?;
-                body_sender
-                    .send(Ok(Bytes::copy_from_slice(&buffer[..count])))
-                    .await
-                    .context("send request body")?;
-                remaining -= count as u64;
-            }
-        } else {
-            while let Some(chunk) = read_body_chunk(&mut reader).await? {
-                total += chunk.len();
-                if total > MAX_BODY_LEN {
+    let response = if body_len == Some(0) {
+        request.send().await?
+    } else {
+        let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
+        let mut body_task = AbortOnDrop::new(tokio::spawn(async move {
+            let mut total = 0usize;
+            if let Some(len) = body_len {
+                if len > MAX_BODY_LEN as u64 {
                     bail!("request body exceeds limit")
                 }
-                body_sender
-                    .send(Ok(chunk))
-                    .await
-                    .context("send request body")?;
+                let mut remaining = len;
+                let mut buffer = vec![0u8; BODY_CHUNK_LEN];
+                while remaining > 0 {
+                    let count = remaining.min(buffer.len() as u64) as usize;
+                    reader.read_exact(&mut buffer[..count]).await?;
+                    body_sender
+                        .send(Ok(Bytes::copy_from_slice(&buffer[..count])))
+                        .await
+                        .context("send request body")?;
+                    remaining -= count as u64;
+                }
+            } else {
+                while let Some(chunk) = read_body_chunk(&mut reader).await? {
+                    total += chunk.len();
+                    if total > MAX_BODY_LEN {
+                        bail!("request body exceeds limit")
+                    }
+                    body_sender
+                        .send(Ok(chunk))
+                        .await
+                        .context("send request body")?;
+                }
             }
-        }
-        Ok::<_, anyhow::Error>(())
-    }));
-    let response = match request
-        .body(reqwest::Body::wrap_stream(ReceiverStream::new(
-            body_receiver,
-        )))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            body_task.abort().await;
-            return Err(error.into());
-        }
+            Ok::<_, anyhow::Error>(())
+        }));
+        let response = match request
+            .body(reqwest::Body::wrap_stream(ReceiverStream::new(
+                body_receiver,
+            )))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                body_task.abort().await;
+                return Err(error.into());
+            }
+        };
+        body_task
+            .join()
+            .await
+            .context("request body task failed")??;
+        response
     };
-    body_task
-        .join()
-        .await
-        .context("request body task failed")??;
     let status = response.status().as_u16();
     let headers = http_utils::headers_to_pairs(response.headers());
     let body_len = response.content_length();
