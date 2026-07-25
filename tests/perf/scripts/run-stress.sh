@@ -32,6 +32,8 @@ done
 
 case "$DURATION" in *.*) exit 2;; esac
 [ "$DURATION" -gt 0 ] || { echo "duration must be positive" >&2; exit 2; }
+mkdir -p "$OUTPUT_ROOT"
+OUTPUT_ROOT=$(CDPATH= cd -- "$OUTPUT_ROOT" && pwd)
 RUN="$OUTPUT_ROOT/stress-$(date -u +%Y%m%d-%H%M%S)-$$"
 RUNTIME="$RUN/runtime"
 mkdir -p "$RUNTIME/host/state" "$RUNTIME/upstream" "$RUNTIME/http-client" "$RUNTIME/tcp-client" "$RUNTIME/loadgen" "$RUNTIME/collector" "$RUN"
