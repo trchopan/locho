@@ -6,6 +6,7 @@ mod host;
 mod http_utils;
 mod protocol;
 mod state;
+mod task;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

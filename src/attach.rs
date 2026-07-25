@@ -332,12 +332,10 @@ async fn run_http_listener(
                             Ok::<_, Infallible>(handle_request(request, connection, service, secret).await)
                         }
                     });
-                    if let Err(error) = http1::Builder::new()
+                    http1::Builder::new()
                         .serve_connection(TokioIo::new(stream), service)
                         .await
-                    {
-                        error!(%error, ?peer, "local connection failed");
-                    }
+                    .map_err(anyhow::Error::from)
                 });
             }
             signal = tokio::signal::ctrl_c() => {
@@ -348,6 +346,12 @@ async fn run_http_listener(
                 break;
             }
             _ = shutdown.cancelled() => break,
+            completed = clients.join_next(), if !clients.is_empty() => {
+                if let Some(result) = completed {
+                    crate::task::log_result(result, "HTTP client");
+                }
+                crate::task::reap_finished_results(&mut clients, "HTTP client");
+            }
         }
     }
     shutdown.cancel();
@@ -395,9 +399,7 @@ async fn run_tcp_listener(
                 };
                 clients.spawn(async move {
                     let _permit = permit;
-                    if let Err(error) = handle_tcp_connection(stream, connection, service, secret).await {
-                        error!(%error, ?peer, "local TCP connection failed");
-                    }
+                    handle_tcp_connection(stream, connection, service, secret).await
                 });
             }
             signal = tokio::signal::ctrl_c() => {
@@ -408,6 +410,12 @@ async fn run_tcp_listener(
                 break;
             }
             _ = shutdown.cancelled() => break,
+            completed = clients.join_next(), if !clients.is_empty() => {
+                if let Some(result) = completed {
+                    crate::task::log_result(result, "TCP client");
+                }
+                crate::task::reap_finished_results(&mut clients, "TCP client");
+            }
         }
     }
     shutdown.cancel();

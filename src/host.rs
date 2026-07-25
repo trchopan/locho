@@ -132,6 +132,12 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
                 }
                 break;
             }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    error!(%error, "host connection task failed");
+                }
+                crate::task::reap_finished(&mut connections, "host connection");
+            }
         }
     }
     info!("stopping new tunnel connections");
@@ -189,14 +195,18 @@ async fn handle_connection(
                 Ok((send, recv)) => {
                     let services = Arc::clone(&services);
                     streams.spawn(async move {
-                        if let Err(error) = handle_stream(send, recv, services).await {
-                            error!(%error, "tunnel stream failed");
-                        }
+                        handle_stream(send, recv, services).await
                     });
                 }
                 Err(_) => break,
             },
             _ = shutdown.cancelled() => break,
+            completed = streams.join_next(), if !streams.is_empty() => {
+                if let Some(result) = completed {
+                    crate::task::log_result(result, "tunnel stream");
+                }
+                crate::task::reap_finished_results(&mut streams, "tunnel stream");
+            }
         }
     }
     connection.close(0u32.into(), b"locho shutdown");
