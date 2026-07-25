@@ -4,7 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 REPO=$(CDPATH= cd -- "$ROOT/../.." && pwd)
 COMPOSE="docker compose -f $ROOT/compose.yaml"
-DURATION=43200
+DURATION=3600
 HTTP_CONCURRENCY=10
 TCP_CONCURRENCY=10
 HTTP_SIZE=1024
@@ -16,7 +16,7 @@ SUCCESS_SAMPLE_RATE=100
 INTERVAL_SECONDS=10
 
 usage() {
-  echo "usage: $0 [--duration 12h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--churn-interval SECONDS] [--success-sample-rate N] [--interval SECONDS] [--output DIR]"
+  echo "usage: $0 [--duration 1h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--churn-interval SECONDS] [--success-sample-rate N] [--interval SECONDS] [--output DIR]"
 }
 
 parse_duration() {
@@ -47,7 +47,7 @@ done
 
 case "$DURATION" in *.*|*[!0-9]*) echo "duration must be an integer number of seconds or use h/m/s" >&2; exit 2;; esac
 [ "$DURATION" -ge 120 ] || { echo "duration must be at least 120 seconds" >&2; exit 2; }
-[ "$DURATION" -le 43200 ] || { echo "duration must not exceed 12 hours" >&2; exit 2; }
+[ "$DURATION" -le 3600 ] || { echo "duration must not exceed 1 hour" >&2; exit 2; }
 for value in "$HTTP_CONCURRENCY" "$TCP_CONCURRENCY" "$HTTP_SIZE" "$HTTP_REQUEST_SIZE" "$TCP_SIZE" "$CHURN_INTERVAL" "$SUCCESS_SAMPLE_RATE" "$INTERVAL_SECONDS"; do
   case "$value" in *.*|*[!0-9]*) echo "numeric options must be non-negative integers" >&2; exit 2;; esac
 done

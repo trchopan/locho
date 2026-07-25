@@ -60,10 +60,10 @@ traffic is established:
 
 ```sh
 ./tests/perf/scripts/run-soak.sh --duration 30m
-./tests/perf/scripts/run-soak.sh --duration 12h
+./tests/perf/scripts/run-soak.sh --duration 1h
 ```
 
-The duration is the total wall-clock budget and cannot exceed 12 hours. Soak
+The duration is the total wall-clock budget and cannot exceed 1 hour. Soak
 artifacts are written to `artifacts/soak-<UTC timestamp>-<pid>/`. Recovery
 results are in `timeline.jsonl`; transient failures during a restart remain in
 the load-generator events. Successful operations are sampled and interval
