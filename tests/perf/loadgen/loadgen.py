@@ -43,7 +43,6 @@ async def read_http_response(reader):
 
 async def http_once(request_size, response_size, timeout, stream=None):
     started = time.perf_counter()
-    owns_stream = stream is None
     if stream is None:
         stream = await asyncio.wait_for(asyncio.open_connection("locho_client_http", 8765), timeout)
     reader, writer = stream
@@ -53,13 +52,11 @@ async def http_once(request_size, response_size, timeout, stream=None):
         f"{method} /?size={response_size} HTTP/1.1\r\n"
         "Host: locho_client_http\r\n"
         f"Content-Length: {len(payload)}\r\n"
-        "Connection: close\r\n\r\n"
+        "Connection: keep-alive\r\n\r\n"
     ).encode() + payload
     writer.write(request)
     await asyncio.wait_for(writer.drain(), timeout)
     status, body = await asyncio.wait_for(read_http_response(reader), timeout)
-    if owns_stream:
-        writer.close()
     if status != 200:
         raise RuntimeError(f"unexpected HTTP status {status}")
     if len(body) != response_size:
@@ -102,7 +99,7 @@ async def main(args):
             while time.monotonic() < deadline:
                 try:
                     if args.protocol == "http":
-                        latency, _ = await http_once(args.request_size, args.size, args.timeout)
+                        latency, stream = await http_once(args.request_size, args.size, args.timeout, stream)
                     else:
                         latency, stream = await tcp_once(args.size, args.timeout, stream)
                     latency_ms = latency * 1000
