@@ -18,16 +18,69 @@ use iroh::{
     Endpoint, NodeId,
 };
 use std::net::SocketAddr;
-use std::{convert::Infallible, pin::Pin};
+use std::{convert::Infallible, fmt, io::Write, pin::Pin};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
 type HttpResponse = Response<StreamBody<HttpStream>>;
+
+#[derive(Clone)]
+struct ActiveConnection {
+    generation: u64,
+    connection: Connection,
+}
+
+type ConnectionReceiver = watch::Receiver<Option<ActiveConnection>>;
+
+#[derive(Clone)]
+struct ConnectionState {
+    receiver: ConnectionReceiver,
+    sender: watch::Sender<Option<ActiveConnection>>,
+}
+
+struct ConnectionLease {
+    connection: Connection,
+    generation: u64,
+    sender: watch::Sender<Option<ActiveConnection>>,
+}
+
+#[derive(Debug)]
+struct TunnelUnavailable;
+
+impl fmt::Display for TunnelUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("tunnel unavailable while reconnecting")
+    }
+}
+
+impl std::error::Error for TunnelUnavailable {}
+
+#[derive(Debug)]
+enum TransportMonitorExit {
+    PathLost,
+    Ended,
+}
+
+impl ConnectionLease {
+    fn invalidate(&self) {
+        let _ = self.sender.send_if_modified(|current| {
+            if current
+                .as_ref()
+                .is_some_and(|connection| connection.generation == self.generation)
+            {
+                *current = None;
+                true
+            } else {
+                false
+            }
+        });
+    }
+}
 
 pub async fn run(
     host_id: String,
@@ -53,59 +106,192 @@ pub async fn run(
     if let Some(address) = direct_address {
         endpoint.add_node_addr(NodeAddr::new(node_id).with_direct_addresses([address]))?;
     }
-    let connection = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(node_id, ALPN))
-        .await
-        .context("connect to host timed out")?
-        .context("connect to host")?;
-    let transport_monitor = if let Ok(watcher) = endpoint.conn_type(node_id) {
-        let initial_path = watcher.get().ok();
-        if let Some(connection_type) = &initial_path {
-            info!(transport_path = %connection_type, "transport path established");
-            println!("transport path: {connection_type}");
-        }
-        Some(tokio::spawn(async move {
-            let mut paths = watcher.stream();
-            let mut last_path = initial_path;
-            while let Some(connection_type) = paths.next().await {
-                if !transport_path_changed(last_path.as_ref(), &connection_type) {
-                    continue;
-                }
-                info!(transport_path = %connection_type, "transport path changed");
-                println!("transport path: {connection_type}");
-                last_path = Some(connection_type);
-            }
-        }))
-    } else {
-        warn!("connected to host but transport path is not yet available");
-        None
+    let listener = TcpListener::bind(listen).await?;
+    let (connection_sender, connection_receiver) = watch::channel(None);
+    let connection_state = ConnectionState {
+        receiver: connection_receiver,
+        sender: connection_sender.clone(),
     };
-    let listener = match TcpListener::bind(listen).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            endpoint.close().await;
-            if let Some(monitor) = transport_monitor {
-                monitor.abort();
-                let _ = monitor.await;
-            }
-            return Err(error.into());
-        }
-    };
+    let supervisor_receiver = connection_state.receiver.clone();
+    let shutdown = CancellationToken::new();
+    let supervisor = tokio::spawn(connection_supervisor(
+        endpoint.clone(),
+        node_id,
+        connection_sender,
+        supervisor_receiver,
+        shutdown.clone(),
+    ));
     let result = if tcp {
-        run_tcp_listener(listener, connection, service, secret).await
+        run_tcp_listener(
+            listener,
+            connection_state,
+            service,
+            secret,
+            shutdown.clone(),
+        )
+        .await
     } else {
         println!(
             "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
             service, listen, listen
         );
+        std::io::stdout().flush()?;
         info!(%listen, "local proxy listening");
-        run_http_listener(listener, connection, service, secret).await
+        run_http_listener(
+            listener,
+            connection_state,
+            service,
+            secret,
+            shutdown.clone(),
+        )
+        .await
     };
+    shutdown.cancel();
+    let _ = supervisor.await;
     endpoint.close().await;
-    if let Some(monitor) = transport_monitor {
-        monitor.abort();
-        let _ = monitor.await;
-    }
     result
+}
+
+async fn connection_supervisor(
+    endpoint: Endpoint,
+    node_id: NodeId,
+    sender: watch::Sender<Option<ActiveConnection>>,
+    mut receiver: ConnectionReceiver,
+    shutdown: CancellationToken,
+) {
+    let mut backoff = RECONNECT_INITIAL_BACKOFF;
+    let mut generation = 0;
+    'supervisor: loop {
+        let connection = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            result = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(node_id, ALPN)) => {
+                match result {
+                    Ok(Ok(connection)) => connection,
+                    Ok(Err(error)) => {
+                        warn!(%error, "tunnel connection failed; retrying");
+                        retry_delay(&shutdown, backoff).await;
+                        backoff = next_backoff(backoff);
+                        continue;
+                    }
+                    Err(_) => {
+                        warn!("tunnel connection timed out; retrying");
+                        retry_delay(&shutdown, backoff).await;
+                        backoff = next_backoff(backoff);
+                        continue;
+                    }
+                }
+            }
+        };
+
+        generation += 1;
+        let _ = sender.send(Some(ActiveConnection {
+            generation,
+            connection: connection.clone(),
+        }));
+        receiver.borrow_and_update();
+        let mut monitor = spawn_transport_monitor(&endpoint, node_id, generation);
+        let monitor_finished = async {
+            if let Some(monitor) = monitor.as_mut() {
+                monitor.await.unwrap_or(TransportMonitorExit::Ended)
+            } else {
+                std::future::pending::<TransportMonitorExit>().await
+            }
+        };
+        tokio::pin!(monitor_finished);
+        let stable = sleep(RECONNECT_STABLE_DURATION);
+        tokio::pin!(stable);
+        let mut connection_stable = false;
+        loop {
+            tokio::select! {
+                _ = &mut stable, if !connection_stable => {
+                    backoff = RECONNECT_INITIAL_BACKOFF;
+                    connection_stable = true;
+                }
+                _ = connection.closed() => {
+                    info!("tunnel connection closed; reconnecting");
+                    let _ = sender.send(None);
+                    break;
+                }
+                monitor_exit = &mut monitor_finished => {
+                    info!(?monitor_exit, "tunnel transport monitor ended; reconnecting");
+                    let _ = sender.send(None);
+                    connection.close(0u32.into(), b"transport monitor ended");
+                    break;
+                }
+                changed = receiver.changed() => {
+                    if changed.is_ok() && receiver.borrow().is_none() {
+                        info!("tunnel connection invalidated; reconnecting");
+                        connection.close(0u32.into(), b"tunnel connection invalidated");
+                        break;
+                    }
+                }
+                _ = shutdown.cancelled() => {
+                    connection.close(0u32.into(), b"locho shutdown");
+                    if let Some(monitor) = monitor {
+                        monitor.abort();
+                        let _ = monitor.await;
+                    }
+                    break 'supervisor;
+                }
+            }
+        }
+        if let Some(monitor) = monitor {
+            monitor.abort();
+            let _ = monitor.await;
+        }
+        retry_delay(&shutdown, backoff).await;
+        backoff = next_backoff(backoff);
+    }
+    let _ = sender.send(None);
+}
+
+async fn retry_delay(shutdown: &CancellationToken, delay: std::time::Duration) {
+    tokio::select! {
+        _ = sleep(delay) => {}
+        _ = shutdown.cancelled() => {}
+    }
+}
+
+fn next_backoff(current: std::time::Duration) -> std::time::Duration {
+    current
+        .checked_mul(2)
+        .unwrap_or(RECONNECT_MAX_BACKOFF)
+        .min(RECONNECT_MAX_BACKOFF)
+}
+
+fn spawn_transport_monitor(
+    endpoint: &Endpoint,
+    node_id: NodeId,
+    generation: u64,
+) -> Option<tokio::task::JoinHandle<TransportMonitorExit>> {
+    let watcher = match endpoint.conn_type(node_id) {
+        Ok(watcher) => watcher,
+        Err(_) => {
+            warn!("connected to host but transport path is not yet available");
+            return None;
+        }
+    };
+    let initial_path = watcher.get().ok();
+    if let Some(connection_type) = &initial_path {
+        info!(generation, transport_path = %connection_type, "transport path established");
+        println!("transport path: {connection_type}");
+    }
+    Some(tokio::spawn(async move {
+        let mut paths = watcher.stream();
+        let mut last_path = initial_path;
+        while let Some(connection_type) = paths.next().await {
+            if !transport_path_changed(last_path.as_ref(), &connection_type) {
+                continue;
+            }
+            info!(generation, transport_path = %connection_type, "transport path changed");
+            println!("transport path: {connection_type}");
+            if matches!(connection_type, ConnectionType::None) {
+                return TransportMonitorExit::PathLost;
+            }
+            last_path = Some(connection_type);
+        }
+        TransportMonitorExit::Ended
+    }))
 }
 
 fn transport_path_changed(previous: Option<&ConnectionType>, current: &ConnectionType) -> bool {
@@ -114,11 +300,12 @@ fn transport_path_changed(previous: Option<&ConnectionType>, current: &Connectio
 
 async fn run_http_listener(
     listener: TcpListener,
-    connection: Connection,
+    connection: ConnectionState,
     service: String,
     secret: String,
+    shutdown: CancellationToken,
 ) -> Result<()> {
-    let shutdown = CancellationToken::new();
+    let http_connections = std::sync::Arc::new(Semaphore::new(MAX_HTTP_CONNECTIONS));
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
@@ -127,7 +314,16 @@ async fn run_http_listener(
                 let connection = connection.clone();
                 let service_name = service.clone();
                 let secret = secret.clone();
+                let permit = match http_connections.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        drop(stream);
+                        error!(?peer, "HTTP connection limit reached");
+                        continue;
+                    }
+                };
                 clients.spawn(async move {
+                    let _permit = permit;
                     let service = service_fn(move |request| {
                         let connection = connection.clone();
                         let service = service_name.clone();
@@ -151,13 +347,10 @@ async fn run_http_listener(
                 }
                 break;
             }
-            _ = connection.closed() => {
-                return Err(anyhow!("tunnel connection closed"));
-            }
+            _ = shutdown.cancelled() => break,
         }
     }
     shutdown.cancel();
-    connection.close(0u32.into(), b"locho shutdown");
     if timeout(SHUTDOWN_TIMEOUT, async {
         while clients.join_next().await.is_some() {}
     })
@@ -172,9 +365,10 @@ async fn run_http_listener(
 
 async fn run_tcp_listener(
     listener: TcpListener,
-    connection: Connection,
+    connection: ConnectionState,
     service: String,
     secret: String,
+    shutdown: CancellationToken,
 ) -> Result<()> {
     let tcp_connections = std::sync::Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
     println!(
@@ -182,7 +376,7 @@ async fn run_tcp_listener(
         service,
         listener.local_addr()?
     );
-    let shutdown = CancellationToken::new();
+    std::io::stdout().flush()?;
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
@@ -213,13 +407,10 @@ async fn run_tcp_listener(
                 }
                 break;
             }
-            _ = connection.closed() => {
-                return Err(anyhow!("tunnel connection closed"));
-            }
+            _ = shutdown.cancelled() => break,
         }
     }
     shutdown.cancel();
-    connection.close(0u32.into(), b"locho shutdown");
     if timeout(SHUTDOWN_TIMEOUT, async {
         while clients.join_next().await.is_some() {}
     })
@@ -232,13 +423,56 @@ async fn run_tcp_listener(
     Ok(())
 }
 
+async fn acquire_connection(state: ConnectionState) -> Result<ConnectionLease> {
+    let active = match timeout(
+        ATTACH_RECONNECT_TIMEOUT,
+        wait_for_connection(state.receiver),
+    )
+    .await
+    {
+        Ok(active) => active?,
+        Err(_) => return Err(anyhow::Error::new(TunnelUnavailable)),
+    };
+    Ok(ConnectionLease {
+        connection: active.connection,
+        generation: active.generation,
+        sender: state.sender,
+    })
+}
+
+async fn wait_for_connection(mut receiver: ConnectionReceiver) -> Result<ActiveConnection> {
+    loop {
+        if let Some(connection) = receiver.borrow().clone() {
+            return Ok(connection);
+        }
+        receiver
+            .changed()
+            .await
+            .context("connection supervisor stopped")?;
+    }
+}
+
 async fn handle_tcp_connection(
     local: TcpStream,
-    connection: Connection,
+    connection: ConnectionState,
     service: String,
     secret: String,
 ) -> Result<()> {
-    let (mut writer, mut reader) = connection.open_bi().await?;
+    let lease = acquire_connection(connection).await?;
+    let result = handle_tcp_connection_on_lease(&lease, local, service, secret).await;
+    if result.is_err() {
+        lease.invalidate();
+    }
+    result
+}
+
+async fn handle_tcp_connection_on_lease(
+    lease: &ConnectionLease,
+    local: TcpStream,
+    service: String,
+    secret: String,
+) -> Result<()> {
+    let (mut writer, mut reader) = lease.connection.open_bi().await?;
     write_json_head(
         &mut writer,
         &StreamRequestHead::Tcp(TcpRequestHead {
@@ -266,7 +500,7 @@ async fn handle_tcp_connection(
 
 async fn handle_request(
     request: Request<Incoming>,
-    connection: Connection,
+    connection: ConnectionState,
     service: String,
     secret: String,
 ) -> HttpResponse {
@@ -296,7 +530,9 @@ async fn handle_request(
         Ok(response) => response,
         Err(error) => {
             error!(%error, "tunnel request failed");
-            if error.to_string().contains("403") {
+            if error.downcast_ref::<TunnelUnavailable>().is_some() {
+                error_response(StatusCode::SERVICE_UNAVAILABLE)
+            } else if error.to_string().contains("403") {
                 error_response(StatusCode::FORBIDDEN)
             } else if error.to_string().contains("501") {
                 error_response(StatusCode::NOT_IMPLEMENTED)
@@ -310,7 +546,7 @@ async fn handle_request(
 }
 
 async fn tunnel_request(
-    connection: Connection,
+    connection: ConnectionState,
     service: String,
     secret: String,
     method: http::Method,
@@ -318,7 +554,25 @@ async fn tunnel_request(
     headers: Vec<(String, String)>,
     body: Incoming,
 ) -> Result<HttpResponse> {
-    let (mut writer, mut reader) = connection.open_bi().await?;
+    let lease = acquire_connection(connection).await?;
+    let result =
+        tunnel_request_on_lease(&lease, service, secret, method, path, headers, body).await;
+    if result.is_err() {
+        lease.invalidate();
+    }
+    result
+}
+
+async fn tunnel_request_on_lease(
+    lease: &ConnectionLease,
+    service: String,
+    secret: String,
+    method: http::Method,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Incoming,
+) -> Result<HttpResponse> {
+    let (mut writer, mut reader) = lease.connection.open_bi().await?;
     let head = LochoRequestHead {
         version: PROTOCOL_VERSION,
         service,
@@ -439,5 +693,27 @@ mod tests {
             mixed.to_string(),
             "mixed(udp: 127.0.0.1:12345, relay: https://relay.example.com./)"
         );
+    }
+
+    #[test]
+    fn reconnect_backoff_is_capped() {
+        let mut backoff = RECONNECT_INITIAL_BACKOFF;
+        for expected in [500, 1_000, 2_000, 4_000] {
+            backoff = next_backoff(backoff);
+            assert_eq!(backoff, std::time::Duration::from_millis(expected));
+        }
+        assert_eq!(next_backoff(RECONNECT_MAX_BACKOFF), RECONNECT_MAX_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn reconnect_backoff_can_be_cancelled() {
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            retry_delay(&shutdown, RECONNECT_MAX_BACKOFF),
+        )
+        .await
+        .expect("cancelled retry should not wait for the full backoff");
     }
 }
