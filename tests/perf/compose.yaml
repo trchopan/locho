@@ -10,6 +10,7 @@ services:
     volumes:
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/host:/run/locho
     command: ["host", "--config", "/run/locho/locho.toml", "--bind-address", "172.30.0.10:4567"]
+    restart: unless-stopped
     networks:
       perf:
         ipv4_address: 172.30.0.10
@@ -53,6 +54,7 @@ services:
     volumes:
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/http-client:/run/locho:ro
     command: ["/run/locho/start-http-client.sh"]
+    restart: unless-stopped
     depends_on: [locho_host]
     networks:
       perf:
@@ -67,6 +69,7 @@ services:
     volumes:
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/tcp-client:/run/locho:ro
     command: ["/run/locho/start-tcp-client.sh"]
+    restart: unless-stopped
     depends_on: [locho_host]
     networks:
       perf:

@@ -22,6 +22,7 @@ From the repository root:
 docker compose -f tests/perf/compose.yaml config
 ./tests/perf/scripts/run-stress.sh --duration 2m
 ./tests/perf/scripts/run-stress.sh --duration 15m
+./tests/perf/scripts/run-soak.sh --duration 30m
 ```
 
 The duration is a total wall-clock budget. A short run scales each HTTP and TCP
@@ -50,6 +51,23 @@ to JSONL and latency samples are bounded so long runs do not retain every
 operation in memory. Container statistics are sampled every five seconds by the
 collector, including restart count and exit status. No throughput threshold is
 imposed; compare runs using the same machine and commit.
+
+## Soak Runs
+
+The soak runner maintains mixed HTTP and TCP traffic, periodically churns
+connections, and restarts the HTTP attachment, TCP attachment, and host after
+traffic is established:
+
+```sh
+./tests/perf/scripts/run-soak.sh --duration 30m
+./tests/perf/scripts/run-soak.sh --duration 12h
+```
+
+The duration is the total wall-clock budget and cannot exceed 12 hours. Soak
+artifacts are written to `artifacts/soak-<UTC timestamp>-<pid>/`. Recovery
+results are in `timeline.jsonl`; transient failures during a restart remain in
+the load-generator events. Compose does not simulate macOS suspend/resume, so
+perform the lid-close/open check separately on the M1 Pro.
 
 ## Fixtures
 

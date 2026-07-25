@@ -96,22 +96,34 @@ async def main(args):
 
         async def worker():
             stream = None
+            connected_at = None
             while time.monotonic() < deadline:
                 try:
                     if args.protocol == "http":
                         latency, stream = await http_once(args.request_size, args.size, args.timeout, stream)
                     else:
                         latency, stream = await tcp_once(args.size, args.timeout, stream)
+                    if connected_at is None:
+                        connected_at = time.monotonic()
                     latency_ms = latency * 1000
                     async with lock:
                         counts["success"] += 1
                         if len(latencies) < MAX_LATENCY_SAMPLES:
                             latencies.append(latency_ms)
                     await record({"ts": time.time(), "ok": True, "latency_ms": latency_ms})
+                    if (
+                        args.churn_interval
+                        and connected_at is not None
+                        and time.monotonic() - connected_at >= args.churn_interval
+                    ):
+                        stream[1].close()
+                        stream = None
+                        connected_at = None
                 except asyncio.TimeoutError:
                     if stream is not None:
                         stream[1].close()
                         stream = None
+                        connected_at = None
                     async with lock:
                         counts["failure"] += 1
                         counts["timeout"] += 1
@@ -120,6 +132,7 @@ async def main(args):
                     if stream is not None:
                         stream[1].close()
                         stream = None
+                        connected_at = None
                     async with lock:
                         counts["failure"] += 1
                         counts["reset"] += 1
@@ -128,6 +141,7 @@ async def main(args):
                     if stream is not None:
                         stream[1].close()
                         stream = None
+                        connected_at = None
                     async with lock:
                         counts["failure"] += 1
                     await record({"ts": time.time(), "ok": False, "reason": str(error)})
@@ -167,11 +181,18 @@ def parse_args():
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument("--request-size", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=10)
+    parser.add_argument("--churn-interval", type=float, default=0)
     parser.add_argument("--output", required=True)
     parser.add_argument("--events", required=True)
     args = parser.parse_args()
-    if args.duration <= 0 or args.concurrency <= 0 or args.size < 0 or args.request_size < 0:
-        parser.error("duration and concurrency must be positive; sizes cannot be negative")
+    if (
+        args.duration <= 0
+        or args.concurrency <= 0
+        or args.size < 0
+        or args.request_size < 0
+        or args.churn_interval < 0
+    ):
+        parser.error("duration and concurrency must be positive; sizes and churn interval cannot be negative")
     return args
 
 
