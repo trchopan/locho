@@ -9,10 +9,15 @@ pub const PROTOCOL_VERSION: u8 = 3;
 pub const MAX_BODY_LEN: usize = 32 * 1024 * 1024;
 pub const MAX_HEAD_LEN: usize = 1024 * 1024;
 pub const MAX_TCP_CONNECTIONS: usize = 128;
+pub const MAX_HTTP_CONNECTIONS: usize = 128;
 pub const TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 pub const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 pub const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const ATTACH_RECONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const RECONNECT_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+pub const RECONNECT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+pub const RECONNECT_STABLE_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const BODY_CHUNK_LEN: usize = 16 * 1024;
 

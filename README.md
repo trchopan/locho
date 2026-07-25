@@ -228,6 +228,12 @@ per host and per attachment process. If the configured endpoint is unavailable,
 the attachment reports a gateway failure; it never connects to an arbitrary
 address.
 
+Attachments keep their local listener available while the tunnel reconnects.
+New HTTP requests and TCP clients wait briefly for recovery and then receive an
+unavailable error if the tunnel is still down. In-flight requests and TCP
+connections are not replayed after a tunnel loss. Use a process supervisor such
+as Docker, systemd, or launchd for process-level recovery.
+
 Host and attachment processes handle Ctrl-C gracefully: they stop accepting new
 connections, close active tunnel connections, and wait up to 10 seconds for
 active tasks to finish before terminating remaining tasks. Tunnel handshakes

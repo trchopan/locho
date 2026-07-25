@@ -405,8 +405,8 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
         attach_port,
         &direct_address,
     );
-    attachment.wait_for("transport path: direct(");
     attachment.wait_for("Local proxy:");
+    attachment.wait_for("transport path: direct(");
 
     for (method, path, body) in [
         ("GET", "/get", b"".as_slice()),
@@ -749,12 +749,39 @@ fn tcp_attachment_closes_active_connection_on_host_shutdown() {
 
 #[cfg(unix)]
 #[test]
-fn tcp_attachment_exits_when_tunnel_closes() {
+fn tcp_attachment_reconnects_after_host_restart() {
     let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        upstream_listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut quiet_deadline = None;
+        while Instant::now() < deadline {
+            if quiet_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                break;
+            }
+            match upstream_listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    let mut request = [0u8; 5];
+                    stream.read_exact(&mut request).unwrap();
+                    stream.write_all(&request).unwrap();
+                    quiet_deadline = Some(Instant::now() + Duration::from_secs(5));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to accept TCP request: {error}"),
+            }
+        }
+    });
     let config_path = state_dir.path().join("locho.toml");
     fs::write(
         &config_path,
-        "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:1\"\n",
+        format!(
+            "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"{upstream_address}\"\n"
+        ),
     )
     .unwrap();
     let direct_address = format!("127.0.0.1:{}", free_port());
@@ -769,9 +796,72 @@ fn tcp_attachment_exits_when_tunnel_closes() {
         &direct_address,
     );
 
-    host.interrupt();
-    host.wait_for_exit();
-    attachment.wait_for_exit();
+    host.stop();
+    thread::sleep(Duration::from_secs(20));
+    assert!(attachment.child.try_wait().unwrap().is_none());
+
+    let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
+    restarted_host.wait_for("locho direct-address ");
+    assert_round_trip_after_reconnect(attach_port, b"again");
+
+    assert!(upstream_thread.join().is_ok());
+    restarted_host.stop();
+    attachment.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn http_attachment_reconnects_after_host_restart() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        let (mut stream, _) = upstream_listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nrecovered",
+            )
+            .unwrap();
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+    attachment.wait_for("Local proxy:");
+
+    host.stop();
+    thread::sleep(Duration::from_secs(20));
+    let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
+    restarted_host.wait_for("locho direct-address ");
+
+    let response = send_http_request_after_reconnect(attach_port);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"recovered");
+
+    assert!(upstream_thread.join().is_ok());
+    restarted_host.stop();
+    attachment.stop();
 }
 
 struct HttpResponse {
@@ -803,6 +893,25 @@ fn send_http_request(
     }
     stream.write_all(&request).unwrap();
     read_http_response(&mut stream, method == "HEAD")
+}
+
+#[cfg(unix)]
+fn send_http_request_after_reconnect(port: u16) -> HttpResponse {
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    loop {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            send_http_request(port, "GET", "/recovered", b"", false)
+        }));
+        if let Ok(response) = result {
+            if response.status == 200 {
+                return response;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!("HTTP attachment did not recover before the deadline");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn send_oversized_request(port: u16) -> HttpResponse {
@@ -1299,6 +1408,46 @@ fn assert_round_trip(port: u16, payload: &[u8]) {
     let mut response = vec![0u8; payload.len()];
     stream.read_exact(&mut response).unwrap();
     assert_eq!(&response, payload);
+}
+
+#[cfg(unix)]
+fn assert_round_trip_after_reconnect(port: u16, payload: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", port)).and_then(|mut stream| {
+            stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+            stream.write_all(payload)?;
+            let mut response = vec![0u8; payload.len()];
+            stream.read_exact(&mut response)?;
+            if response == payload {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unexpected round-trip response",
+                ))
+            }
+        }) {
+            Ok(()) => return,
+            Err(error) if Instant::now() < deadline => {
+                assert!(
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::UnexpectedEof
+                            | std::io::ErrorKind::BrokenPipe
+                    ),
+                    "unexpected reconnect error: {error}"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("attachment did not reconnect: {error}"),
+        }
+    }
 }
 
 fn assert_rejected(port: u16) {
