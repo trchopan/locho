@@ -72,11 +72,26 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
             })
         })
         .collect::<Result<std::collections::HashMap<_, _>>>()?;
+    let http_clients = config
+        .services
+        .iter()
+        .filter(|service| matches!(service.service_type, ServiceType::Http))
+        .map(|service| {
+            let mut builder = Client::builder().timeout(test_http_request_timeout());
+            if let Some(ca_cert) = ca_certificates.get(&service.name) {
+                builder = builder.add_root_certificate(ca_cert.clone());
+            }
+            let client = builder
+                .build()
+                .with_context(|| format!("build HTTP client for service {:?}", service.name))?;
+            Ok((service.name.clone(), client))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>>>()?;
     crate::state::save_host_state(&persisted_state)?;
     let services = Arc::new(HostServices {
         config,
         secrets,
-        ca_certificates,
+        http_clients,
         tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
     });
     info!(config = %config_path.display(), services = services.config.services.len(), "host started");
@@ -185,13 +200,14 @@ async fn handle_connection(
         }
     }
     connection.close(0u32.into(), b"locho shutdown");
+    streams.abort_all();
     while streams.join_next().await.is_some() {}
 }
 
 struct HostServices {
     config: Config,
     secrets: std::collections::HashMap<String, String>,
-    ca_certificates: std::collections::HashMap<String, reqwest::Certificate>,
+    http_clients: std::collections::HashMap<String, Client>,
     tcp_connections: Arc<Semaphore>,
 }
 
@@ -256,16 +272,21 @@ where
         .iter()
         .find(|service| service.name == req.service)
         .expect("validated HTTP service must exist");
-    let (upstream, ca_cert) = match (&service.service_type, &service.upstream) {
+    let (upstream, client) = match (&service.service_type, &service.upstream) {
         (ServiceType::Http, Some(upstream)) => (
             upstream.clone(),
-            services.ca_certificates.get(&service.name),
+            services
+                .http_clients
+                .get(&service.name)
+                .expect("validated HTTP service must have a client")
+                .clone(),
         ),
         (ServiceType::Tcp, _) => return write_error(&mut writer, 501).await,
         _ => return write_error(&mut writer, 500).await,
     };
-    if let Err(error) = forward_to_upstream(upstream, ca_cert, req, reader, &mut writer).await {
-        error!(%error, "upstream request failed");
+    if let Err(error) = forward_to_upstream(upstream, &client, req, reader, &mut writer).await {
+        let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+        error!(%error, ?causes, "upstream request failed");
         let status = error
             .downcast_ref::<reqwest::Error>()
             .filter(|error| error.is_timeout())
@@ -402,7 +423,7 @@ async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, status: u16) -> Resu
 
 pub async fn forward_to_upstream<R, W>(
     upstream: Url,
-    ca_cert: Option<&reqwest::Certificate>,
+    client: &Client,
     req: LochoRequestHead,
     mut reader: R,
     writer: &mut W,
@@ -414,12 +435,6 @@ where
     let url = http_utils::join_upstream_url(&upstream, &req.path_and_query)?;
     let method =
         reqwest::Method::from_bytes(req.method.as_bytes()).context("invalid request method")?;
-    let request_timeout = test_http_request_timeout();
-    let mut client_builder = Client::builder().timeout(request_timeout);
-    if let Some(ca_cert) = ca_cert {
-        client_builder = client_builder.add_root_certificate(ca_cert.clone());
-    }
-    let client = client_builder.build()?;
     let mut request = client.request(method, url);
     if let Some(body_len) = req.body_len {
         request = request.header(reqwest::header::CONTENT_LENGTH, body_len);
@@ -434,56 +449,61 @@ where
             }
         }
     }
-    let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
     let body_len = req.body_len;
-    let mut body_task = AbortOnDrop::new(tokio::spawn(async move {
-        let mut total = 0usize;
-        if let Some(len) = body_len {
-            if len > MAX_BODY_LEN as u64 {
-                bail!("request body exceeds limit")
-            }
-            let mut remaining = len;
-            let mut buffer = vec![0u8; BODY_CHUNK_LEN];
-            while remaining > 0 {
-                let count = remaining.min(buffer.len() as u64) as usize;
-                reader.read_exact(&mut buffer[..count]).await?;
-                body_sender
-                    .send(Ok(Bytes::copy_from_slice(&buffer[..count])))
-                    .await
-                    .context("send request body")?;
-                remaining -= count as u64;
-            }
-        } else {
-            while let Some(chunk) = read_body_chunk(&mut reader).await? {
-                total += chunk.len();
-                if total > MAX_BODY_LEN {
+    let response = if body_len == Some(0) {
+        request.send().await?
+    } else {
+        let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, reqwest::Error>>(8);
+        let mut body_task = AbortOnDrop::new(tokio::spawn(async move {
+            let mut total = 0usize;
+            if let Some(len) = body_len {
+                if len > MAX_BODY_LEN as u64 {
                     bail!("request body exceeds limit")
                 }
-                body_sender
-                    .send(Ok(chunk))
-                    .await
-                    .context("send request body")?;
+                let mut remaining = len;
+                let mut buffer = vec![0u8; BODY_CHUNK_LEN];
+                while remaining > 0 {
+                    let count = remaining.min(buffer.len() as u64) as usize;
+                    reader.read_exact(&mut buffer[..count]).await?;
+                    body_sender
+                        .send(Ok(Bytes::copy_from_slice(&buffer[..count])))
+                        .await
+                        .context("send request body")?;
+                    remaining -= count as u64;
+                }
+            } else {
+                while let Some(chunk) = read_body_chunk(&mut reader).await? {
+                    total += chunk.len();
+                    if total > MAX_BODY_LEN {
+                        bail!("request body exceeds limit")
+                    }
+                    body_sender
+                        .send(Ok(chunk))
+                        .await
+                        .context("send request body")?;
+                }
             }
-        }
-        Ok::<_, anyhow::Error>(())
-    }));
-    let response = match request
-        .body(reqwest::Body::wrap_stream(ReceiverStream::new(
-            body_receiver,
-        )))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            body_task.abort().await;
-            return Err(error.into());
-        }
+            Ok::<_, anyhow::Error>(())
+        }));
+        let response = match request
+            .body(reqwest::Body::wrap_stream(ReceiverStream::new(
+                body_receiver,
+            )))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                body_task.abort().await;
+                return Err(error.into());
+            }
+        };
+        body_task
+            .join()
+            .await
+            .context("request body task failed")??;
+        response
     };
-    body_task
-        .join()
-        .await
-        .context("request body task failed")??;
     let status = response.status().as_u16();
     let headers = http_utils::headers_to_pairs(response.headers());
     let body_len = response.content_length();
@@ -576,8 +596,14 @@ mod tests {
     use crate::config::{Config, ServiceConfig, ServiceType};
     use http_body_util::BodyExt;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    fn http_client() -> Client {
+        Client::builder().build().unwrap()
+    }
 
     fn services() -> Arc<HostServices> {
         Arc::new(HostServices {
@@ -591,7 +617,7 @@ mod tests {
                 }],
             },
             secrets: HashMap::from([("api".into(), "correct".into())]),
-            ca_certificates: HashMap::new(),
+            http_clients: HashMap::from([("api".into(), http_client())]),
             tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
         })
     }
@@ -616,7 +642,7 @@ mod tests {
                 }],
             },
             secrets: HashMap::from([("database".into(), "correct".into())]),
-            ca_certificates: HashMap::new(),
+            http_clients: HashMap::new(),
             tcp_connections: Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS)),
         })
     }
@@ -822,7 +848,7 @@ mod tests {
         let (mut response_reader, mut response_writer) = duplex(BODY_CHUNK_LEN * 3);
         forward_to_upstream(
             Url::parse(&format!("http://{address}")).unwrap(),
-            None,
+            &http_client(),
             request,
             request_reader,
             &mut response_writer,
@@ -839,5 +865,76 @@ mod tests {
         response_reader.read_exact(&mut received).await.unwrap();
         assert_eq!(received, expected_response);
         upstream.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shared_http_client_reuses_upstream_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let accepted_for_server = Arc::clone(&accepted);
+        let requests_for_server = Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok(Ok((stream, _))) = timeout(Duration::from_secs(5), listener.accept()).await
+                else {
+                    break;
+                };
+                accepted_for_server.fetch_add(1, Ordering::Relaxed);
+                let requests = Arc::clone(&requests_for_server);
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(move |_request| {
+                        requests.fetch_add(1, Ordering::Relaxed);
+                        async {
+                            Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                                http_body_util::Full::new(Bytes::from_static(b"ok")),
+                            ))
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+
+        let client = http_client();
+        for _ in 0..2 {
+            let request = LochoRequestHead {
+                version: PROTOCOL_VERSION,
+                service: "api".into(),
+                secret_proof: auth::secret_proof("correct"),
+                method: "GET".into(),
+                path_and_query: "/reuse".into(),
+                headers: vec![],
+                body_len: Some(0),
+            };
+            let (_request_writer, request_reader) = duplex(4096);
+            let (mut response_reader, mut response_writer) = duplex(4096);
+            forward_to_upstream(
+                Url::parse(&format!("http://{address}")).unwrap(),
+                &client,
+                request,
+                request_reader,
+                &mut response_writer,
+            )
+            .await
+            .unwrap();
+            let response: LochoResponseHead = read_json_head(&mut response_reader, MAX_HEAD_LEN)
+                .await
+                .unwrap();
+            assert_eq!(response.status, 200);
+            assert_eq!(
+                read_body_with_limit(&mut response_reader, response.body_len, MAX_BODY_LEN)
+                    .await
+                    .unwrap(),
+                Bytes::from_static(b"ok")
+            );
+        }
+
+        assert_eq!(requests.load(Ordering::Relaxed), 2);
+        assert_eq!(accepted.load(Ordering::Relaxed), 1);
+        server.abort();
     }
 }
