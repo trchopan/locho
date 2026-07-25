@@ -37,17 +37,6 @@ struct ActiveConnection {
 
 type ConnectionReceiver = watch::Receiver<Option<ActiveConnection>>;
 
-fn reap_finished<T: 'static>(tasks: &mut JoinSet<T>, task_kind: &'static str) -> usize {
-    let mut reaped = 0;
-    while let Some(result) = tasks.try_join_next() {
-        reaped += 1;
-        if let Err(error) = result {
-            error!(%error, task_kind, "task failed");
-        }
-    }
-    reaped
-}
-
 #[derive(Clone)]
 struct ConnectionState {
     receiver: ConnectionReceiver,
@@ -343,12 +332,10 @@ async fn run_http_listener(
                             Ok::<_, Infallible>(handle_request(request, connection, service, secret).await)
                         }
                     });
-                    if let Err(error) = http1::Builder::new()
+                    http1::Builder::new()
                         .serve_connection(TokioIo::new(stream), service)
                         .await
-                    {
-                        error!(%error, ?peer, "local connection failed");
-                    }
+                    .map_err(anyhow::Error::from)
                 });
             }
             signal = tokio::signal::ctrl_c() => {
@@ -363,7 +350,7 @@ async fn run_http_listener(
                 if let Some(Err(error)) = completed {
                     error!(%error, "HTTP client task failed");
                 }
-                reap_finished(&mut clients, "HTTP client");
+                crate::task::reap_finished(&mut clients, "HTTP client");
             }
         }
     }
@@ -412,9 +399,7 @@ async fn run_tcp_listener(
                 };
                 clients.spawn(async move {
                     let _permit = permit;
-                    if let Err(error) = handle_tcp_connection(stream, connection, service, secret).await {
-                        error!(%error, ?peer, "local TCP connection failed");
-                    }
+                    handle_tcp_connection(stream, connection, service, secret).await
                 });
             }
             signal = tokio::signal::ctrl_c() => {
@@ -429,7 +414,7 @@ async fn run_tcp_listener(
                 if let Some(Err(error)) = completed {
                     error!(%error, "TCP client task failed");
                 }
-                reap_finished(&mut clients, "TCP client");
+                crate::task::reap_finished(&mut clients, "TCP client");
             }
         }
     }
