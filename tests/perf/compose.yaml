@@ -1,0 +1,100 @@
+name: locho-stress
+
+services:
+  locho_host:
+    build:
+      context: ../..
+      dockerfile: tests/perf/Dockerfile.locho
+    environment:
+      LOCHO_STATE_DIR: /run/locho/state
+    volumes:
+      - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/host:/run/locho
+    command: ["host", "--config", "/run/locho/locho.toml", "--bind-address", "172.30.0.10:4567"]
+    networks:
+      perf:
+        ipv4_address: 172.30.0.10
+
+  upstream_http:
+    image: python@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    volumes:
+      - ./upstream:/opt/upstream:ro
+      - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/upstream:/run/locho:ro
+    command: ["python", "/opt/upstream/http_fixture.py", "--cert", "/run/locho/server.crt", "--key", "/run/locho/server.key"]
+    networks:
+      perf:
+        ipv4_address: 172.30.0.20
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8443), 1).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  upstream_tcp:
+    image: python@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    volumes:
+      - ./upstream:/opt/upstream:ro
+    command: ["python", "/opt/upstream/tcp_fixture.py"]
+    networks:
+      perf:
+        ipv4_address: 172.30.0.21
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9000), 1).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  locho_client_http:
+    build:
+      context: ../..
+      dockerfile: tests/perf/Dockerfile.locho
+    environment:
+      LOCHO_STATE_DIR: /run/locho/state
+    entrypoint: ["sh"]
+    volumes:
+      - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/http-client:/run/locho:ro
+    command: ["/run/locho/start-http-client.sh"]
+    depends_on: [locho_host]
+    networks:
+      perf:
+
+  locho_client_tcp:
+    build:
+      context: ../..
+      dockerfile: tests/perf/Dockerfile.locho
+    environment:
+      LOCHO_STATE_DIR: /run/locho/state
+    entrypoint: ["sh"]
+    volumes:
+      - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/tcp-client:/run/locho:ro
+    command: ["/run/locho/start-tcp-client.sh"]
+    depends_on: [locho_host]
+    networks:
+      perf:
+
+  loadgen:
+    image: python@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    volumes:
+      - ./loadgen:/opt/loadgen:ro
+      - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/loadgen:/run/locho
+    command: ["sleep", "infinity"]
+    networks:
+      perf:
+
+  collector:
+    image: docker@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e51841402144
+    entrypoint: ["sh"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/collector:/run/locho
+    environment:
+      COLLECT_PROJECT: ${COMPOSE_PROJECT_NAME:-locho-stress}
+    command: ["/run/locho/collector.sh"]
+    networks:
+      - perf
+
+networks:
+  perf:
+    name: ${PERF_NETWORK_NAME:-locho-stress-network}
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

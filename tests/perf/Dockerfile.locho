@@ -1,0 +1,9 @@
+FROM rust@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --locked --release --features integration-test
+
+FROM debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates procps iproute2 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/locho /usr/local/bin/locho
+ENTRYPOINT ["locho"]
