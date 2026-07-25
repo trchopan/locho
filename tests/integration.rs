@@ -895,6 +895,7 @@ fn send_http_request(
     read_http_response(&mut stream, method == "HEAD")
 }
 
+#[cfg(unix)]
 fn send_http_request_after_reconnect(port: u16) -> HttpResponse {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
@@ -1409,6 +1410,7 @@ fn assert_round_trip(port: u16, payload: &[u8]) {
     assert_eq!(&response, payload);
 }
 
+#[cfg(unix)]
 fn assert_round_trip_after_reconnect(port: u16, payload: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
