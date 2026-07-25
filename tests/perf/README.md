@@ -66,8 +66,11 @@ traffic is established:
 The duration is the total wall-clock budget and cannot exceed 12 hours. Soak
 artifacts are written to `artifacts/soak-<UTC timestamp>-<pid>/`. Recovery
 results are in `timeline.jsonl`; transient failures during a restart remain in
-the load-generator events. Compose does not simulate macOS suspend/resume, so
-perform the lid-close/open check separately on the M1 Pro.
+the load-generator events. Successful operations are sampled and interval
+summaries are emitted every 10 seconds by default, keeping long-run artifacts
+bounded. Override this with `--success-sample-rate` and `--interval` when
+needed. Compose does not simulate macOS suspend/resume, so perform the
+lid-close/open check separately on the M1 Pro.
 
 ## Fixtures
 
