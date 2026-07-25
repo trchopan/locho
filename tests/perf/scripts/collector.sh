@@ -15,7 +15,19 @@ while :; do
     process=$(docker exec "$id" sh -c 'fd=$(ls /proc/1/fd 2>/dev/null | wc -l); tasks=$(ls /proc 2>/dev/null | awk "/^[0-9]+$/ {n++} END {print n+0}"); connections=$(awk "NR > 1 {n++} END {print n+0}" /proc/net/tcp 2>/dev/null); printf "%s,%s,%s" "$fd" "$tasks" "${connections:-0}"' 2>/dev/null || printf ',,')
     name=${lifecycle%%,*}
     lifecycle=${lifecycle#*,}
-    printf '%s,%s,%s\n' "$timestamp" "$name" "$(printf '%s' "$stats" | cut -d, -f2-),$lifecycle,$process" >> "$file"
+    cpu=$(printf '%s' "$stats" | cut -d, -f2)
+    memory=$(printf '%s' "$stats" | cut -d, -f3)
+    memory_usage=${memory%% / *}
+    memory_limit=${memory#* / }
+    pids=$(printf '%s' "$stats" | cut -d, -f4)
+    printf '"%s","%s","%s","%s","%s","%s",%s,%s,"%s",%s,%s,%s\n' \
+      "$timestamp" "$name" "$cpu" "$memory_usage" "$memory_limit" "$pids" \
+      "$(printf '%s' "$lifecycle" | cut -d, -f2)" \
+      "$(printf '%s' "$lifecycle" | cut -d, -f3)" \
+      "$(printf '%s' "$lifecycle" | cut -d, -f4)" \
+      "$(printf '%s' "$process" | cut -d, -f1)" \
+      "$(printf '%s' "$process" | cut -d, -f2)" \
+      "$(printf '%s' "$process" | cut -d, -f3)" >> "$file"
   done
   sleep "${COLLECT_INTERVAL:-5}"
 done

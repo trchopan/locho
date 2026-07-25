@@ -84,6 +84,10 @@ cleanup() {
     $COMPOSE logs --no-color "$service" > "$RUN/$(printf '%s' "$service" | tr '_' '-').log" 2>&1
   done
   [ -f "$RUNTIME/collector/container-stats.csv" ] && cp "$RUNTIME/collector/container-stats.csv" "$RUN/container-stats.csv"
+  if [ ! -s "$RUN/loadgen-events.jsonl" ]; then
+    cat "$RUNTIME/loadgen"/*.jsonl > "$RUN/loadgen-events.jsonl" 2>/dev/null || :
+  fi
+  cp "$RUNTIME/loadgen"/*.json "$RUN/" 2>/dev/null || :
   [ -f "$RUN/timeline.jsonl" ] || : > "$RUN/timeline.jsonl"
   [ -f "$RUN/loadgen-events.jsonl" ] || : > "$RUN/loadgen-events.jsonl"
   image_metadata=""
@@ -216,52 +220,89 @@ start_traffic() {
 }
 
 wait_traffic() {
+  mode=$1
+  failed=0
   set +e
-  for pid in $LOADGEN_PIDS; do wait "$pid"; done
+  for pid in $LOADGEN_PIDS; do
+    wait "$pid" || failed=1
+  done
   set -e
   LOADGEN_PIDS=""
+  if [ "$mode" = strict ] && [ "$failed" -ne 0 ]; then
+    SOAK_FAILURE=1
+  fi
 }
 
 probe() {
   protocol=$1
+  label=$2
   end=$(( $(date +%s) + 30 ))
-  [ "$end" -gt "$RECOVERY_DEADLINE" ] && end=$RECOVERY_DEADLINE
+  [ "$end" -gt "$PROBE_DEADLINE" ] && end=$PROBE_DEADLINE
   while [ "$(date +%s)" -lt "$end" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
     if [ "$protocol" = http ]; then size=$HTTP_SIZE; request_args="--request-size $HTTP_REQUEST_SIZE"; else size=$TCP_SIZE; request_args=""; fi
     if $COMPOSE exec -T loadgen python /opt/loadgen/loadgen.py --protocol "$protocol" --duration 1 \
-      --concurrency 1 --size "$size" $request_args --output "/run/locho/probe-$protocol.json" \
-      --events "/run/locho/probe-$protocol.jsonl" >/dev/null 2>&1; then return 0; fi
+      --concurrency 1 --size "$size" $request_args --output "/run/locho/probe-$label-$protocol.json" \
+      --events "/run/locho/probe-$label-$protocol.jsonl" >/dev/null 2>&1 \
+      && python3 - "$RUNTIME/loadgen/probe-$label-$protocol.json" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as source:
+        summary = json.load(source)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if summary.get("counts", {}).get("success", 0) > 0 else 1)
+PY
+    then return 0; fi
     sleep 1
   done
   return 1
 }
 
 recover() {
-  service=$1; affected=$2
+  service=$1; shift
   start=$(date -u +%FT%T%z)
+  PROBE_DEADLINE=$(( $(date +%s) + 30 ))
   recovery_deadline=$(date -u -v+30S +%FT%T%z 2>/dev/null || date -u -d '+30 seconds' +%FT%T%z 2>/dev/null || date -u +%FT%T%z)
   record_event restart "$service" "$start" "$recovery_deadline" started
   result=failed
-  if $COMPOSE restart "$service" >/dev/null 2>&1 && probe "$affected"; then result=recovered; fi
+  if $COMPOSE restart "$service" >/dev/null 2>&1; then
+    result=recovered
+    probe_pids=""
+    for protocol in "$@"; do
+      probe "$protocol" "$service" &
+      probe_pids="$probe_pids $!"
+    done
+    set +e
+    for pid in $probe_pids; do
+      wait "$pid" || result=failed
+    done
+    set -e
+  fi
   record_event restart "$service" "$start" "$recovery_deadline" "$result"
   [ "$result" = recovered ]
 }
 
 start_traffic "$warmup" warmup
-wait_traffic
+wait_traffic strict
 start_traffic "$steady" steady
-wait_traffic
+wait_traffic strict
 RECOVERY_DEADLINE=$(( $(date +%s) + recovery ))
 recovery_traffic=$((recovery - 30)); [ "$recovery_traffic" -lt 1 ] && recovery_traffic=1
 start_traffic "$recovery_traffic" recovery
-if ! recover locho_host http; then SOAK_FAILURE=1; fi
-if ! recover locho_client_http http; then SOAK_FAILURE=1; fi
-if ! recover locho_client_tcp tcp; then SOAK_FAILURE=1; fi
-wait_traffic
+if ! recover locho_host http tcp; then SOAK_FAILURE=1; fi
+if ! recover locho_client_http http tcp; then SOAK_FAILURE=1; fi
+if ! recover locho_client_tcp tcp http; then SOAK_FAILURE=1; fi
+wait_traffic allow
 start_traffic "$cooldown" cooldown
-wait_traffic
+wait_traffic strict
 
-cat "$RUNTIME/loadgen"/*.jsonl > "$RUN/loadgen-events.jsonl" 2>/dev/null || :
+: > "$RUN/loadgen-events.jsonl"
+for events in "$RUNTIME/loadgen"/*.jsonl; do
+  case "$events" in *probe-*) continue;; esac
+  cat "$events" >> "$RUN/loadgen-events.jsonl" 2>/dev/null || :
+done
 python3 - "$RUN" "$DURATION" <<'PY'
 import glob
 import json
@@ -270,6 +311,8 @@ import sys
 run, duration = sys.argv[1], int(sys.argv[2])
 summaries = []
 for path in glob.glob(run + "/runtime/loadgen/*.json"):
+    if path.rsplit("/", 1)[-1].startswith("probe-"):
+        continue
     try:
         summaries.append(json.load(open(path)))
     except (OSError, json.JSONDecodeError):

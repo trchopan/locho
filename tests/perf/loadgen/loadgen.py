@@ -5,6 +5,7 @@ import time
 
 
 MAX_LATENCY_SAMPLES = 100_000
+MAX_FAILURE_EVENTS = 1_000
 
 
 def percentile(values, p):
@@ -87,11 +88,22 @@ async def main(args):
     interval_counts = {"success": 0, "failure": 0, "timeout": 0, "reset": 0}
     interval_latencies = []
     events = 0
+    failure_events = 0
 
     with open(args.events, "w") as event_file:
         async def record(event):
             nonlocal events
             async with lock:
+                events += 1
+                event_file.write(json.dumps(event) + "\n")
+                event_file.flush()
+
+        async def record_failure(event):
+            nonlocal events, failure_events
+            async with lock:
+                if failure_events >= MAX_FAILURE_EVENTS:
+                    return
+                failure_events += 1
                 events += 1
                 event_file.write(json.dumps(event) + "\n")
                 event_file.flush()
@@ -163,7 +175,7 @@ async def main(args):
                         counts["timeout"] += 1
                         interval_counts["failure"] += 1
                         interval_counts["timeout"] += 1
-                    await record({"ts": time.time(), "ok": False, "reason": "timeout"})
+                    await record_failure({"ts": time.time(), "ok": False, "reason": "timeout"})
                 except (ConnectionResetError, BrokenPipeError, ConnectionRefusedError) as error:
                     if stream is not None:
                         stream[1].close()
@@ -174,7 +186,7 @@ async def main(args):
                         counts["reset"] += 1
                         interval_counts["failure"] += 1
                         interval_counts["reset"] += 1
-                    await record({"ts": time.time(), "ok": False, "reason": type(error).__name__})
+                    await record_failure({"ts": time.time(), "ok": False, "reason": type(error).__name__})
                 except Exception as error:
                     if stream is not None:
                         stream[1].close()
@@ -183,7 +195,7 @@ async def main(args):
                     async with lock:
                         counts["failure"] += 1
                         interval_counts["failure"] += 1
-                    await record({"ts": time.time(), "ok": False, "reason": str(error)})
+                    await record_failure({"ts": time.time(), "ok": False, "reason": str(error)})
             if stream is not None:
                 stream[1].close()
 
@@ -212,6 +224,8 @@ async def main(args):
         },
         "events": events,
         "latency_samples": len(latencies),
+        "failure_events_recorded": failure_events,
+        "failure_events_limited": counts["failure"] > failure_events,
         "success_sample_rate": args.success_sample_rate,
         "interval_seconds": args.interval,
     }

@@ -68,9 +68,11 @@ artifacts are written to `artifacts/soak-<UTC timestamp>-<pid>/`. Recovery
 results are in `timeline.jsonl`; transient failures during a restart remain in
 the load-generator events. Successful operations are sampled and interval
 summaries are emitted every 10 seconds by default, keeping long-run artifacts
-bounded. Override this with `--success-sample-rate` and `--interval` when
-needed. Compose does not simulate macOS suspend/resume, so perform the
-lid-close/open check separately on the M1 Pro.
+bounded. Failure events are capped per load-generator process while interval
+counts continue to include every failure. Override this with
+`--success-sample-rate` and `--interval` when needed. Compose does not simulate
+macOS suspend/resume, so perform the lid-close/open check separately on the M1
+Pro.
 
 ## Fixtures
 
