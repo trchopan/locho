@@ -200,6 +200,7 @@ async fn handle_connection(
         }
     }
     connection.close(0u32.into(), b"locho shutdown");
+    streams.abort_all();
     while streams.join_next().await.is_some() {}
 }
 
