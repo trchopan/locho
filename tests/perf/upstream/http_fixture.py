@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -25,7 +26,8 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = do_GET
 
     def log_message(self, fmt, *args):
-        print("%s - - %s" % (self.address_string(), fmt % args), flush=True)
+        if os.environ.get("UPSTREAM_QUIET") != "1":
+            print("%s - - %s" % (self.address_string(), fmt % args), flush=True)
 
 
 parser = argparse.ArgumentParser()

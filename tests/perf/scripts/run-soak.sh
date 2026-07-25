@@ -12,9 +12,11 @@ HTTP_REQUEST_SIZE=0
 TCP_SIZE=256
 OUTPUT_ROOT="$REPO/artifacts"
 CHURN_INTERVAL=60
+SUCCESS_SAMPLE_RATE=100
+INTERVAL_SECONDS=10
 
 usage() {
-  echo "usage: $0 [--duration 12h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--churn-interval SECONDS] [--output DIR]"
+  echo "usage: $0 [--duration 12h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--churn-interval SECONDS] [--success-sample-rate N] [--interval SECONDS] [--output DIR]"
 }
 
 parse_duration() {
@@ -35,6 +37,8 @@ while [ $# -gt 0 ]; do
     --http-request-size) HTTP_REQUEST_SIZE=$2; shift 2;;
     --tcp-size) TCP_SIZE=$2; shift 2;;
     --churn-interval) CHURN_INTERVAL=$2; shift 2;;
+    --success-sample-rate) SUCCESS_SAMPLE_RATE=$2; shift 2;;
+    --interval) INTERVAL_SECONDS=$2; shift 2;;
     --output) OUTPUT_ROOT=$2; shift 2;;
     -h|--help) usage; exit 0;;
     *) usage >&2; exit 2;;
@@ -44,12 +48,14 @@ done
 case "$DURATION" in *.*|*[!0-9]*) echo "duration must be an integer number of seconds or use h/m/s" >&2; exit 2;; esac
 [ "$DURATION" -ge 120 ] || { echo "duration must be at least 120 seconds" >&2; exit 2; }
 [ "$DURATION" -le 43200 ] || { echo "duration must not exceed 12 hours" >&2; exit 2; }
-for value in "$HTTP_CONCURRENCY" "$TCP_CONCURRENCY" "$HTTP_SIZE" "$HTTP_REQUEST_SIZE" "$TCP_SIZE" "$CHURN_INTERVAL"; do
+for value in "$HTTP_CONCURRENCY" "$TCP_CONCURRENCY" "$HTTP_SIZE" "$HTTP_REQUEST_SIZE" "$TCP_SIZE" "$CHURN_INTERVAL" "$SUCCESS_SAMPLE_RATE" "$INTERVAL_SECONDS"; do
   case "$value" in *.*|*[!0-9]*) echo "numeric options must be non-negative integers" >&2; exit 2;; esac
 done
 [ "$HTTP_CONCURRENCY" -gt 0 ] || { echo "HTTP concurrency must be positive" >&2; exit 2; }
 [ "$TCP_CONCURRENCY" -gt 0 ] || { echo "TCP concurrency must be positive" >&2; exit 2; }
 [ "$CHURN_INTERVAL" -gt 0 ] || { echo "churn interval must be positive" >&2; exit 2; }
+[ "$SUCCESS_SAMPLE_RATE" -gt 0 ] || { echo "success sample rate must be positive" >&2; exit 2; }
+[ "$INTERVAL_SECONDS" -gt 0 ] || { echo "interval must be positive" >&2; exit 2; }
 
 mkdir -p "$OUTPUT_ROOT"
 OUTPUT_ROOT=$(CDPATH= cd -- "$OUTPUT_ROOT" && pwd)
@@ -57,6 +63,7 @@ RUN="$OUTPUT_ROOT/soak-$(date -u +%Y%m%d-%H%M%S)-$$"
 RUNTIME="$RUN/runtime"
 mkdir -p "$RUNTIME/host/state" "$RUNTIME/upstream" "$RUNTIME/http-client" "$RUNTIME/tcp-client" "$RUNTIME/loadgen" "$RUNTIME/collector"
 export PERF_RUNTIME_DIR="$RUNTIME"
+export SOAK_RUST_LOG=warn SOAK_UPSTREAM_QUIET=1
 PROJECT_NAME="locho-soak-$$"
 NETWORK_NAME="locho-soak-network-$$"
 export COMPOSE_PROJECT_NAME="$PROJECT_NAME" PERF_NETWORK_NAME="$NETWORK_NAME"
@@ -95,7 +102,7 @@ cleanup() {
     printf '%b\n' "$image_metadata"
     echo "duration_seconds=$DURATION"
     echo "http_concurrency=$HTTP_CONCURRENCY tcp_concurrency=$TCP_CONCURRENCY"
-    echo "http_size=$HTTP_SIZE http_request_size=$HTTP_REQUEST_SIZE tcp_size=$TCP_SIZE churn_interval=$CHURN_INTERVAL"
+    echo "http_size=$HTTP_SIZE http_request_size=$HTTP_REQUEST_SIZE tcp_size=$TCP_SIZE churn_interval=$CHURN_INTERVAL success_sample_rate=$SUCCESS_SAMPLE_RATE interval_seconds=$INTERVAL_SECONDS"
     echo "start=$START end=$END deadline=$DEADLINE exit_status=$status"
   } > "$RUN/metadata.txt"
   rm -rf "$RUNTIME"
@@ -195,6 +202,7 @@ run_loadgen() {
   $COMPOSE exec -T loadgen python /opt/loadgen/loadgen.py \
     --protocol "$protocol" --duration "$duration" --concurrency "$concurrency" \
     --size "$size" $request_args --churn-interval "$CHURN_INTERVAL" \
+    --success-sample-rate "$SUCCESS_SAMPLE_RATE" --interval "$INTERVAL_SECONDS" \
     --output "/run/locho/$label-$protocol.json" --events "/run/locho/$label-$protocol.jsonl" \
     > "$RUNTIME/loadgen/$label-$protocol.stdout" 2>&1
 }

@@ -7,6 +7,7 @@ services:
       dockerfile: tests/perf/Dockerfile.locho
     environment:
       LOCHO_STATE_DIR: /run/locho/state
+      RUST_LOG: ${SOAK_RUST_LOG:-info}
     volumes:
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/host:/run/locho
     command: ["host", "--config", "/run/locho/locho.toml", "--bind-address", "172.30.0.10:4567"]
@@ -17,6 +18,8 @@ services:
 
   upstream_http:
     image: python@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    environment:
+      UPSTREAM_QUIET: ${SOAK_UPSTREAM_QUIET:-0}
     volumes:
       - ./upstream:/opt/upstream:ro
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/upstream:/run/locho:ro
@@ -50,6 +53,7 @@ services:
       dockerfile: tests/perf/Dockerfile.locho
     environment:
       LOCHO_STATE_DIR: /run/locho/state
+      RUST_LOG: ${SOAK_RUST_LOG:-info}
     entrypoint: ["sh"]
     volumes:
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/http-client:/run/locho:ro
@@ -65,6 +69,7 @@ services:
       dockerfile: tests/perf/Dockerfile.locho
     environment:
       LOCHO_STATE_DIR: /run/locho/state
+      RUST_LOG: ${SOAK_RUST_LOG:-info}
     entrypoint: ["sh"]
     volumes:
       - ${PERF_RUNTIME_DIR:-/tmp/locho-stress-runtime}/tcp-client:/run/locho:ro
