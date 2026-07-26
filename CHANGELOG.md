@@ -2,19 +2,6 @@
 
 All notable changes to `locho` are documented here.
 
-## [1.1.0-beta.1] - 2026-07-25
-
-This prerelease focuses on tunnel reliability and operational validation after
-the `1.0.0` stable release. It is intended for beta testing and is not the
-stable release channel.
-
-- Keeps attachment listeners available while the tunnel reconnects after a
-  connection loss.
-- Reuses HTTP upstream clients and reaps completed connection tasks to improve
-  long-running host and attachment behavior.
-- Adds Docker-based stress and bounded soak-test harnesses for mixed HTTP/TCP
-  traffic, connection churn, and process restarts.
-
 ## [1.0.0] - 2026-07-21
 
 - Adds CI verification for native cargo-dist archives, checksums, generated

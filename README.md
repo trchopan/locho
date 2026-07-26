@@ -193,11 +193,6 @@ supported `1.0.0` targets are:
 - macOS x86_64 and Apple silicon
 - Windows x86_64
 
-> **Beta warning:** `v1.1.0-beta.1` is a prerelease for testing reliability
-> improvements. It is not published as `latest`; use the [direct beta release
-> assets](https://github.com/trchopan/locho/releases/tag/v1.1.0-beta.1) only if
-> you want to test this version.
-
 On Unix, install the latest release with:
 
 ```sh

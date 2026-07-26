@@ -1222,6 +1222,7 @@ fn read_http_response(stream: &mut TcpStream, head_only: bool) -> HttpResponse {
     }
 }
 
+#[cfg(unix)]
 fn send_http_request_allowing_truncated_body(port: u16, path: &str) -> (HttpResponse, bool) {
     let mut stream = connect_with_retry(port);
     write!(
