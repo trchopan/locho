@@ -14,6 +14,7 @@ OUTPUT_ROOT="$REPO/artifacts"
 CHURN_INTERVAL=60
 SUCCESS_SAMPLE_RATE=100
 INTERVAL_SECONDS=10
+MIN_DURATION=360
 
 usage() {
   echo "usage: $0 [--duration 1h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--churn-interval SECONDS] [--success-sample-rate N] [--interval SECONDS] [--output DIR]"
@@ -46,7 +47,10 @@ while [ $# -gt 0 ]; do
 done
 
 case "$DURATION" in *.*|*[!0-9]*) echo "duration must be an integer number of seconds or use h/m/s" >&2; exit 2;; esac
-[ "$DURATION" -ge 120 ] || { echo "duration must be at least 120 seconds" >&2; exit 2; }
+[ "$DURATION" -ge "$MIN_DURATION" ] || {
+  echo "duration must be at least ${MIN_DURATION} seconds (6m)" >&2
+  exit 2
+}
 [ "$DURATION" -le 3600 ] || { echo "duration must not exceed 1 hour" >&2; exit 2; }
 for value in "$HTTP_CONCURRENCY" "$TCP_CONCURRENCY" "$HTTP_SIZE" "$HTTP_REQUEST_SIZE" "$TCP_SIZE" "$CHURN_INTERVAL" "$SUCCESS_SAMPLE_RATE" "$INTERVAL_SECONDS"; do
   case "$value" in *.*|*[!0-9]*) echo "numeric options must be non-negative integers" >&2; exit 2;; esac
@@ -196,8 +200,15 @@ remaining=$((DEADLINE - $(date +%s) - 30))
 warmup=$((remaining / 24)); [ "$warmup" -lt 5 ] && warmup=5
 cooldown=$warmup
 recovery=$((remaining / 6)); [ "$recovery" -lt 60 ] && recovery=60
+# Each of the three sequential restart probes can consume the full 30-second
+# recovery window. Reserve that time separately from the traffic phase.
+recovery_overhead=90
+recovery=$((recovery + recovery_overhead))
 steady=$((remaining - warmup - cooldown - recovery))
-[ "$steady" -gt 0 ] || { echo "duration leaves no steady-state budget" >&2; exit 2; }
+[ "$steady" -gt 0 ] || {
+  echo "duration leaves no steady-state budget after setup and recovery reservations" >&2
+  exit 2
+}
 
 run_loadgen() {
   protocol=$1; duration=$2; label=$3; concurrency=$4; size=$5
@@ -289,7 +300,7 @@ wait_traffic strict
 start_traffic "$steady" steady
 wait_traffic strict
 RECOVERY_DEADLINE=$(( $(date +%s) + recovery ))
-recovery_traffic=$((recovery - 30)); [ "$recovery_traffic" -lt 1 ] && recovery_traffic=1
+recovery_traffic=$((recovery - recovery_overhead)); [ "$recovery_traffic" -lt 1 ] && recovery_traffic=1
 start_traffic "$recovery_traffic" recovery
 if ! recover locho_host http tcp; then SOAK_FAILURE=1; fi
 if ! recover locho_client_http http tcp; then SOAK_FAILURE=1; fi
