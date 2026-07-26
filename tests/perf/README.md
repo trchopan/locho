@@ -64,6 +64,8 @@ traffic is established:
 ```
 
 The duration is the total wall-clock budget and cannot exceed 1 hour. Soak
+durations shorter than 6 minutes are rejected because the run reserves time for
+setup, warmup, cooldown, and three sequential 30-second recovery probes. Soak
 artifacts are written to `artifacts/soak-<UTC timestamp>-<pid>/`. Recovery
 results are in `timeline.jsonl`; transient failures during a restart remain in
 the load-generator events. Successful operations are sampled and interval
