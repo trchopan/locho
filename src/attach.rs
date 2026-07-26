@@ -43,10 +43,15 @@ struct ConnectionState {
     sender: watch::Sender<Option<ActiveConnection>>,
 }
 
+#[derive(Clone)]
 struct ConnectionLease {
     connection: Connection,
     generation: u64,
     sender: watch::Sender<Option<ActiveConnection>>,
+}
+
+struct HttpBodyLeaseGuard {
+    lease: Option<ConnectionLease>,
 }
 
 #[derive(Debug)]
@@ -79,6 +84,26 @@ impl ConnectionLease {
                 false
             }
         });
+    }
+}
+
+impl Drop for HttpBodyLeaseGuard {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            lease.invalidate();
+        }
+    }
+}
+
+impl HttpBodyLeaseGuard {
+    fn invalidate(&self) {
+        if let Some(lease) = &self.lease {
+            lease.invalidate();
+        }
+    }
+
+    fn complete(&mut self) {
+        self.lease = None;
     }
 }
 
@@ -580,7 +605,9 @@ async fn tunnel_request_on_lease(
     headers: Vec<(String, String)>,
     body: Incoming,
 ) -> Result<HttpResponse> {
-    let (mut writer, mut reader) = lease.connection.open_bi().await?;
+    let (mut writer, mut reader) = timeout(HANDSHAKE_TIMEOUT, lease.connection.open_bi())
+        .await
+        .context("HTTP tunnel stream open timed out")??;
     let head = LochoRequestHead {
         version: PROTOCOL_VERSION,
         service,
@@ -630,7 +657,12 @@ async fn tunnel_request_on_lease(
         }
         write_body_end(&mut writer).await?;
     }
-    let response: LochoResponseHead = read_json_head(&mut reader, MAX_HEAD_LEN).await?;
+    let response: LochoResponseHead = timeout(
+        HTTP_REQUEST_TIMEOUT + HANDSHAKE_TIMEOUT,
+        read_json_head(&mut reader, MAX_HEAD_LEN),
+    )
+    .await
+    .context("HTTP attachment handshake timed out")??;
     if response.version != PROTOCOL_VERSION {
         return Err(anyhow!(
             "unsupported tunnel response version {}",
@@ -640,21 +672,36 @@ async fn tunnel_request_on_lease(
     let status =
         StatusCode::from_u16(response.status).map_err(|_| anyhow!("invalid response status"))?;
     let body_len = response.body_len;
+    let mut body_guard = HttpBodyLeaseGuard {
+        lease: Some(lease.clone()),
+    };
     let stream = Box::pin(async_stream::try_stream! {
         if let Some(length) = body_len {
             let mut remaining = length;
             let mut buffer = vec![0u8; BODY_CHUNK_LEN];
             while remaining > 0 {
                 let count = remaining.min(BODY_CHUNK_LEN as u64) as usize;
-                reader.read_exact(&mut buffer[..count]).await?;
+                timeout(
+                    http_response_body_timeout(),
+                    reader.read_exact(&mut buffer[..count]),
+                )
+                    .await
+                    .context("HTTP response body read timed out")?
+                    .inspect_err(|_| body_guard.invalidate())?;
                 yield Frame::data(Bytes::copy_from_slice(&buffer[..count]));
                 remaining -= count as u64;
             }
         } else {
-            while let Some(chunk) = read_body_chunk(&mut reader).await? {
+            loop {
+                let chunk = timeout(http_response_body_timeout(), read_body_chunk(&mut reader))
+                    .await
+                    .context("HTTP response body read timed out")?
+                    .inspect_err(|_| body_guard.invalidate())?;
+                let Some(chunk) = chunk else { break };
                 yield Frame::data(chunk);
             }
         }
+        body_guard.complete();
     }) as HttpStream;
     info!(status = %status, "local response");
     let mut output = Response::builder()
@@ -666,6 +713,16 @@ async fn tunnel_request_on_lease(
         }
     }
     Ok(output)
+}
+
+fn http_response_body_timeout() -> std::time::Duration {
+    #[cfg(feature = "integration-test")]
+    if let Some(milliseconds) = std::env::var_os("LOCHO_TEST_HTTP_BODY_TIMEOUT_MS") {
+        if let Ok(milliseconds) = milliseconds.to_string_lossy().parse::<u64>() {
+            return std::time::Duration::from_millis(milliseconds);
+        }
+    }
+    HTTP_REQUEST_TIMEOUT
 }
 
 fn error_response(status: StatusCode) -> HttpResponse {

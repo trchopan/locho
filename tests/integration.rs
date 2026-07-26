@@ -864,6 +864,133 @@ fn http_attachment_reconnects_after_host_restart() {
     attachment.stop();
 }
 
+#[cfg(unix)]
+#[test]
+fn http_attachment_reconnects_after_active_request_host_restart() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let (request_started_sender, request_started_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let upstream_thread = thread::spawn(move || {
+        let (mut active_stream, _) = upstream_listener.accept().unwrap();
+        let request = String::from_utf8(read_until_headers(&mut active_stream)).unwrap();
+        assert!(request.starts_with("GET /active HTTP/1.1\r\n"));
+        active_stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\nx")
+            .unwrap();
+        request_started_sender.send(()).unwrap();
+        let _ = release_receiver.recv_timeout(Duration::from_secs(30));
+        drop(active_stream);
+
+        let (mut recovered_stream, _) = upstream_listener.accept().unwrap();
+        let request = String::from_utf8(read_until_headers(&mut recovered_stream)).unwrap();
+        assert!(request.starts_with("GET /recovered HTTP/1.1\r\n"));
+        recovered_stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nrecovered",
+            )
+            .unwrap();
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+    attachment.wait_for("Local proxy:");
+
+    let active_request = thread::spawn(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            send_http_request_allowing_truncated_body(attach_port, "/active")
+        }))
+    });
+    request_started_receiver
+        .recv_timeout(STARTUP_TIMEOUT)
+        .expect("upstream did not receive the active HTTP request");
+
+    host.stop();
+    let (active_response, active_closed) = active_request
+        .join()
+        .expect("active HTTP request thread panicked")
+        .expect("active HTTP request did not receive a response");
+    assert!(active_response.status == 200 || active_response.status == 504);
+    assert!(active_closed || active_response.body.len() < 1024 * 1024);
+    release_sender.send(()).unwrap();
+    thread::sleep(Duration::from_secs(20));
+
+    let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
+    restarted_host.wait_for("locho direct-address ");
+    let response = send_http_request_after_reconnect(attach_port);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"recovered");
+
+    assert!(upstream_thread.join().is_ok());
+    restarted_host.stop();
+    attachment.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn http_attachment_closes_stalled_response_body() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        let (mut stream, _) = accept_with_deadline(&upstream_listener);
+        let _ = read_http_message(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\nx")
+            .unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for("locho attach ");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment_with_body_timeout(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+        "100",
+    );
+    attachment.wait_for("Local proxy:");
+
+    let started = Instant::now();
+    let (response, closed) = send_http_request_allowing_truncated_body(attach_port, "/stalled");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(closed);
+    assert_eq!(response.status, 200);
+    assert!(response.body.len() < 1024);
+
+    assert!(upstream_thread.join().is_ok());
+    attachment.stop();
+    host.stop();
+}
+
 struct HttpResponse {
     status: u16,
     headers: std::collections::HashMap<String, String>,
@@ -1095,6 +1222,71 @@ fn read_http_response(stream: &mut TcpStream, head_only: bool) -> HttpResponse {
     }
 }
 
+#[cfg(unix)]
+fn send_http_request_allowing_truncated_body(port: u16, path: &str) -> (HttpResponse, bool) {
+    let mut stream = connect_with_retry(port);
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut bytes = read_until_headers(&mut stream);
+    let Some(header_end) = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+    else {
+        return (
+            HttpResponse {
+                status: 504,
+                headers: std::collections::HashMap::new(),
+                body: Vec::new(),
+            },
+            true,
+        );
+    };
+    let header_text = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+    let mut lines = header_text.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let headers = parse_headers(lines);
+    let mut body = bytes.split_off(header_end);
+    let mut closed = false;
+    loop {
+        let mut buffer = [0u8; 1024];
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(count) => body.extend_from_slice(&buffer[..count]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                break
+            }
+            Err(error) => panic!("failed to read truncated response: {error}"),
+        }
+    }
+    (
+        HttpResponse {
+            status,
+            headers,
+            body,
+        },
+        closed,
+    )
+}
+
 fn read_until_headers(stream: &mut TcpStream) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 1024];
@@ -1241,10 +1433,23 @@ fn start_http_attachment(
     port: u16,
     direct_address: &str,
 ) -> ProcessOutput {
+    start_http_attachment_with_body_timeout(state_dir, command_line, port, direct_address, "")
+}
+
+fn start_http_attachment_with_body_timeout(
+    state_dir: &Path,
+    command_line: &str,
+    port: u16,
+    direct_address: &str,
+    body_timeout_milliseconds: &str,
+) -> ProcessOutput {
     let mut command = Command::new(locho_binary());
     command
         .env("LOCHO_STATE_DIR", state_dir)
         .env("LOCHO_TEST_DIRECT_ADDR", direct_address);
+    if !body_timeout_milliseconds.is_empty() {
+        command.env("LOCHO_TEST_HTTP_BODY_TIMEOUT_MS", body_timeout_milliseconds);
+    }
     for argument in command_line
         .split_whitespace()
         .skip_while(|argument| *argument == "locho")
