@@ -2,8 +2,8 @@
 
 ## Development Setup
 
-Install Rust stable with Cargo. The integration and release smoke tests also
-need network access for iroh discovery and relay connectivity.
+Install Rust 1.91 or newer with Cargo. The integration and release smoke tests
+also need network access for iroh discovery and relay connectivity.
 
 Build and run the basic test suite from the repository root:
 

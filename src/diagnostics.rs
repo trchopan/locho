@@ -1,6 +1,6 @@
-use crate::{config::Config, protocol::ALPN, state};
+use crate::{attach::format_transport_paths, config::Config, protocol::ALPN, state};
 use anyhow::{bail, Context, Result};
-use iroh::{endpoint::ConnectionType, Endpoint, NodeAddr, NodeId, SecretKey};
+use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::time::timeout;
 
@@ -46,30 +46,34 @@ pub async fn run(
     }
 
     if let Some(host_id) = host_id {
-        let node_id = host_id.parse().context("invalid host ID")?;
-        let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+        let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
+        let endpoint = Endpoint::builder(presets::N0).bind().await?;
+        let mut endpoint_addr = EndpointAddr::new(node_id);
         if let Some(address) = direct_address {
-            endpoint.add_node_addr(NodeAddr::new(node_id).with_direct_addresses([address]))?;
+            endpoint_addr = endpoint_addr.with_ip_addr(address);
         }
-        let connection = match timeout(DEFAULT_PROBE_TIMEOUT, endpoint.connect(node_id, ALPN)).await
-        {
-            Ok(Ok(connection)) => connection,
-            Ok(Err(error)) => {
-                endpoint.close().await;
-                bail!("connectivity probe failed: {error:#}");
-            }
-            Err(_) => {
-                endpoint.close().await;
-                bail!("connectivity probe timed out after {DEFAULT_PROBE_TIMEOUT:?}");
-            }
-        };
+        let connection =
+            match timeout(DEFAULT_PROBE_TIMEOUT, endpoint.connect(endpoint_addr, ALPN)).await {
+                Ok(Ok(connection)) => connection,
+                Ok(Err(error)) => {
+                    endpoint.close().await;
+                    bail!("connectivity probe failed: {error:#}");
+                }
+                Err(_) => {
+                    endpoint.close().await;
+                    bail!("connectivity probe timed out after {DEFAULT_PROBE_TIMEOUT:?}");
+                }
+            };
         println!("connectivity: reachable");
-        let connection_type = endpoint
-            .conn_type(node_id)
-            .ok()
-            .and_then(|watcher| watcher.get().ok())
-            .unwrap_or(ConnectionType::None);
-        println!("transport path: {connection_type}");
+        let path = format_transport_paths(connection.paths().iter().map(|path| {
+            (
+                path.remote_addr().to_string(),
+                path.is_ip(),
+                path.is_relay(),
+                path.is_selected(),
+            )
+        }));
+        println!("transport path: {path}");
         connection.close(0u32.into(), b"diagnostic complete");
         endpoint.close().await;
     } else {
@@ -103,7 +107,7 @@ fn report_state_file(path: &std::path::Path, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_host_key(path: &std::path::Path) -> Result<NodeId> {
+fn validate_host_key(path: &std::path::Path) -> Result<EndpointId> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let key_bytes: [u8; 32] = bytes.try_into().map_err(|_| {
         anyhow::anyhow!(
@@ -111,10 +115,10 @@ fn validate_host_key(path: &std::path::Path) -> Result<NodeId> {
             path.display()
         )
     })?;
-    Ok(NodeId::from(SecretKey::from_bytes(&key_bytes).public()))
+    Ok(EndpointId::from(SecretKey::from_bytes(&key_bytes).public()))
 }
 
-fn validate_host_state(path: &std::path::Path, host_identity: Option<NodeId>) -> Result<()> {
+fn validate_host_state(path: &std::path::Path, host_identity: Option<EndpointId>) -> Result<()> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let state: state::PersistedHostState = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -124,7 +128,7 @@ fn validate_host_state(path: &std::path::Path, host_identity: Option<NodeId>) ->
             state.schema_version
         );
     }
-    let endpoint_id = state.endpoint_id.parse::<NodeId>().with_context(|| {
+    let endpoint_id = state.endpoint_id.parse::<EndpointId>().with_context(|| {
         format!(
             "host state has an invalid endpoint ID in {}",
             path.display()

@@ -2,6 +2,13 @@
 
 All notable changes to `locho` are documented here.
 
+## Unreleased
+
+- Upgrades iroh to 1.0.3 to improve relay-path reliability and avoid stalled
+  TCP transfers under relay congestion.
+- Preserves complete direct, relay, and mixed transport diagnostics.
+- Documents Rust 1.91 as the minimum supported version.
+
 ## [1.0.0] - 2026-07-21
 
 - Adds CI verification for native cargo-dist archives, checksums, generated

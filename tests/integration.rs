@@ -1,6 +1,6 @@
 #![cfg(feature = "integration-test")]
 
-use iroh::{Endpoint, NodeAddr, NodeId, SecretKey};
+use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -544,7 +544,7 @@ fn http_attachment_reports_upstream_timeout() {
 fn diagnose_reports_configuration_without_capabilities() {
     let state_dir = TestDir::new();
     let config_path = state_dir.path().join("locho.toml");
-    let host_key = SecretKey::generate(rand::rngs::OsRng);
+    let host_key = SecretKey::generate();
     fs::write(state_dir.path().join("host.key"), host_key.to_bytes()).unwrap();
     fs::write(
         state_dir.path().join("host_state.json"),
@@ -1520,16 +1520,14 @@ fn locho_binary() -> PathBuf {
 
 fn send_oversized_tunnel_header(attach_command: &str, direct_address: &str) -> u16 {
     let (host_id, _, _) = parse_attach_command(attach_command);
-    let host_id: NodeId = host_id.parse().unwrap();
+    let host_id: EndpointId = host_id.parse().unwrap();
     let direct_address = direct_address.parse().unwrap();
     tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async move {
-            let endpoint = Endpoint::builder().discovery_n0().bind().await.unwrap();
-            endpoint
-                .add_node_addr(NodeAddr::new(host_id).with_direct_addresses([direct_address]))
-                .unwrap();
-            let connection = endpoint.connect(host_id, b"locho/3").await.unwrap();
+            let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
+            let endpoint_addr = EndpointAddr::new(host_id).with_ip_addr(direct_address);
+            let connection = endpoint.connect(endpoint_addr, b"locho/3").await.unwrap();
             let (mut writer, mut reader) = connection.open_bi().await.unwrap();
             writer
                 .write_all(&(1024 * 1024 + 1u32).to_be_bytes())
