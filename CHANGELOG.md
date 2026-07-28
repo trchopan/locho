@@ -2,11 +2,15 @@
 
 All notable changes to `locho` are documented here.
 
-## Unreleased
+## [1.1.0-beta.2] - 2026-07-28
+
+This prerelease continues the reliability work from `1.1.0-beta.1`. It is
+intended for beta testing and is not the stable release channel.
 
 - Upgrades iroh to 1.0.3 to improve relay-path reliability and avoid stalled
   TCP transfers under relay congestion.
 - Preserves complete direct, relay, and mixed transport diagnostics.
+- Includes the TCP mode when generating attachment commands for TCP services.
 - Documents Rust 1.91 as the minimum supported version.
 
 ## [1.0.0] - 2026-07-21
