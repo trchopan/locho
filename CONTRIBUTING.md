@@ -2,8 +2,8 @@
 
 ## Development Setup
 
-Install Rust stable with Cargo. The integration and release smoke tests also
-need network access for iroh discovery and relay connectivity.
+Install Rust 1.91 or newer with Cargo. The integration and release smoke tests
+also need network access for iroh discovery and relay connectivity.
 
 Build and run the basic test suite from the repository root:
 
@@ -20,10 +20,10 @@ by CI:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo test --all-targets --all-features -- --test-threads=1
 cargo build --release
 cargo build --release --features integration-test --target-dir target/integration-release
-LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test
+LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test -- --test-threads=1
 LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke -- --ignored
 ```
 

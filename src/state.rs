@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use fs2::FileExt;
-use iroh::{NodeId, SecretKey};
+use iroh::{EndpointId, SecretKey};
 use rand::random;
 use serde::{Deserialize, Serialize};
 
@@ -87,12 +87,12 @@ pub fn load_or_create_host_secret_key() -> Result<SecretKey> {
         return Ok(SecretKey::from_bytes(&key_bytes));
     }
 
-    let secret_key = SecretKey::generate(rand::rngs::OsRng);
+    let secret_key = SecretKey::generate();
     write_file_atomic(&key_path, &secret_key.to_bytes())?;
     Ok(secret_key)
 }
 
-pub fn load_or_create_host_state(endpoint_id: NodeId) -> Result<PersistedHostState> {
+pub fn load_or_create_host_state(endpoint_id: EndpointId) -> Result<PersistedHostState> {
     let state_path = host_state_path()?;
     if state_path.exists() {
         ensure_private_file(&state_path)?;
@@ -150,7 +150,7 @@ pub fn reset_identity() -> Result<()> {
 pub fn rotate_secret(service: &str) -> Result<()> {
     let _state_lock = acquire_state_lock()?;
     let secret_key = load_or_create_host_secret_key()?;
-    let endpoint_id = NodeId::from(secret_key.public());
+    let endpoint_id = EndpointId::from(secret_key.public());
     let state_path = host_state_path()?;
     let mut state = load_or_create_host_state(endpoint_id)?;
     state.endpoint_id = endpoint_id.to_string();
@@ -249,7 +249,7 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 fn repair_host_state(
     mut state: PersistedHostState,
-    endpoint_id: NodeId,
+    endpoint_id: EndpointId,
 ) -> (PersistedHostState, bool) {
     let mut changed = false;
     let endpoint_id = endpoint_id.to_string();
@@ -284,8 +284,8 @@ mod tests {
         std::env::set_var("LOCHO_STATE_DIR", path);
     }
 
-    fn endpoint_id() -> NodeId {
-        NodeId::from(SecretKey::generate(rand::rngs::OsRng).public())
+    fn endpoint_id() -> EndpointId {
+        EndpointId::from(SecretKey::generate().public())
     }
 
     #[test]
@@ -325,8 +325,8 @@ mod tests {
         let dir = test_state_dir();
         use_test_state_dir(&dir);
         let key = load_or_create_host_secret_key().unwrap();
-        let first = load_or_create_host_state(NodeId::from(key.public())).unwrap();
-        let second = load_or_create_host_state(NodeId::from(key.public())).unwrap();
+        let first = load_or_create_host_state(EndpointId::from(key.public())).unwrap();
+        let second = load_or_create_host_state(EndpointId::from(key.public())).unwrap();
         assert_eq!(first.endpoint_id, second.endpoint_id);
         assert_eq!(first.attach_secret, second.attach_secret);
         assert_eq!(first.service_secrets, second.service_secrets);

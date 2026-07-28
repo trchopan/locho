@@ -18,12 +18,13 @@ try {
 
     Invoke-Step "cargo fmt --all -- --check"
     Invoke-Step "cargo clippy --all-targets --all-features -- -D warnings"
-    Invoke-Step "cargo test --all-targets --all-features"
+    # These tests launch multiple processes and use shared local networking resources.
+    Invoke-Step "cargo test --all-targets --all-features -- --test-threads=1"
     Invoke-Step "cargo build --release"
     Invoke-Step "cargo build --release --features integration-test --target-dir target/integration-release"
 
     $env:LOCHO_TEST_BINARY = "target/integration-release/release/locho.exe"
-    Invoke-Step "cargo test --test integration --features integration-test"
+    Invoke-Step "cargo test --test integration --features integration-test -- --test-threads=1"
     $env:LOCHO_TEST_BINARY = "target/release/locho.exe"
     Invoke-Step "cargo test --test release_smoke -- --ignored"
 

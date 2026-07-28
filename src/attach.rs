@@ -12,10 +12,9 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
-use iroh::NodeAddr;
 use iroh::{
-    endpoint::{Connection, ConnectionType},
-    Endpoint, NodeId,
+    endpoint::{presets, Connection},
+    Endpoint, EndpointAddr, EndpointId,
 };
 use std::net::SocketAddr;
 use std::{convert::Infallible, fmt, io::Write, pin::Pin};
@@ -118,7 +117,7 @@ pub async fn run(
     if service.is_empty() {
         return Err(anyhow!("service name cannot be empty"));
     }
-    let node_id: NodeId = host_id.parse().context("invalid host ID")?;
+    let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {
         Some(address) => Some(address),
@@ -127,10 +126,10 @@ pub async fn run(
             .transpose()
             .context("invalid LOCHO_TEST_DIRECT_ADDR")?,
     };
-    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    if let Some(address) = direct_address {
-        endpoint.add_node_addr(NodeAddr::new(node_id).with_direct_addresses([address]))?;
-    }
+    let endpoint = Endpoint::builder(presets::N0).bind().await?;
+    let endpoint_addr = direct_address
+        .map(|address| EndpointAddr::new(node_id).with_ip_addr(address))
+        .unwrap_or_else(|| EndpointAddr::new(node_id));
     let listener = TcpListener::bind(listen).await?;
     let (connection_sender, connection_receiver) = watch::channel(None);
     let connection_state = ConnectionState {
@@ -141,7 +140,7 @@ pub async fn run(
     let shutdown = CancellationToken::new();
     let supervisor = tokio::spawn(connection_supervisor(
         endpoint.clone(),
-        node_id,
+        endpoint_addr,
         connection_sender,
         supervisor_receiver,
         shutdown.clone(),
@@ -179,7 +178,7 @@ pub async fn run(
 
 async fn connection_supervisor(
     endpoint: Endpoint,
-    node_id: NodeId,
+    endpoint_addr: EndpointAddr,
     sender: watch::Sender<Option<ActiveConnection>>,
     mut receiver: ConnectionReceiver,
     shutdown: CancellationToken,
@@ -189,7 +188,7 @@ async fn connection_supervisor(
     'supervisor: loop {
         let connection = tokio::select! {
             _ = shutdown.cancelled() => break,
-            result = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(node_id, ALPN)) => {
+            result = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(endpoint_addr.clone(), ALPN)) => {
                 match result {
                     Ok(Ok(connection)) => connection,
                     Ok(Err(error)) => {
@@ -214,7 +213,7 @@ async fn connection_supervisor(
             connection: connection.clone(),
         }));
         receiver.borrow_and_update();
-        let mut monitor = spawn_transport_monitor(&endpoint, node_id, generation);
+        let mut monitor = spawn_transport_monitor(&connection, generation);
         let monitor_finished = async {
             if let Some(monitor) = monitor.as_mut() {
                 monitor.await.unwrap_or(TransportMonitorExit::Ended)
@@ -285,42 +284,94 @@ fn next_backoff(current: std::time::Duration) -> std::time::Duration {
 }
 
 fn spawn_transport_monitor(
-    endpoint: &Endpoint,
-    node_id: NodeId,
+    connection: &Connection,
     generation: u64,
 ) -> Option<tokio::task::JoinHandle<TransportMonitorExit>> {
-    let watcher = match endpoint.conn_type(node_id) {
-        Ok(watcher) => watcher,
-        Err(_) => {
-            warn!("connected to host but transport path is not yet available");
-            return None;
-        }
-    };
-    let initial_path = watcher.get().ok();
-    if let Some(connection_type) = &initial_path {
-        info!(generation, transport_path = %connection_type, "transport path established");
-        println!("transport path: {connection_type}");
+    let initial_path = transport_path(connection);
+    if initial_path == "none" {
+        warn!("connected to host but transport path is not yet available");
+    } else {
+        info!(generation, transport_path = %initial_path, "transport path established");
+        println!("transport path: {initial_path}");
     }
+    let connection = connection.clone();
     Some(tokio::spawn(async move {
-        let mut paths = watcher.stream();
+        let mut paths = connection.paths_stream();
         let mut last_path = initial_path;
-        while let Some(connection_type) = paths.next().await {
-            if !transport_path_changed(last_path.as_ref(), &connection_type) {
+        while let Some(path_list) = paths.next().await {
+            let connection_type = format_transport_paths(path_list.iter().map(|path| {
+                (
+                    path.remote_addr().to_string(),
+                    path.is_ip(),
+                    path.is_relay(),
+                    path.is_selected(),
+                )
+            }));
+            if !transport_path_changed(&last_path, &connection_type) {
                 continue;
             }
             info!(generation, transport_path = %connection_type, "transport path changed");
             println!("transport path: {connection_type}");
-            if matches!(connection_type, ConnectionType::None) {
+            if connection_type == "none" {
                 return TransportMonitorExit::PathLost;
             }
-            last_path = Some(connection_type);
+            last_path = connection_type;
         }
         TransportMonitorExit::Ended
     }))
 }
 
-fn transport_path_changed(previous: Option<&ConnectionType>, current: &ConnectionType) -> bool {
-    previous != Some(current)
+fn transport_path(connection: &Connection) -> String {
+    format_transport_paths(connection.paths().iter().map(|path| {
+        (
+            path.remote_addr().to_string(),
+            path.is_ip(),
+            path.is_relay(),
+            path.is_selected(),
+        )
+    }))
+}
+
+pub(crate) fn format_transport_paths<I>(paths: I) -> String
+where
+    I: IntoIterator<Item = (String, bool, bool, bool)>,
+{
+    let mut direct = Vec::new();
+    let mut relay = Vec::new();
+    let mut selected = None;
+    for (address, is_direct, is_relay, is_selected) in paths {
+        let address = strip_transport_prefix(&address).to_owned();
+        if is_direct {
+            direct.push(address.clone());
+        }
+        if is_relay {
+            relay.push(address.clone());
+        }
+        if is_selected {
+            selected = Some(address);
+        }
+    }
+    match (direct.is_empty(), relay.is_empty()) {
+        (false, true) => format!("direct({})", selected.unwrap_or_else(|| direct.join(", "))),
+        (true, false) => format!("relay({})", selected.unwrap_or_else(|| relay.join(", "))),
+        (false, false) => format!(
+            "mixed(direct: {}, relay: {})",
+            direct.join(", "),
+            relay.join(", ")
+        ),
+        (true, true) => "none".into(),
+    }
+}
+
+fn strip_transport_prefix(address: &str) -> &str {
+    address
+        .strip_prefix("ip:")
+        .or_else(|| address.strip_prefix("relay:"))
+        .unwrap_or(address)
+}
+
+fn transport_path_changed(previous: &str, current: &str) -> bool {
+    previous != current
 }
 
 async fn run_http_listener(
@@ -737,27 +788,27 @@ fn error_response(status: StatusCode) -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
-    fn transport_path_changes_ignore_duplicate_states() {
-        let direct = ConnectionType::Direct((IpAddr::V4(Ipv4Addr::LOCALHOST), 12345).into());
-        assert!(!transport_path_changed(Some(&direct), &direct));
-        assert!(transport_path_changed(None, &direct));
-
-        let relay = ConnectionType::Relay("https://relay.example.com".parse().unwrap());
-        let mixed = ConnectionType::Mixed(
-            (IpAddr::V4(Ipv4Addr::LOCALHOST), 12345).into(),
-            "https://relay.example.com".parse().unwrap(),
-        );
-        assert!(transport_path_changed(Some(&direct), &relay));
-        assert!(transport_path_changed(Some(&relay), &mixed));
-        assert_eq!(direct.to_string(), "direct(127.0.0.1:12345)");
-        assert_eq!(relay.to_string(), "relay(https://relay.example.com./)");
+    fn transport_path_labels() {
         assert_eq!(
-            mixed.to_string(),
-            "mixed(udp: 127.0.0.1:12345, relay: https://relay.example.com./)"
+            format_transport_paths([("ip:127.0.0.1:1".into(), true, false, true)]),
+            "direct(127.0.0.1:1)"
         );
+        assert_eq!(
+            format_transport_paths([("relay:relay.example".into(), false, true, true)]),
+            "relay(relay.example)"
+        );
+        assert_eq!(
+            format_transport_paths([
+                ("ip:127.0.0.1:1".into(), true, false, true),
+                ("relay:relay.example".into(), false, true, false),
+            ]),
+            "mixed(direct: 127.0.0.1:1, relay: relay.example)"
+        );
+        assert_eq!(format_transport_paths(std::iter::empty()), "none");
+        assert!(!transport_path_changed("direct", "direct"));
+        assert!(transport_path_changed("direct", "relay"));
     }
 
     #[test]

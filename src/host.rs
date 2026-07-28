@@ -7,7 +7,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use iroh::Endpoint;
+use iroh::{endpoint::presets, Endpoint};
 use reqwest::Client;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -36,16 +36,15 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
             .transpose()
             .context("invalid LOCHO_TEST_BIND_ADDR")?,
     };
-    let mut endpoint_builder = Endpoint::builder()
-        .discovery_n0()
+    let mut endpoint_builder = Endpoint::builder(presets::N0)
         .alpns(vec![ALPN.to_vec()])
         .secret_key(host_secret_key);
     if let Some(address) = bind_address {
         let address = validate_bind_address(address)?;
-        endpoint_builder = endpoint_builder.bind_addr_v4(address);
+        endpoint_builder = endpoint_builder.bind_addr(address)?;
     }
     let endpoint = endpoint_builder.bind().await?;
-    let mut persisted_state = crate::state::load_or_create_host_state(endpoint.node_id())?;
+    let mut persisted_state = crate::state::load_or_create_host_state(endpoint.id())?;
     let active_names = config
         .services
         .iter()
@@ -107,7 +106,7 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
         let tcp_flag = attach_mode_flag(&service.service_type);
         println!(
             "\nlocho attach {} {} {}{}{}",
-            endpoint.node_id(),
+            endpoint.id(),
             service.name,
             secret,
             tcp_flag,
