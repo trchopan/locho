@@ -654,7 +654,11 @@ fn start_attachment(
     {
         command.args(["--direct-address", direct_address]);
     }
-    if tcp {
+    if tcp
+        && !attach_command
+            .split_whitespace()
+            .any(|argument| argument == "--tcp")
+    {
         command.arg("--tcp");
     }
     command.args(["--listen", &format!("127.0.0.1:{port}")]);
