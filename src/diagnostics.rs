@@ -1,10 +1,12 @@
 use crate::{attach::format_transport_paths, config::Config, protocol::ALPN, state};
 use anyhow::{bail, Context, Result};
+use futures_util::StreamExt;
 use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const PATH_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn run(
     config_path: Option<PathBuf>,
@@ -65,14 +67,7 @@ pub async fn run(
                 }
             };
         println!("connectivity: reachable");
-        let path = format_transport_paths(connection.paths().iter().map(|path| {
-            (
-                path.remote_addr().to_string(),
-                path.is_ip(),
-                path.is_relay(),
-                path.is_selected(),
-            )
-        }));
+        let path = observe_transport_path(&connection).await;
         println!("transport path: {path}");
         connection.close(0u32.into(), b"diagnostic complete");
         endpoint.close().await;
@@ -81,6 +76,45 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+async fn observe_transport_path(connection: &iroh::endpoint::Connection) -> String {
+    let mut path_stream = connection.paths_stream();
+    let mut path = format_transport_paths(connection.paths().iter().map(|path| {
+        (
+            path.remote_addr().to_string(),
+            path.is_ip(),
+            path.is_relay(),
+            path.is_selected(),
+        )
+    }));
+
+    if connection.paths().iter().any(|path| path.is_ip()) {
+        return path;
+    }
+
+    let observation = sleep(PATH_OBSERVATION_TIMEOUT);
+    tokio::pin!(observation);
+    loop {
+        tokio::select! {
+            _ = &mut observation => break,
+            next = path_stream.next() => {
+                let Some(paths) = next else { break };
+                path = format_transport_paths(paths.iter().map(|path| {
+                    (
+                        path.remote_addr().to_string(),
+                        path.is_ip(),
+                        path.is_relay(),
+                        path.is_selected(),
+                    )
+                }));
+                if paths.iter().any(|path| path.is_ip()) {
+                    break;
+                }
+            }
+        }
+    }
+    path
 }
 
 fn report_state_file(path: &std::path::Path, label: &str) -> Result<()> {

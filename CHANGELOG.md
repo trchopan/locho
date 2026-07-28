@@ -4,6 +4,11 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+- Suppresses the non-actionable iroh QAD mapping warning at the default log
+  level while preserving it through `RUST_LOG` debugging.
+- Makes `locho diagnose` wait briefly for a relay connection to upgrade to a
+  direct path before reporting the transport path.
+
 - Upgrades iroh to 1.0.3 to improve relay-path reliability and avoid stalled
   TCP transfers under relay congestion.
 - Preserves complete direct, relay, and mixed transport diagnostics.
