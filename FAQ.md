@@ -44,11 +44,18 @@ The host loads this model from a TOML file using `locho host --config`. Service
 names must be unique and safe, HTTP services require HTTPS `upstream` URLs, and
 TCP services require an explicit `endpoint`.
 
-Use `locho rotate-secret <service>` to revoke the previous capability for one
-service and issue a replacement. Existing tunnel streams are not retroactively
-closed; new requests must use the replacement capability. Stop the host before
-running the command because the host holds the state lock while running, then
-restart it to load the replacement.
+Use `locho share <service> --config PATH` to generate a complete attach command.
+The capability token includes the service name and type, for example
+`database:tcp:<secret>`, so clients do not need a separate `--tcp` flag. The
+host never prints capabilities automatically. Use `locho secret <service>
+--config PATH` when a script needs only the token.
+
+Use `locho rotate-secret <service> --config PATH` to revoke the previous
+capability for one service and issue a replacement. Add
+`--direct-address ADDRESS` when the host requires an explicit address. Existing
+tunnel streams are not retroactively closed; new requests must use the
+replacement capability. Stop the host before running the command because the
+host holds the state lock while running, then restart it to load the replacement.
 
 ## Can one host expose multiple services?
 
@@ -100,7 +107,8 @@ to that local port:
 psql --host 127.0.0.1 --port 5432
 ```
 
-Start the TCP attachment with `locho attach ... --tcp --listen 127.0.0.1:5432`.
+Start the TCP attachment with `locho attach HOST_ID SERVICE:tcp:SECRET
+--listen 127.0.0.1:5432`.
 
 locho forwards the selected TCP service only. It does not provide arbitrary IP
 connectivity or a way to reach other ports on the host.

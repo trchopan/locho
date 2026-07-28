@@ -1,5 +1,6 @@
 mod attach;
 mod auth;
+mod capability;
 mod config;
 mod diagnostics;
 mod host;
@@ -8,10 +9,10 @@ mod protocol;
 mod state;
 mod task;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::{fmt::SubscriberBuilder, EnvFilter};
 
 #[derive(Parser)]
@@ -32,6 +33,22 @@ enum Command {
     ResetIdentity,
     RotateSecret {
         service: String,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        direct_address: Option<SocketAddr>,
+    },
+    Secret {
+        service: String,
+        #[arg(long)]
+        config: PathBuf,
+    },
+    Share {
+        service: String,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        direct_address: Option<SocketAddr>,
     },
     Diagnose {
         #[arg(long)]
@@ -43,11 +60,12 @@ enum Command {
     },
     Attach {
         host_id: String,
-        service: String,
-        secret: String,
+        capability: String,
+        #[arg(hide = true)]
+        legacy_secret: Option<String>,
         #[arg(long)]
         direct_address: Option<SocketAddr>,
-        #[arg(long)]
+        #[arg(long, hide = true)]
         tcp: bool,
         #[arg(long, default_value = "127.0.0.1:8765")]
         listen: SocketAddr,
@@ -63,7 +81,60 @@ async fn main() -> Result<()> {
             bind_address,
         } => host::run(config, bind_address).await,
         Command::ResetIdentity => state::reset_identity(),
-        Command::RotateSecret { service } => state::rotate_secret(&service),
+        Command::RotateSecret {
+            service,
+            config,
+            direct_address,
+        } => {
+            let service_type = config
+                .as_deref()
+                .map(|path| service_type(path, &service))
+                .transpose()?;
+            let (host_id, secret) = state::rotate_secret(&service)?;
+            let direct_address = direct_address
+                .map(|address| format!(" --direct-address {address}"))
+                .unwrap_or_default();
+            if let Some(service_type) = service_type {
+                println!(
+                    "attachment capability rotated for service {:?}\n\nAttach with:\n\nlocho attach {} {}{}",
+                    service,
+                    host_id,
+                    capability::format(&service, &service_type, &secret),
+                    direct_address
+                );
+            } else {
+                println!(
+                    "attachment capability rotated for service {:?}\n\nAttach with:\n\nlocho attach {} {} {}{}",
+                    service, host_id, service, secret, direct_address
+                );
+            }
+            Ok(())
+        }
+        Command::Secret { service, config } => {
+            let service_type = service_type(&config, &service)?;
+            let secret = state::read_service_secret(&service)?;
+            println!("{}", capability::format(&service, &service_type, &secret));
+            Ok(())
+        }
+        Command::Share {
+            service,
+            config,
+            direct_address,
+        } => {
+            let service_type = service_type(&config, &service)?;
+            let secret = state::read_service_secret(&service)?;
+            let host_id = state::read_host_endpoint_id()?;
+            let direct_address = direct_address
+                .map(|address| format!(" --direct-address {address}"))
+                .unwrap_or_default();
+            println!(
+                "locho attach {} {}{}",
+                host_id,
+                capability::format(&service, &service_type, &secret),
+                direct_address
+            );
+            Ok(())
+        }
         Command::Diagnose {
             config,
             host_id,
@@ -71,12 +142,15 @@ async fn main() -> Result<()> {
         } => diagnostics::run(config, host_id, direct_address).await,
         Command::Attach {
             host_id,
-            service,
-            secret,
+            capability,
+            legacy_secret,
             direct_address,
             tcp,
             listen,
-        } => attach::run(host_id, service, secret, direct_address, tcp, listen).await,
+        } => {
+            let capability = normalize_capability(&capability, legacy_secret, tcp)?;
+            attach::run(host_id, capability, direct_address, listen).await
+        }
     }
 }
 
@@ -92,4 +166,63 @@ fn init_tracing() {
 
 fn default_log_filter() -> EnvFilter {
     EnvFilter::new("info,iroh::net_report::report=error")
+}
+
+fn service_type(config_path: &Path, service: &str) -> Result<config::ServiceType> {
+    let config = config::Config::load(config_path)?;
+    config
+        .services
+        .iter()
+        .find(|configured| configured.name == service)
+        .map(|configured| configured.service_type)
+        .ok_or_else(|| anyhow::anyhow!("unknown service {:?}", service))
+}
+
+fn normalize_capability(
+    value: &str,
+    legacy_secret: Option<String>,
+    legacy_tcp: bool,
+) -> Result<String> {
+    match legacy_secret {
+        Some(secret) => {
+            if capability::parse(value).is_ok() {
+                bail!("cannot combine legacy service/secret arguments with a capability token")
+            }
+            let service_type = if legacy_tcp {
+                config::ServiceType::Tcp
+            } else {
+                config::ServiceType::Http
+            };
+            Ok(capability::format(value, &service_type, &secret))
+        }
+        None => {
+            if legacy_tcp {
+                bail!("--tcp is only supported with the legacy attach syntax")
+            }
+            capability::parse(value)?;
+            Ok(value.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_legacy_attach_syntax() {
+        assert_eq!(
+            normalize_capability("api", Some("secret".into()), false).unwrap(),
+            "api:http:secret"
+        );
+        assert_eq!(
+            normalize_capability("database", Some("secret".into()), true).unwrap(),
+            "database:tcp:secret"
+        );
+    }
+
+    #[test]
+    fn rejects_tcp_flag_with_capability_syntax() {
+        assert!(normalize_capability("database:tcp:secret", None, true).is_err());
+    }
 }

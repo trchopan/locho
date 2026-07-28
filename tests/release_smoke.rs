@@ -306,9 +306,10 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
             &direct_address,
         ],
     );
-    let web_command = host.wait_for_attach("web");
-    let unavailable_command = host.wait_for_attach("unavailable");
-    let tcp_command = host.wait_for_attach("database");
+    let web_command = host.wait_for_attach(&binary, state_dir.path(), &config_path, "web");
+    let unavailable_command =
+        host.wait_for_attach(&binary, state_dir.path(), &config_path, "unavailable");
+    let tcp_command = host.wait_for_attach(&binary, state_dir.path(), &config_path, "database");
 
     let (host_id, _, web_secret) = parse_attach_command(&web_command);
     let diagnostics = run_cli_output(
@@ -397,7 +398,16 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
     http.stop();
     unavailable.stop();
     tcp.stop();
-    run_cli(&binary, state_dir.path(), ["rotate-secret", "database"]);
+    run_cli(
+        &binary,
+        state_dir.path(),
+        [
+            "rotate-secret",
+            "database",
+            "--config",
+            config_path.to_str().unwrap(),
+        ],
+    );
 
     let replacement_upstream = TcpListener::bind(upstream_address).unwrap();
     let replacement_upstream_thread = thread::spawn(move || {
@@ -420,7 +430,8 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
             &direct_address,
         ],
     );
-    let rotated_command = restarted_host.wait_for_attach("database");
+    let rotated_command =
+        restarted_host.wait_for_attach(&binary, state_dir.path(), &config_path, "database");
     let (_, _, old_secret) = parse_attach_command(&tcp_command);
     let (_, _, new_secret) = parse_attach_command(&rotated_command);
     assert_ne!(old_secret, new_secret);
@@ -492,7 +503,7 @@ fn release_binary_reports_http_upstream_timeout() {
             &direct_address,
         ],
     );
-    let web_command = host.wait_for_attach("web");
+    let web_command = host.wait_for_attach(&binary, state_dir.path(), &config_path, "web");
     let http_port = free_port();
     let mut http = start_attachment(
         &binary,
@@ -546,7 +557,7 @@ fn release_binary_closes_active_tcp_session_on_host_shutdown() {
             &direct_address,
         ],
     );
-    let attach_command = host.wait_for_attach("database");
+    let attach_command = host.wait_for_attach(&binary, state_dir.path(), &config_path, "database");
     let tcp_port = free_port();
     let mut attachment = start_attachment(
         &binary,
@@ -585,7 +596,13 @@ fn release_binary_closes_active_tcp_session_on_host_shutdown() {
 }
 
 impl ProcessOutput {
-    fn wait_for_attach(&self, service: &str) -> String {
+    fn wait_for_attach(
+        &self,
+        binary: &Path,
+        state_dir: &Path,
+        config_path: &Path,
+        service: &str,
+    ) -> String {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -593,10 +610,18 @@ impl ProcessOutput {
                 .lines
                 .recv_timeout(remaining.min(Duration::from_millis(250)))
             {
-                if line.starts_with("locho attach ")
-                    && line.split_whitespace().any(|part| part == service)
-                {
-                    return line;
+                if line.contains(&format!("- {service} (")) {
+                    let output = run_cli_output(
+                        binary,
+                        state_dir,
+                        ["share", service, "--config", config_path.to_str().unwrap()],
+                    );
+                    assert!(
+                        output.status.success(),
+                        "share failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    return String::from_utf8(output.stdout).unwrap().trim().to_string();
                 }
             }
         }
@@ -641,7 +666,7 @@ fn start_attachment(
     attach_command: &str,
     direct_address: &str,
     port: u16,
-    tcp: bool,
+    _tcp: bool,
 ) -> ProcessOutput {
     let mut command = Command::new(binary);
     command.env("LOCHO_STATE_DIR", state_dir);
@@ -653,13 +678,6 @@ fn start_attachment(
         .any(|argument| argument == "--direct-address")
     {
         command.args(["--direct-address", direct_address]);
-    }
-    if tcp
-        && !attach_command
-            .split_whitespace()
-            .any(|argument| argument == "--tcp")
-    {
-        command.arg("--tcp");
     }
     command.args(["--listen", &format!("127.0.0.1:{port}")]);
     ProcessOutput::spawn(command)
@@ -690,10 +708,13 @@ fn parse_attach_command(line: &str) -> (String, String, String) {
     let mut parts = line.split_whitespace();
     assert_eq!(parts.next(), Some("locho"));
     assert_eq!(parts.next(), Some("attach"));
+    let host_id = parts.next().unwrap().to_string();
+    let capability = parts.next().unwrap();
+    let mut capability_parts = capability.split(':');
     (
-        parts.next().unwrap().to_string(),
-        parts.next().unwrap().to_string(),
-        parts.next().unwrap().to_string(),
+        host_id,
+        capability_parts.next().unwrap().to_string(),
+        capability_parts.nth(1).unwrap().to_string(),
     )
 }
 
