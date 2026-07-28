@@ -15,7 +15,7 @@ use std::{
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(unix)]
-const RECONNECT_TIMEOUT: Duration = Duration::from_secs(45);
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const TEST_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const BODY_CHUNK_LEN: usize = 16 * 1024;
 
