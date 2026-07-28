@@ -7,11 +7,20 @@ use std::{
 };
 use url::Url;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceType {
     Http,
     Tcp,
+}
+
+impl ServiceType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Tcp => "tcp",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,7 +126,7 @@ impl Config {
     }
 }
 
-fn is_safe_service_name(name: &str) -> bool {
+pub(crate) fn is_safe_service_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name

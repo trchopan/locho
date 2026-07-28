@@ -108,15 +108,14 @@ impl HttpBodyLeaseGuard {
 
 pub async fn run(
     host_id: String,
-    service: String,
-    secret: String,
+    capability: String,
     direct_address: Option<SocketAddr>,
-    tcp: bool,
     listen: SocketAddr,
 ) -> Result<()> {
-    if service.is_empty() {
-        return Err(anyhow!("service name cannot be empty"));
-    }
+    let capability = crate::capability::parse(&capability)?;
+    let service = capability.service;
+    let secret = capability.secret;
+    let tcp = matches!(capability.service_type, crate::config::ServiceType::Tcp);
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {

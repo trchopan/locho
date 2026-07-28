@@ -98,6 +98,22 @@ impl ProcessOutput {
         panic!("timed out waiting for {text}; output: {output:?}");
     }
 
+    fn wait_for_attach(&self, state_dir: &Path, config_path: &Path, service: &str) -> String {
+        self.wait_for(&format!("- {service} ("));
+        let output = Command::new(locho_binary())
+            .env("LOCHO_STATE_DIR", state_dir)
+            .args(["share", service, "--config"])
+            .arg(config_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "share failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -165,7 +181,7 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
     let (host_id, service, secret) = parse_attach_command(&attach_command);
     let first_port = free_port();
     let mut attachment = start_ready_attachment(
@@ -189,11 +205,20 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
     attachment.stop();
     second_attachment.stop();
 
-    run_cli(state_dir.path(), ["rotate-secret", service.as_str()]);
+    run_cli(
+        state_dir.path(),
+        [
+            "rotate-secret",
+            service.as_str(),
+            "--config",
+            config_path.to_str().unwrap(),
+        ],
+    );
 
     let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
     restarted_host.wait_for("locho direct-address ");
-    let rotated_command = restarted_host.wait_for("locho attach ");
+    let rotated_command =
+        restarted_host.wait_for_attach(state_dir.path(), &config_path, "database");
     let (rotated_host_id, rotated_service, rotated_secret) = parse_attach_command(&rotated_command);
     assert_eq!(rotated_host_id, host_id);
     assert_eq!(rotated_service, service);
@@ -202,7 +227,7 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
     let old_port = free_port();
     let mut old_attachment = start_attachment(
         state_dir.path(),
-        &format!("locho attach {host_id} {service} {secret}"),
+        &format!("locho attach {host_id} {service}:tcp:{secret}"),
         old_port,
         &direct_address,
     );
@@ -250,8 +275,8 @@ fn tcp_attachment_reports_unavailable_upstream() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
-    let healthy_attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
+    let healthy_attach_command = host.wait_for_attach(state_dir.path(), &config_path, "healthy");
     let attach_port = free_port();
     let mut attachment = start_ready_attachment(
         state_dir.path(),
@@ -294,7 +319,7 @@ fn host_rejects_oversized_tunnel_header_without_stopping() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
 
     assert_eq!(
         send_oversized_tunnel_header(&attach_command, &direct_address),
@@ -322,7 +347,7 @@ fn tcp_attachment_reports_connect_timeout() {
     let mut host =
         start_host_with_tcp_timeout(state_dir.path(), &config_path, &direct_address, "0");
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
     let attach_port = free_port();
     let mut attachment = start_ready_attachment(
         state_dir.path(),
@@ -399,7 +424,7 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment(
         state_dir.path(),
@@ -482,7 +507,7 @@ fn http_attachment_reports_unavailable_upstream() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment(
         state_dir.path(),
@@ -524,7 +549,7 @@ fn http_attachment_reports_upstream_timeout() {
     let mut host =
         start_host_with_timeout(state_dir.path(), &config_path, &direct_address, Some("100"));
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment(
         state_dir.path(),
@@ -637,8 +662,23 @@ fn diagnose_reports_direct_transport_path_without_capabilities() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
     let (host_id, _, secret) = parse_attach_command(&attach_command);
+
+    let secret_output = Command::new(locho_binary())
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["secret", "database", "--config"])
+        .arg(&config_path)
+        .output()
+        .unwrap();
+    assert!(secret_output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&secret_output.stdout).trim(),
+        format!("database:tcp:{secret}")
+    );
+    let host_output = host.output().join("\n");
+    assert!(!host_output.contains(&secret));
+    assert!(!host_output.contains("locho attach "));
 
     let output = Command::new(locho_binary())
         .env("LOCHO_STATE_DIR", state_dir.path())
@@ -682,7 +722,7 @@ fn http_attachment_stops_active_request_with_host_shutdown() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment(
         state_dir.path(),
@@ -725,7 +765,7 @@ fn tcp_attachment_closes_active_connection_on_host_shutdown() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
     let attach_port = free_port();
     let mut attachment = start_ready_attachment(
         state_dir.path(),
@@ -789,7 +829,7 @@ fn tcp_attachment_reconnects_after_host_restart() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
     let attach_port = free_port();
     let mut attachment = start_ready_attachment(
         state_dir.path(),
@@ -842,7 +882,7 @@ fn http_attachment_reconnects_after_host_restart() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment(
         state_dir.path(),
@@ -905,7 +945,7 @@ fn http_attachment_reconnects_after_active_request_host_restart() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment(
         state_dir.path(),
@@ -979,7 +1019,7 @@ fn http_attachment_closes_stalled_response_body() {
     let direct_address = format!("127.0.0.1:{}", free_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
-    let attach_command = host.wait_for("locho attach ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
     let mut attachment = start_http_attachment_with_body_timeout(
         state_dir.path(),
@@ -1434,12 +1474,6 @@ fn start_attachment(
     {
         command.arg(argument);
     }
-    if !command_line
-        .split_whitespace()
-        .any(|argument| argument == "--tcp")
-    {
-        command.arg("--tcp");
-    }
     command.args(["--listen", &format!("127.0.0.1:{port}")]);
     ProcessOutput::spawn(command)
 }
@@ -1509,10 +1543,13 @@ fn parse_attach_command(line: &str) -> (String, String, String) {
     let mut parts = line.split_whitespace();
     assert_eq!(parts.next(), Some("locho"));
     assert_eq!(parts.next(), Some("attach"));
+    let host_id = parts.next().unwrap().to_string();
+    let capability = parts.next().unwrap();
+    let mut capability_parts = capability.split(':');
     (
-        parts.next().unwrap().to_string(),
-        parts.next().unwrap().to_string(),
-        parts.next().unwrap().to_string(),
+        host_id,
+        capability_parts.next().unwrap().to_string(),
+        capability_parts.nth(1).unwrap().to_string(),
     )
 }
 

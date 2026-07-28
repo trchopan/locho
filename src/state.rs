@@ -100,15 +100,7 @@ pub fn load_or_create_host_state(endpoint_id: EndpointId) -> Result<PersistedHos
             .with_context(|| format!("failed to read {}", state_path.display()))?;
         let state: PersistedHostState = serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to parse {}", state_path.display()))?;
-        if state.schema_version != CURRENT_SCHEMA_VERSION
-            && state.schema_version != LEGACY_SCHEMA_VERSION
-        {
-            bail!(
-                "unsupported host state schema version {} in {}",
-                state.schema_version,
-                state_path.display()
-            );
-        }
+        validate_host_state_schema(&state, &state_path)?;
         let (mut state, mut changed) = repair_host_state(state, endpoint_id);
         if state.schema_version == LEGACY_SCHEMA_VERSION {
             // Legacy state had one host-wide secret. Service capabilities are
@@ -147,7 +139,7 @@ pub fn reset_identity() -> Result<()> {
     Ok(())
 }
 
-pub fn rotate_secret(service: &str) -> Result<()> {
+pub fn rotate_secret(service: &str) -> Result<(EndpointId, String)> {
     let _state_lock = acquire_state_lock()?;
     let secret_key = load_or_create_host_secret_key()?;
     let endpoint_id = EndpointId::from(secret_key.public());
@@ -165,11 +157,68 @@ pub fn rotate_secret(service: &str) -> Result<()> {
         .service_secrets
         .insert(service.to_string(), secret.clone());
     write_host_state_file(&state_path, &state)?;
-    println!(
-        "attachment capability rotated for service {:?}\n\nAttach with:\n\nlocho attach {} {} {}",
-        service, endpoint_id, service, secret
-    );
+    Ok((endpoint_id, secret))
+}
+
+pub fn read_service_secret(service: &str) -> Result<String> {
+    let state = read_host_state()?;
+    state
+        .service_secrets
+        .get(service)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("unknown service {:?}; start the host first", service))
+}
+
+pub fn read_host_endpoint_id() -> Result<EndpointId> {
+    let state = read_host_state()?;
+    let endpoint_id = read_existing_host_endpoint_id()?;
+    if state.endpoint_id != endpoint_id.to_string() {
+        bail!("host state endpoint ID does not match the persisted host identity")
+    }
+    Ok(endpoint_id)
+}
+
+fn read_host_state() -> Result<PersistedHostState> {
+    let path = host_state_path()?;
+    if !path.exists() {
+        bail!("host state does not exist; start the host first")
+    }
+    ensure_private_file(&path)?;
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let state: PersistedHostState = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_host_state_schema(&state, &path)?;
+    state
+        .endpoint_id
+        .parse::<EndpointId>()
+        .with_context(|| format!("invalid host ID in persisted host state {}", path.display()))?;
+    Ok(state)
+}
+
+fn validate_host_state_schema(state: &PersistedHostState, path: &Path) -> Result<()> {
+    if state.schema_version != CURRENT_SCHEMA_VERSION
+        && state.schema_version != LEGACY_SCHEMA_VERSION
+    {
+        bail!(
+            "unsupported host state schema version {} in {}",
+            state.schema_version,
+            path.display()
+        );
+    }
     Ok(())
+}
+
+fn read_existing_host_endpoint_id() -> Result<EndpointId> {
+    let path = host_key_path()?;
+    if !path.exists() {
+        bail!("host identity does not exist; start the host first")
+    }
+    ensure_private_file(&path)?;
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let key_bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid host key length in {}", path.display()))?;
+    Ok(EndpointId::from(SecretKey::from_bytes(&key_bytes).public()))
 }
 
 fn remove_if_exists(path: &Path) -> Result<()> {
@@ -330,6 +379,25 @@ mod tests {
         assert_eq!(first.endpoint_id, second.endpoint_id);
         assert_eq!(first.attach_secret, second.attach_secret);
         assert_eq!(first.service_secrets, second.service_secrets);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_repairs_invalid_persisted_endpoint_id() {
+        let _lock = state_test_lock();
+        let dir = test_state_dir();
+        use_test_state_dir(&dir);
+        let key = load_or_create_host_secret_key().unwrap();
+        fs::write(
+            dir.join("host_state.json"),
+            r#"{"schema_version":2,"endpoint_id":"invalid","attach_secret":"secret"}"#,
+        )
+        .unwrap();
+        let state = load_or_create_host_state(EndpointId::from(key.public())).unwrap();
+        assert_eq!(
+            state.endpoint_id,
+            EndpointId::from(key.public()).to_string()
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

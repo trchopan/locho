@@ -2,6 +2,12 @@
 
 All notable changes to `locho` are documented here.
 
+## Unreleased
+
+- Stops `locho host` from printing service capabilities automatically.
+- Adds explicit `locho share` and `locho secret` commands with service-typed
+  capability tokens consumed directly by `locho attach`.
+
 ## [1.1.0-beta.2] - 2026-07-28
 
 This prerelease continues the reliability work from `1.1.0-beta.1`. It is
