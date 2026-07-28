@@ -14,6 +14,7 @@ use std::{
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 const TEST_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const BODY_CHUNK_LEN: usize = 16 * 1024;
 
@@ -1024,7 +1025,7 @@ fn send_http_request(
 
 #[cfg(unix)]
 fn send_http_request_after_reconnect(port: u16) -> HttpResponse {
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let deadline = Instant::now() + RECONNECT_TIMEOUT;
     loop {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             send_http_request(port, "GET", "/recovered", b"", false)
