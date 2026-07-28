@@ -23,7 +23,8 @@ try {
     Invoke-Step "cargo build --release --features integration-test --target-dir target/integration-release"
 
     $env:LOCHO_TEST_BINARY = "target/integration-release/release/locho.exe"
-    Invoke-Step "cargo test --test integration --features integration-test"
+    # These tests launch multiple processes and use shared local networking resources.
+    Invoke-Step "cargo test --test integration --features integration-test -- --test-threads=1"
     $env:LOCHO_TEST_BINARY = "target/release/locho.exe"
     Invoke-Step "cargo test --test release_smoke -- --ignored"
 

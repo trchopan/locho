@@ -31,8 +31,9 @@ run cargo clippy --all-targets --all-features -- -D warnings
 run cargo test --all-targets --all-features
 run cargo build --release
 run cargo build --release --features integration-test --target-dir target/integration-release
+# These tests launch multiple processes and use shared local networking resources.
 env LOCHO_TEST_BINARY=target/integration-release/release/locho \
-    cargo test --test integration --features integration-test
+    cargo test --test integration --features integration-test -- --test-threads=1
 env LOCHO_TEST_BINARY=target/release/locho \
     cargo test --test release_smoke -- --ignored
 

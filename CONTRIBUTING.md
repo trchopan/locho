@@ -23,7 +23,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo build --release
 cargo build --release --features integration-test --target-dir target/integration-release
-LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test
+LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test -- --test-threads=1
 LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke -- --ignored
 ```
 
