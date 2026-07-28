@@ -104,11 +104,13 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
         let direct_address = bind_address
             .map(|address| format!(" --direct-address {address}"))
             .unwrap_or_default();
+        let tcp_flag = attach_mode_flag(&service.service_type);
         println!(
-            "\nlocho attach {} {} {}{}",
+            "\nlocho attach {} {} {}{}{}",
             endpoint.node_id(),
             service.name,
             secret,
+            tcp_flag,
             direct_address
         );
     }
@@ -153,6 +155,14 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
     }
     endpoint.close().await;
     Ok(())
+}
+
+fn attach_mode_flag(service_type: &ServiceType) -> &'static str {
+    if matches!(service_type, ServiceType::Tcp) {
+        " --tcp"
+    } else {
+        ""
+    }
 }
 
 fn validate_bind_address(address: SocketAddr) -> Result<std::net::SocketAddrV4> {
@@ -638,6 +648,12 @@ mod tests {
         assert!(validate_bind_address("0.0.0.0:12345".parse().unwrap()).is_err());
         assert!(validate_bind_address("127.0.0.1:0".parse().unwrap()).is_err());
         assert!(validate_bind_address("[::1]:12345".parse().unwrap()).is_err());
+    }
+
+    #[test]
+    fn attach_mode_flag_matches_service_type() {
+        assert_eq!(attach_mode_flag(&ServiceType::Tcp), " --tcp");
+        assert_eq!(attach_mode_flag(&ServiceType::Http), "");
     }
 
     fn tcp_services(endpoint: std::net::SocketAddr) -> Arc<HostServices> {

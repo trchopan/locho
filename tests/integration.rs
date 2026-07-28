@@ -1423,7 +1423,13 @@ fn start_attachment(
     {
         command.arg(argument);
     }
-    command.args(["--tcp", "--listen", &format!("127.0.0.1:{port}")]);
+    if !command_line
+        .split_whitespace()
+        .any(|argument| argument == "--tcp")
+    {
+        command.arg("--tcp");
+    }
+    command.args(["--listen", &format!("127.0.0.1:{port}")]);
     ProcessOutput::spawn(command)
 }
 
