@@ -145,11 +145,19 @@ locho diagnose --host-id <host-id> --direct-address 192.0.2.10:12345
 
 The optional host probe reports the concrete iroh transport path. `direct(...)`
 means a direct UDP path, `relay(...)` means traffic is currently using a relay,
-and `mixed(...)` means iroh has both a direct and relay path available. An
-attachment prints its initial path and continues reporting path changes while
-running. Use `--direct-address` when discovery cannot advertise a reachable
-address to the probing machine. A relay path is encrypted end-to-end, but relay
-availability and performance remain external infrastructure dependencies.
+and `mixed(...)` means iroh has both a direct and relay path available. The
+diagnostic probe waits briefly for a relay connection to upgrade to a direct
+path before printing its result. An attachment prints its initial path and
+continues reporting path changes while running. Use `--direct-address` when
+discovery cannot advertise a reachable address to the probing machine. A relay
+path is encrypted end-to-end, but relay availability and performance remain
+external infrastructure dependencies.
+
+Some networks use destination-dependent NAT mappings. iroh detects this with
+QUIC Address Discovery (QAD), which probes multiple relay destinations and
+compares the public IPv4 mappings they observe. This can make direct UDP
+hole-punching unreliable, but it does not indicate a locho failure. Relay
+fallback is the expected behavior in this situation.
 
 TCP services are attached to a local TCP listener and forward bidirectionally:
 

@@ -12,6 +12,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use tracing_subscriber::{fmt::SubscriberBuilder, EnvFilter};
 
 #[derive(Parser)]
 #[command(name = "locho", about = "Private HTTP and TCP service tunnel")]
@@ -55,7 +56,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    init_tracing();
     match Cli::parse().command {
         Command::Host {
             config,
@@ -77,4 +78,18 @@ async fn main() -> Result<()> {
             listen,
         } => attach::run(host_id, service, secret, direct_address, tcp, listen).await,
     }
+}
+
+fn init_tracing() {
+    let filter = if std::env::var_os("RUST_LOG").is_some() {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| default_log_filter())
+    } else {
+        default_log_filter()
+    };
+
+    SubscriberBuilder::default().with_env_filter(filter).init();
+}
+
+fn default_log_filter() -> EnvFilter {
+    EnvFilter::new("info,iroh::net_report::report=error")
 }

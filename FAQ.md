@@ -157,6 +157,21 @@ If peer discovery cannot advertise a reachable host address, start the host with
 `--direct-address ADDRESS`. This is an explicit address hint; it does not bypass
 service capability authorization.
 
+### What does the QAD warning mean?
+
+QAD means QUIC Address Discovery. iroh sends probes to multiple relay servers
+and asks what public IPv4 address and UDP port each relay observes. A warning
+that the address varies by destination means the network uses a
+destination-dependent NAT mapping, which is common with CGNAT, VPNs, and some
+enterprise or cellular networks.
+
+This is not an application error and users normally do not need to change
+anything. Direct UDP connectivity may be less reliable, so locho can use its
+encrypted relay fallback. The `locho diagnose` command waits briefly for a
+possible direct-path upgrade before reporting the observed path. A relay-only
+result means the connection was still using the relay when the observation
+ended, not that the relay can read application traffic.
+
 ## Can a relay read the application traffic?
 
 Relays carry encrypted iroh traffic and are not intended to read the tunneled
