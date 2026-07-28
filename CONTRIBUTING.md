@@ -20,7 +20,7 @@ by CI:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo test --all-targets --all-features -- --test-threads=1
 cargo build --release
 cargo build --release --features integration-test --target-dir target/integration-release
 LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test -- --test-threads=1

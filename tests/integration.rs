@@ -936,7 +936,16 @@ fn http_attachment_reconnects_after_active_request_host_restart() {
 
     let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
     restarted_host.wait_for("locho direct-address ");
-    let response = send_http_request_after_reconnect(attach_port);
+    let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        send_http_request_after_reconnect(attach_port)
+    })) {
+        Ok(response) => response,
+        Err(payload) => {
+            eprintln!("attachment output: {:?}", attachment.output());
+            eprintln!("restarted host output: {:?}", restarted_host.output());
+            std::panic::resume_unwind(payload);
+        }
+    };
     assert_eq!(response.status, 200);
     assert_eq!(response.body, b"recovered");
 
