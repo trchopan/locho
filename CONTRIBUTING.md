@@ -54,7 +54,7 @@ On Windows:
 
 Use `--skip-artifacts` or `-SkipArtifacts` when cargo-dist packaging is not
 available. Maintainers should follow [RELEASE.md](RELEASE.md) for the complete
-1.0 checklist and supported-target requirements.
+release checklist and supported-target requirements.
 
 ## Pull Requests
 

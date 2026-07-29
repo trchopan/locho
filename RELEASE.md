@@ -28,7 +28,7 @@ same checks locally and in CI.
 | Target              | Distribution                 | Verification status                                         |
 | ------------------- | ---------------------------- | ----------------------------------------------------------- |
 | Linux x86_64        | tar.xz and shell installer   | Native CI and release smoke                                 |
-| Linux ARM64         | tar.xz and shell installer   | Cross-compiled; native rehearsal required before 1.0        |
+| Linux ARM64         | tar.xz and shell installer   | Cross-compiled; native rehearsal required before publishing |
 | macOS x86_64        | tar.xz and shell installer   | Native or cross-compiled CI; release smoke                  |
 | macOS Apple silicon | tar.xz and shell installer   | Native or cross-compiled CI; release smoke                  |
 | Windows x86_64      | zip and PowerShell installer | Native CI and release smoke                                 |
