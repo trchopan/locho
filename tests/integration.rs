@@ -129,6 +129,15 @@ impl ProcessOutput {
     }
 
     #[cfg(unix)]
+    fn terminate(&mut self) {
+        let status = Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
     fn wait_for_exit(&mut self) {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         loop {
@@ -936,8 +945,8 @@ fn tcp_attachment_reconnects_after_host_restart() {
         &direct_address,
     );
 
-    host.stop();
-    thread::sleep(Duration::from_secs(20));
+    host.terminate();
+    host.wait_for_exit();
     assert!(attachment.child.try_wait().unwrap().is_none());
 
     let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
@@ -990,8 +999,8 @@ fn http_attachment_reconnects_after_host_restart() {
     );
     attachment.wait_for("Local proxy:");
 
-    host.stop();
-    thread::sleep(Duration::from_secs(20));
+    host.terminate();
+    host.wait_for_exit();
     let mut restarted_host = start_host(state_dir.path(), &config_path, &direct_address);
     restarted_host.wait_for("locho direct-address ");
 
