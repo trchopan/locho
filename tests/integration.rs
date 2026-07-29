@@ -4,7 +4,7 @@ use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc,
@@ -178,7 +178,7 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
     )
     .unwrap();
 
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
@@ -278,7 +278,7 @@ fn one_attachment_process_supports_multiple_services() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &host_config, &direct_address);
     host.wait_for("locho direct-address ");
     let first_command = host.wait_for_attach(state_dir.path(), &host_config, "first");
@@ -354,7 +354,7 @@ fn tcp_attachment_reports_unavailable_upstream() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
@@ -398,7 +398,7 @@ fn host_rejects_oversized_tunnel_header_without_stopping() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
@@ -425,7 +425,7 @@ fn tcp_attachment_reports_connect_timeout() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host =
         start_host_with_tcp_timeout(state_dir.path(), &config_path, &direct_address, "0");
     host.wait_for("locho direct-address ");
@@ -503,7 +503,7 @@ fn http_attachment_proxies_methods_headers_and_streamed_bodies() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
@@ -586,7 +586,7 @@ fn http_attachment_reports_unavailable_upstream() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
@@ -627,7 +627,7 @@ fn http_attachment_reports_upstream_timeout() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host =
         start_host_with_timeout(state_dir.path(), &config_path, &direct_address, Some("100"));
     host.wait_for("locho direct-address ");
@@ -757,7 +757,7 @@ fn diagnose_reports_direct_transport_path_without_capabilities() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
@@ -817,7 +817,7 @@ fn http_attachment_stops_active_request_with_host_shutdown() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
@@ -860,7 +860,7 @@ fn tcp_attachment_closes_active_connection_on_host_shutdown() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
@@ -924,7 +924,7 @@ fn tcp_attachment_reconnects_after_host_restart() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "database");
@@ -977,7 +977,7 @@ fn http_attachment_reconnects_after_host_restart() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
@@ -1040,7 +1040,7 @@ fn http_attachment_reconnects_after_active_request_host_restart() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
@@ -1114,7 +1114,7 @@ fn http_attachment_closes_stalled_response_body() {
         ),
     )
     .unwrap();
-    let direct_address = format!("127.0.0.1:{}", free_port());
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
     let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
@@ -1700,6 +1700,14 @@ fn send_oversized_tunnel_header(attach_command: &str, direct_address: &str) -> u
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn free_udp_port() -> u16 {
+    UdpSocket::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
