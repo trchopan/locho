@@ -32,6 +32,7 @@ type HttpResponse = Response<StreamBody<HttpStream>>;
 
 #[derive(Clone)]
 struct ActiveConnection {
+    generation: u64,
     connection: Connection,
 }
 
@@ -40,10 +41,18 @@ type ConnectionReceiver = watch::Receiver<Option<ActiveConnection>>;
 #[derive(Clone)]
 struct ConnectionState {
     receiver: ConnectionReceiver,
+    sender: watch::Sender<Option<ActiveConnection>>,
 }
 
+#[derive(Clone)]
 struct ConnectionLease {
     connection: Connection,
+    generation: u64,
+    sender: watch::Sender<Option<ActiveConnection>>,
+}
+
+struct HttpBodyLeaseGuard {
+    lease: Option<ConnectionLease>,
 }
 
 #[derive(Debug)]
@@ -58,9 +67,77 @@ impl fmt::Display for TunnelUnavailable {
 impl std::error::Error for TunnelUnavailable {}
 
 #[derive(Debug)]
+struct TransportFailure(anyhow::Error);
+
+impl fmt::Display for TransportFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "transport failure: {}", self.0)
+    }
+}
+
+impl std::error::Error for TransportFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+#[derive(Debug)]
+struct ServiceRejected {
+    status: u16,
+}
+
+impl fmt::Display for ServiceRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "TCP attachment rejected with status {}",
+            self.status
+        )
+    }
+}
+
+impl std::error::Error for ServiceRejected {}
+
+#[derive(Debug)]
 enum TransportMonitorExit {
     PathLost,
     Ended,
+}
+
+fn transport_failure(error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(TransportFailure(error))
+}
+
+fn is_transport_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<TransportFailure>().is_some()
+}
+
+impl ConnectionLease {
+    fn invalidate(&self) {
+        let _ = self.sender.send_if_modified(|current| {
+            if current
+                .as_ref()
+                .is_some_and(|connection| connection.generation == self.generation)
+            {
+                *current = None;
+                true
+            } else {
+                false
+            }
+        });
+    }
+}
+
+impl HttpBodyLeaseGuard {
+    fn invalidate(&self) {
+        if let Some(lease) = &self.lease {
+            lease.invalidate();
+        }
+    }
+
+    fn complete(&mut self) {
+        self.lease = None;
+    }
 }
 
 pub async fn run(
@@ -145,6 +222,7 @@ async fn run_attachments(
     let (connection_sender, connection_receiver) = watch::channel(None);
     let connection_state = ConnectionState {
         receiver: connection_receiver,
+        sender: connection_sender.clone(),
     };
     let supervisor_receiver = connection_state.receiver.clone();
     let shutdown = CancellationToken::new();
@@ -261,6 +339,7 @@ async fn connection_supervisor(
 
         generation += 1;
         let _ = sender.send(Some(ActiveConnection {
+            generation,
             connection: connection.clone(),
         }));
         receiver.borrow_and_update();
@@ -311,8 +390,10 @@ async fn connection_supervisor(
             }
         }
         if let Some(monitor) = monitor {
-            monitor.abort();
-            let _ = monitor.await;
+            if !monitor.is_finished() {
+                monitor.abort();
+                let _ = monitor.await;
+            }
         }
         retry_delay(&shutdown, backoff).await;
         backoff = next_backoff(backoff);
@@ -574,6 +655,8 @@ async fn acquire_connection(state: ConnectionState) -> Result<ConnectionLease> {
     };
     Ok(ConnectionLease {
         connection: active.connection,
+        generation: active.generation,
+        sender: state.sender,
     })
 }
 
@@ -596,7 +679,11 @@ async fn handle_tcp_connection(
     secret: String,
 ) -> Result<()> {
     let lease = acquire_connection(connection).await?;
-    handle_tcp_connection_on_lease(&lease, local, service, secret).await
+    let result = handle_tcp_connection_on_lease(&lease, local, service, secret).await;
+    if result.as_ref().is_err_and(is_transport_failure) {
+        lease.invalidate();
+    }
+    result
 }
 
 async fn handle_tcp_connection_on_lease(
@@ -605,7 +692,11 @@ async fn handle_tcp_connection_on_lease(
     service: String,
     secret: String,
 ) -> Result<()> {
-    let (mut writer, mut reader) = lease.connection.open_bi().await?;
+    let (mut writer, mut reader) = lease
+        .connection
+        .open_bi()
+        .await
+        .map_err(|error| transport_failure(error.into()))?;
     write_json_head(
         &mut writer,
         &StreamRequestHead::Tcp(TcpRequestHead {
@@ -614,21 +705,34 @@ async fn handle_tcp_connection_on_lease(
             secret_proof: auth::secret_proof(&secret),
         }),
     )
-    .await?;
+    .await
+    .map_err(transport_failure)?;
     let response: LochoResponseHead =
         timeout(HANDSHAKE_TIMEOUT, read_json_head(&mut reader, MAX_HEAD_LEN))
             .await
-            .context("TCP attachment handshake timed out")??;
+            .context("TCP attachment handshake timed out")?
+            .map_err(transport_failure)?;
     if response.status != 200 {
-        return Err(anyhow!(
-            "TCP attachment rejected with status {}",
-            response.status
-        ));
+        return Err(anyhow::Error::new(ServiceRejected {
+            status: response.status,
+        }));
     }
-    read_body_with_limit(&mut reader, response.body_len, MAX_BODY_LEN).await?;
+    read_body_with_limit(&mut reader, response.body_len, MAX_BODY_LEN)
+        .await
+        .map_err(transport_failure)?;
     let remote = tokio::io::join(reader, writer);
-    relay_with_idle_timeout(local, remote).await?;
+    let result = relay_with_idle_timeout(local, remote).await;
+    if result.as_ref().is_err_and(|error| !is_idle_timeout(error)) {
+        return result.map_err(transport_failure);
+    }
+    result?;
     Ok(())
+}
+
+fn is_idle_timeout(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::protocol::TunnelIdleTimeout>()
+        .is_some()
 }
 
 async fn handle_request(
@@ -688,7 +792,12 @@ async fn tunnel_request(
     body: Incoming,
 ) -> Result<HttpResponse> {
     let lease = acquire_connection(connection).await?;
-    tunnel_request_on_lease(&lease, service, secret, method, path, headers, body).await
+    let result =
+        tunnel_request_on_lease(&lease, service, secret, method, path, headers, body).await;
+    if result.as_ref().is_err_and(is_transport_failure) {
+        lease.invalidate();
+    }
+    result
 }
 
 async fn tunnel_request_on_lease(
@@ -702,7 +811,8 @@ async fn tunnel_request_on_lease(
 ) -> Result<HttpResponse> {
     let (mut writer, mut reader) = timeout(HANDSHAKE_TIMEOUT, lease.connection.open_bi())
         .await
-        .context("HTTP tunnel stream open timed out")??;
+        .context("HTTP tunnel stream open timed out")?
+        .map_err(|error| transport_failure(error.into()))?;
     let head = LochoRequestHead {
         version: PROTOCOL_VERSION,
         service,
@@ -716,7 +826,9 @@ async fn tunnel_request_on_lease(
     if body_len.is_some_and(|len| len > MAX_BODY_LEN as u64) {
         return Err(anyhow!("request body exceeds limit"));
     }
-    write_json_head(&mut writer, &StreamRequestHead::Http(head)).await?;
+    write_json_head(&mut writer, &StreamRequestHead::Http(head))
+        .await
+        .map_err(transport_failure)?;
     let mut body = body;
     if let Some(body_len) = body_len {
         let mut written = 0u64;
@@ -729,7 +841,9 @@ async fn tunnel_request_on_lease(
                 return Err(anyhow!("request body exceeds declared length"));
             }
             for chunk in frame.chunks(BODY_CHUNK_LEN) {
-                write_body(&mut writer, chunk).await?;
+                write_body(&mut writer, chunk)
+                    .await
+                    .map_err(transport_failure)?;
             }
             written += frame_len;
         }
@@ -747,17 +861,22 @@ async fn tunnel_request_on_lease(
                 return Err(anyhow!("request body exceeds limit"));
             }
             for chunk in frame.chunks(BODY_CHUNK_LEN) {
-                write_body_chunk(&mut writer, chunk).await?;
+                write_body_chunk(&mut writer, chunk)
+                    .await
+                    .map_err(transport_failure)?;
             }
         }
-        write_body_end(&mut writer).await?;
+        write_body_end(&mut writer)
+            .await
+            .map_err(transport_failure)?;
     }
     let response: LochoResponseHead = timeout(
         HTTP_REQUEST_TIMEOUT + HANDSHAKE_TIMEOUT,
         read_json_head(&mut reader, MAX_HEAD_LEN),
     )
     .await
-    .context("HTTP attachment handshake timed out")??;
+    .context("HTTP attachment handshake timed out")?
+    .map_err(transport_failure)?;
     if response.version != PROTOCOL_VERSION {
         return Err(anyhow!(
             "unsupported tunnel response version {}",
@@ -767,19 +886,22 @@ async fn tunnel_request_on_lease(
     let status =
         StatusCode::from_u16(response.status).map_err(|_| anyhow!("invalid response status"))?;
     let body_len = response.body_len;
+    let mut body_guard = HttpBodyLeaseGuard {
+        lease: Some(lease.clone()),
+    };
     let stream = Box::pin(async_stream::try_stream! {
         if let Some(length) = body_len {
             let mut remaining = length;
             let mut buffer = vec![0u8; BODY_CHUNK_LEN];
             while remaining > 0 {
                 let count = remaining.min(BODY_CHUNK_LEN as u64) as usize;
-                timeout(
+                let read = timeout(
                     http_response_body_timeout(),
                     reader.read_exact(&mut buffer[..count]),
                 )
                     .await
-                    .context("HTTP response body read timed out")?
-                    ?;
+                    .context("HTTP response body read timed out")?;
+                read.inspect_err(|_| body_guard.invalidate())?;
                 yield Frame::data(Bytes::copy_from_slice(&buffer[..count]));
                 remaining -= count as u64;
             }
@@ -788,11 +910,12 @@ async fn tunnel_request_on_lease(
                 let chunk = timeout(http_response_body_timeout(), read_body_chunk(&mut reader))
                     .await
                     .context("HTTP response body read timed out")?
-                    ?;
+                    .inspect_err(|_| body_guard.invalidate())?;
                 let Some(chunk) = chunk else { break };
                 yield Frame::data(chunk);
             }
         }
+        body_guard.complete();
     }) as HttpStream;
     info!(status = %status, "local response");
     let mut output = Response::builder()

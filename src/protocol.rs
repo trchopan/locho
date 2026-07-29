@@ -21,6 +21,17 @@ pub const RECONNECT_STABLE_DURATION: std::time::Duration = std::time::Duration::
 pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const BODY_CHUNK_LEN: usize = 16 * 1024;
 
+#[derive(Debug)]
+pub struct TunnelIdleTimeout;
+
+impl std::fmt::Display for TunnelIdleTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TCP tunnel idle timeout")
+    }
+}
+
+impl std::error::Error for TunnelIdleTimeout {}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TcpRequestHead {
     pub version: u8,
@@ -175,7 +186,7 @@ where
                     }
                 }
             }
-            _ = &mut idle_deadline => bail!("TCP tunnel idle timeout")
+            _ = &mut idle_deadline => return Err(TunnelIdleTimeout.into())
         }
     }
     Ok(())
