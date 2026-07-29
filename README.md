@@ -273,6 +273,36 @@ unavailable error if the tunnel is still down. In-flight requests and TCP
 connections are not replayed after a tunnel loss. Use a process supervisor such
 as Docker, systemd, or launchd for process-level recovery.
 
+To attach several services with one client process and one shared iroh
+connection, use an attachment configuration:
+
+```toml
+# attachments.toml
+host_id = "<host-id>"
+direct_address = "192.0.2.10:12345" # optional
+listen_host = "127.0.0.1"           # optional; defaults to localhost
+
+[[services]]
+capability = "api:http:<secret>"
+listen_port = 8765
+
+[[services]]
+capability = "database:tcp:<secret>"
+listen_port = 5432
+```
+
+Start all configured local listeners with:
+
+```sh
+locho attach --config attachments.toml
+```
+
+The capability token supplies the service name and type. Each listener remains
+scoped to its configured capability. The config form shares one connection and
+therefore has one reconnect and process failure boundary for all services; run
+separate positional `locho attach` commands when independent failure domains
+are required.
+
 Host and attachment processes handle Ctrl-C gracefully: they stop accepting new
 connections, close active tunnel connections, and wait up to 10 seconds for
 active tasks to finish before terminating remaining tasks. Tunnel handshakes

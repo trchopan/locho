@@ -253,6 +253,88 @@ fn tcp_attachment_supports_concurrency_restart_and_rotation() {
 
 #[cfg(feature = "integration-test")]
 #[test]
+fn one_attachment_process_supports_multiple_services() {
+    let state_dir = TestDir::new();
+    let first_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let first_address = first_listener.local_addr().unwrap();
+    let first_thread = thread::spawn(move || {
+        let (mut stream, _) = accept_with_deadline(&first_listener);
+        let mut request = [0u8; 5];
+        stream.read_exact(&mut request).unwrap();
+        stream.write_all(&request).unwrap();
+    });
+    let second_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let second_address = second_listener.local_addr().unwrap();
+    let second_thread = thread::spawn(move || {
+        let (stream, _) = accept_with_deadline(&second_listener);
+        assert!(handle_http_upstream(stream).unwrap());
+    });
+
+    let host_config = state_dir.path().join("host.toml");
+    fs::write(
+        &host_config,
+        format!(
+            "[[services]]\nname = \"first\"\ntype = \"tcp\"\nendpoint = \"{first_address}\"\n\n[[services]]\nname = \"second\"\ntype = \"http\"\nupstream = \"http://{second_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_port());
+    let mut host = start_host(state_dir.path(), &host_config, &direct_address);
+    host.wait_for("locho direct-address ");
+    let first_command = host.wait_for_attach(state_dir.path(), &host_config, "first");
+    let second_command = host.wait_for_attach(state_dir.path(), &host_config, "second");
+    let first_parts = first_command.split_whitespace().collect::<Vec<_>>();
+    let second_parts = second_command.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(first_parts[0..2], ["locho", "attach"]);
+    assert_eq!(second_parts[0..2], ["locho", "attach"]);
+    assert_eq!(first_parts[2], second_parts[2]);
+
+    let first_port = free_port();
+    let second_port = free_port();
+    let attach_config = state_dir.path().join("attach.toml");
+    fs::write(
+        &attach_config,
+        format!(
+            "host_id = \"{}\"\ndirect_address = \"{direct_address}\"\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {first_port}\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {second_port}\n",
+            first_parts[2], first_parts[3], second_parts[3]
+        ),
+    )
+    .unwrap();
+
+    let mut attachment_command = Command::new(locho_binary());
+    attachment_command
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["attach", "--config"])
+        .arg(&attach_config);
+    let mut attachment = ProcessOutput::spawn(attachment_command);
+    attachment.wait_for("Local TCP listener");
+    attachment.wait_for("Service: second");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&attach_config)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
+
+    assert_round_trip(first_port, b"one!!");
+    let response = send_http_request(second_port, "GET", "/mixed", b"", false);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"method-ok");
+
+    attachment.stop();
+    host.stop();
+    assert!(first_thread.join().is_ok());
+    assert!(second_thread.join().is_ok());
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
 fn tcp_attachment_reports_unavailable_upstream() {
     let state_dir = TestDir::new();
     let healthy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -644,6 +726,22 @@ fn diagnose_reports_configuration_without_capabilities() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--direct-address requires --host-id"));
+}
+
+#[test]
+fn attach_config_rejects_mixed_cli_arguments() {
+    let output = Command::new(locho_binary())
+        .args([
+            "attach",
+            "host-id",
+            "api:http:secret",
+            "--config",
+            "attachments.toml",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--config cannot be combined"));
 }
 
 #[cfg(feature = "integration-test")]
