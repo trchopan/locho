@@ -314,6 +314,7 @@ async fn connection_supervisor(
     shutdown: CancellationToken,
 ) {
     let mut backoff = RECONNECT_INITIAL_BACKOFF;
+    let mut recovering_after_connection_loss = false;
     let mut generation = 0;
     'supervisor: loop {
         let connection = tokio::select! {
@@ -323,14 +324,20 @@ async fn connection_supervisor(
                     Ok(Ok(connection)) => connection,
                     Ok(Err(error)) => {
                         warn!(%error, "tunnel connection failed; retrying");
-                        retry_delay(&shutdown, backoff).await;
-                        backoff = next_backoff(backoff);
+                        let delay = reconnect_delay(recovering_after_connection_loss, backoff);
+                        retry_delay(&shutdown, delay).await;
+                        if !recovering_after_connection_loss {
+                            backoff = next_backoff(backoff);
+                        }
                         continue;
                     }
                     Err(_) => {
                         warn!("tunnel connection timed out; retrying");
-                        retry_delay(&shutdown, backoff).await;
-                        backoff = next_backoff(backoff);
+                        let delay = reconnect_delay(recovering_after_connection_loss, backoff);
+                        retry_delay(&shutdown, delay).await;
+                        if !recovering_after_connection_loss {
+                            backoff = next_backoff(backoff);
+                        }
                         continue;
                     }
                 }
@@ -364,17 +371,20 @@ async fn connection_supervisor(
                 _ = connection.closed() => {
                     info!("tunnel connection closed; reconnecting");
                     let _ = sender.send(None);
+                    recovering_after_connection_loss = true;
                     break;
                 }
                 monitor_exit = &mut monitor_finished => {
                     info!(?monitor_exit, "tunnel transport monitor ended; reconnecting");
                     let _ = sender.send(None);
+                    recovering_after_connection_loss = true;
                     connection.close(0u32.into(), b"transport monitor ended");
                     break;
                 }
                 changed = receiver.changed() => {
                     if changed.is_ok() && receiver.borrow().is_none() {
                         info!("tunnel connection invalidated; reconnecting");
+                        recovering_after_connection_loss = true;
                         connection.close(0u32.into(), b"tunnel connection invalidated");
                         break;
                     }
@@ -395,8 +405,11 @@ async fn connection_supervisor(
                 let _ = monitor.await;
             }
         }
-        retry_delay(&shutdown, backoff).await;
-        backoff = next_backoff(backoff);
+        let delay = reconnect_delay(recovering_after_connection_loss, backoff);
+        retry_delay(&shutdown, delay).await;
+        if !recovering_after_connection_loss {
+            backoff = next_backoff(backoff);
+        }
     }
     let _ = sender.send(None);
 }
@@ -413,6 +426,17 @@ fn next_backoff(current: std::time::Duration) -> std::time::Duration {
         .checked_mul(2)
         .unwrap_or(RECONNECT_MAX_BACKOFF)
         .min(RECONNECT_MAX_BACKOFF)
+}
+
+fn reconnect_delay(
+    recovering_after_connection_loss: bool,
+    backoff: std::time::Duration,
+) -> std::time::Duration {
+    if recovering_after_connection_loss {
+        RECONNECT_INITIAL_BACKOFF
+    } else {
+        backoff
+    }
 }
 
 fn spawn_transport_monitor(
@@ -982,6 +1006,18 @@ mod tests {
             assert_eq!(backoff, std::time::Duration::from_millis(expected));
         }
         assert_eq!(next_backoff(RECONNECT_MAX_BACKOFF), RECONNECT_MAX_BACKOFF);
+    }
+
+    #[test]
+    fn established_connection_loss_uses_initial_retry_delay() {
+        assert_eq!(
+            reconnect_delay(true, RECONNECT_MAX_BACKOFF),
+            RECONNECT_INITIAL_BACKOFF
+        );
+        assert_eq!(
+            reconnect_delay(false, RECONNECT_MAX_BACKOFF),
+            RECONNECT_MAX_BACKOFF
+        );
     }
 
     #[tokio::test]

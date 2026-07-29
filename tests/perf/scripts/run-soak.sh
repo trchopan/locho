@@ -67,7 +67,7 @@ RUN="$OUTPUT_ROOT/soak-$(date -u +%Y%m%d-%H%M%S)-$$"
 RUNTIME="$RUN/runtime"
 mkdir -p "$RUNTIME/host/state" "$RUNTIME/upstream" "$RUNTIME/http-client" "$RUNTIME/tcp-client" "$RUNTIME/loadgen" "$RUNTIME/collector"
 export PERF_RUNTIME_DIR="$RUNTIME"
-export SOAK_RUST_LOG=warn SOAK_UPSTREAM_QUIET=1
+export SOAK_RUST_LOG="${SOAK_RUST_LOG:-warn}" SOAK_UPSTREAM_QUIET=1
 PROJECT_NAME="locho-soak-$$"
 NETWORK_NAME="locho-soak-network-$$"
 export COMPOSE_PROJECT_NAME="$PROJECT_NAME" PERF_NETWORK_NAME="$NETWORK_NAME"
