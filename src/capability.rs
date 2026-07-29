@@ -1,7 +1,7 @@
 use crate::config::{is_safe_service_name, ServiceType};
 use anyhow::{bail, Result};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Capability {
     pub service: String,
     pub service_type: ServiceType,

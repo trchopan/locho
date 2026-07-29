@@ -1,4 +1,5 @@
 mod attach;
+mod attach_config;
 mod auth;
 mod capability;
 mod config;
@@ -59,10 +60,12 @@ enum Command {
         direct_address: Option<SocketAddr>,
     },
     Attach {
-        host_id: String,
-        capability: String,
+        host_id: Option<String>,
+        capability: Option<String>,
         #[arg(hide = true)]
         legacy_secret: Option<String>,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         direct_address: Option<SocketAddr>,
         #[arg(long, hide = true)]
@@ -144,12 +147,23 @@ async fn main() -> Result<()> {
             host_id,
             capability,
             legacy_secret,
+            config,
             direct_address,
             tcp,
             listen,
         } => {
-            let capability = normalize_capability(&capability, legacy_secret, tcp)?;
-            attach::run(host_id, capability, direct_address, listen).await
+            if let Some(config) = config {
+                if host_id.is_some() || capability.is_some() || legacy_secret.is_some() || tcp {
+                    bail!("--config cannot be combined with positional attach arguments or --tcp");
+                }
+                attach::run_config(config, direct_address).await
+            } else {
+                let host_id = host_id.ok_or_else(|| anyhow::anyhow!("attach requires HOST_ID"))?;
+                let capability =
+                    capability.ok_or_else(|| anyhow::anyhow!("attach requires CAPABILITY"))?;
+                let capability = normalize_capability(&capability, legacy_secret, tcp)?;
+                attach::run(host_id, capability, direct_address, listen).await
+            }
         }
     }
 }

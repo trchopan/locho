@@ -1,4 +1,4 @@
-use crate::{auth, http_utils, protocol::*};
+use crate::{attach_config, auth, http_utils, protocol::*};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_core::Stream;
@@ -25,12 +25,13 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+const MAX_TOTAL_CONNECTIONS: usize = 512;
+
 type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
 type HttpResponse = Response<StreamBody<HttpStream>>;
 
 #[derive(Clone)]
 struct ActiveConnection {
-    generation: u64,
     connection: Connection,
 }
 
@@ -39,18 +40,10 @@ type ConnectionReceiver = watch::Receiver<Option<ActiveConnection>>;
 #[derive(Clone)]
 struct ConnectionState {
     receiver: ConnectionReceiver,
-    sender: watch::Sender<Option<ActiveConnection>>,
 }
 
-#[derive(Clone)]
 struct ConnectionLease {
     connection: Connection,
-    generation: u64,
-    sender: watch::Sender<Option<ActiveConnection>>,
-}
-
-struct HttpBodyLeaseGuard {
-    lease: Option<ConnectionLease>,
 }
 
 #[derive(Debug)]
@@ -70,42 +63,6 @@ enum TransportMonitorExit {
     Ended,
 }
 
-impl ConnectionLease {
-    fn invalidate(&self) {
-        let _ = self.sender.send_if_modified(|current| {
-            if current
-                .as_ref()
-                .is_some_and(|connection| connection.generation == self.generation)
-            {
-                *current = None;
-                true
-            } else {
-                false
-            }
-        });
-    }
-}
-
-impl Drop for HttpBodyLeaseGuard {
-    fn drop(&mut self) {
-        if let Some(lease) = self.lease.take() {
-            lease.invalidate();
-        }
-    }
-}
-
-impl HttpBodyLeaseGuard {
-    fn invalidate(&self) {
-        if let Some(lease) = &self.lease {
-            lease.invalidate();
-        }
-    }
-
-    fn complete(&mut self) {
-        self.lease = None;
-    }
-}
-
 pub async fn run(
     host_id: String,
     capability: String,
@@ -113,9 +70,29 @@ pub async fn run(
     listen: SocketAddr,
 ) -> Result<()> {
     let capability = crate::capability::parse(&capability)?;
-    let service = capability.service;
-    let secret = capability.secret;
-    let tcp = matches!(capability.service_type, crate::config::ServiceType::Tcp);
+    run_attachments(
+        host_id,
+        vec![attach_config::AttachmentConfig { capability, listen }],
+        direct_address,
+    )
+    .await
+}
+
+pub async fn run_config(
+    config_path: std::path::PathBuf,
+    direct_address: Option<SocketAddr>,
+) -> Result<()> {
+    let config = attach_config::AttachConfig::load(&config_path)?;
+    let direct_address = direct_address.or(config.direct_address);
+    let host_id = config.host_id.clone();
+    run_attachments(host_id, config.attachments()?, direct_address).await
+}
+
+async fn run_attachments(
+    host_id: String,
+    attachments: Vec<attach_config::AttachmentConfig>,
+    direct_address: Option<SocketAddr>,
+) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {
@@ -129,11 +106,45 @@ pub async fn run(
     let endpoint_addr = direct_address
         .map(|address| EndpointAddr::new(node_id).with_ip_addr(address))
         .unwrap_or_else(|| EndpointAddr::new(node_id));
-    let listener = TcpListener::bind(listen).await?;
+    let mut listeners = Vec::with_capacity(attachments.len());
+    for attachment in &attachments {
+        listeners.push((
+            TcpListener::bind(attachment.listen)
+                .await
+                .with_context(|| {
+                    format!(
+                        "bind listener for service {:?}",
+                        attachment.capability.service
+                    )
+                })?,
+            attachment.capability.clone(),
+        ));
+    }
+    let listeners = listeners
+        .into_iter()
+        .map(|(listener, capability)| {
+            let listen = listener.local_addr()?;
+            Ok((listener, capability, listen))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (_, capability, listen) in &listeners {
+        if matches!(capability.service_type, crate::config::ServiceType::Tcp) {
+            println!(
+                "locho attached\n\nService: {}\nLocal TCP listener: {}",
+                capability.service, listen
+            );
+        } else {
+            println!(
+                "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
+                capability.service, listen, listen
+            );
+        }
+        info!(service = %capability.service, %listen, "local listener ready");
+    }
+    std::io::stdout().flush()?;
     let (connection_sender, connection_receiver) = watch::channel(None);
     let connection_state = ConnectionState {
         receiver: connection_receiver,
-        sender: connection_sender.clone(),
     };
     let supervisor_receiver = connection_state.receiver.clone();
     let shutdown = CancellationToken::new();
@@ -144,32 +155,74 @@ pub async fn run(
         supervisor_receiver,
         shutdown.clone(),
     ));
-    let result = if tcp {
-        run_tcp_listener(
-            listener,
-            connection_state,
-            service,
-            secret,
-            shutdown.clone(),
-        )
-        .await
-    } else {
-        println!(
-            "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
-            service, listen, listen
-        );
-        std::io::stdout().flush()?;
-        info!(%listen, "local proxy listening");
-        run_http_listener(
-            listener,
-            connection_state,
-            service,
-            secret,
-            shutdown.clone(),
-        )
-        .await
+    let total_connections = std::sync::Arc::new(Semaphore::new(MAX_TOTAL_CONNECTIONS));
+    let mut listener_tasks = JoinSet::new();
+    for (listener, capability, _listen) in listeners {
+        let connection = connection_state.clone();
+        let service = capability.service.clone();
+        let secret = capability.secret.clone();
+        let total_connections = total_connections.clone();
+        let shutdown = shutdown.clone();
+        let tcp = matches!(capability.service_type, crate::config::ServiceType::Tcp);
+        if tcp {
+            listener_tasks.spawn(async move {
+                run_tcp_listener(
+                    listener,
+                    connection,
+                    service,
+                    secret,
+                    total_connections,
+                    shutdown,
+                )
+                .await
+            });
+        } else {
+            listener_tasks.spawn(async move {
+                run_http_listener(
+                    listener,
+                    connection,
+                    service,
+                    secret,
+                    total_connections,
+                    shutdown,
+                )
+                .await
+            });
+        }
+    }
+    let result = loop {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                if signal.is_ok() {
+                    warn!("shutdown requested");
+                }
+                break Ok(());
+            }
+            completed = listener_tasks.join_next(), if !listener_tasks.is_empty() => {
+                match completed {
+                    Some(Ok(Ok(()))) => {
+                        if listener_tasks.is_empty() {
+                            break Ok(());
+                        }
+                    }
+                    Some(Ok(Err(error))) => break Err(error),
+                    Some(Err(error)) => break Err(error.into()),
+                    None => break Ok(()),
+                }
+            }
+        }
     };
     shutdown.cancel();
+    if timeout(SHUTDOWN_TIMEOUT, async {
+        while listener_tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        warn!("shutdown deadline reached; aborting attachment listeners");
+        listener_tasks.abort_all();
+        while listener_tasks.join_next().await.is_some() {}
+    }
     let _ = supervisor.await;
     endpoint.close().await;
     result
@@ -208,7 +261,6 @@ async fn connection_supervisor(
 
         generation += 1;
         let _ = sender.send(Some(ActiveConnection {
-            generation,
             connection: connection.clone(),
         }));
         receiver.borrow_and_update();
@@ -378,6 +430,7 @@ async fn run_http_listener(
     connection: ConnectionState,
     service: String,
     secret: String,
+    total_connections: std::sync::Arc<Semaphore>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let http_connections = std::sync::Arc::new(Semaphore::new(MAX_HTTP_CONNECTIONS));
@@ -397,8 +450,17 @@ async fn run_http_listener(
                         continue;
                     }
                 };
+                let total_permit = match total_connections.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        drop(stream);
+                        error!(service = %service_name, ?peer, "global connection limit reached");
+                        continue;
+                    }
+                };
                 clients.spawn(async move {
                     let _permit = permit;
+                    let _total_permit = total_permit;
                     let service = service_fn(move |request| {
                         let connection = connection.clone();
                         let service = service_name.clone();
@@ -413,13 +475,6 @@ async fn run_http_listener(
                     .map_err(anyhow::Error::from)
                 });
             }
-            signal = tokio::signal::ctrl_c() => {
-                if signal.is_ok() {
-                    warn!("shutdown requested");
-                    shutdown.cancel();
-                }
-                break;
-            }
             _ = shutdown.cancelled() => break,
             completed = clients.join_next(), if !clients.is_empty() => {
                 if let Some(result) = completed {
@@ -429,7 +484,6 @@ async fn run_http_listener(
             }
         }
     }
-    shutdown.cancel();
     if timeout(SHUTDOWN_TIMEOUT, async {
         while clients.join_next().await.is_some() {}
     })
@@ -447,6 +501,7 @@ async fn run_tcp_listener(
     connection: ConnectionState,
     service: String,
     secret: String,
+    total_connections: std::sync::Arc<Semaphore>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let tcp_connections = std::sync::Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
@@ -472,17 +527,19 @@ async fn run_tcp_listener(
                         continue;
                     }
                 };
+                let total_permit = match total_connections.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        drop(stream);
+                        error!(service = %service, ?peer, "global connection limit reached");
+                        continue;
+                    }
+                };
                 clients.spawn(async move {
                     let _permit = permit;
+                    let _total_permit = total_permit;
                     handle_tcp_connection(stream, connection, service, secret).await
                 });
-            }
-            signal = tokio::signal::ctrl_c() => {
-                if signal.is_ok() {
-                    warn!("shutdown requested");
-                    shutdown.cancel();
-                }
-                break;
             }
             _ = shutdown.cancelled() => break,
             completed = clients.join_next(), if !clients.is_empty() => {
@@ -493,7 +550,6 @@ async fn run_tcp_listener(
             }
         }
     }
-    shutdown.cancel();
     if timeout(SHUTDOWN_TIMEOUT, async {
         while clients.join_next().await.is_some() {}
     })
@@ -518,8 +574,6 @@ async fn acquire_connection(state: ConnectionState) -> Result<ConnectionLease> {
     };
     Ok(ConnectionLease {
         connection: active.connection,
-        generation: active.generation,
-        sender: state.sender,
     })
 }
 
@@ -542,11 +596,7 @@ async fn handle_tcp_connection(
     secret: String,
 ) -> Result<()> {
     let lease = acquire_connection(connection).await?;
-    let result = handle_tcp_connection_on_lease(&lease, local, service, secret).await;
-    if result.is_err() {
-        lease.invalidate();
-    }
-    result
+    handle_tcp_connection_on_lease(&lease, local, service, secret).await
 }
 
 async fn handle_tcp_connection_on_lease(
@@ -638,12 +688,7 @@ async fn tunnel_request(
     body: Incoming,
 ) -> Result<HttpResponse> {
     let lease = acquire_connection(connection).await?;
-    let result =
-        tunnel_request_on_lease(&lease, service, secret, method, path, headers, body).await;
-    if result.is_err() {
-        lease.invalidate();
-    }
-    result
+    tunnel_request_on_lease(&lease, service, secret, method, path, headers, body).await
 }
 
 async fn tunnel_request_on_lease(
@@ -722,9 +767,6 @@ async fn tunnel_request_on_lease(
     let status =
         StatusCode::from_u16(response.status).map_err(|_| anyhow!("invalid response status"))?;
     let body_len = response.body_len;
-    let mut body_guard = HttpBodyLeaseGuard {
-        lease: Some(lease.clone()),
-    };
     let stream = Box::pin(async_stream::try_stream! {
         if let Some(length) = body_len {
             let mut remaining = length;
@@ -737,7 +779,7 @@ async fn tunnel_request_on_lease(
                 )
                     .await
                     .context("HTTP response body read timed out")?
-                    .inspect_err(|_| body_guard.invalidate())?;
+                    ?;
                 yield Frame::data(Bytes::copy_from_slice(&buffer[..count]));
                 remaining -= count as u64;
             }
@@ -746,12 +788,11 @@ async fn tunnel_request_on_lease(
                 let chunk = timeout(http_response_body_timeout(), read_body_chunk(&mut reader))
                     .await
                     .context("HTTP response body read timed out")?
-                    .inspect_err(|_| body_guard.invalidate())?;
+                    ?;
                 let Some(chunk) = chunk else { break };
                 yield Frame::data(chunk);
             }
         }
-        body_guard.complete();
     }) as HttpStream;
     info!(status = %status, "local response");
     let mut output = Response::builder()

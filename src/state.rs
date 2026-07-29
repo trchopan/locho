@@ -228,7 +228,7 @@ fn remove_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_private_file(_path: &Path) -> Result<()> {
+pub(crate) fn ensure_private_file(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
