@@ -106,6 +106,7 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
     }
 
     let shutdown = CancellationToken::new();
+    let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -117,11 +118,9 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
                     handle_connection(incoming, services, shutdown).await;
                 });
             }
-            signal = tokio::signal::ctrl_c() => {
-                if signal.is_ok() {
-                    warn!("shutdown requested");
-                    shutdown.cancel();
-                }
+            _ = &mut shutdown_signal => {
+                warn!("shutdown requested");
+                shutdown.cancel();
                 break;
             }
             completed = connections.join_next(), if !connections.is_empty() => {
@@ -145,6 +144,24 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
     }
     endpoint.close().await;
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn validate_bind_address(address: SocketAddr) -> Result<std::net::SocketAddrV4> {
