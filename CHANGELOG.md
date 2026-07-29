@@ -2,13 +2,19 @@
 
 All notable changes to `locho` are documented here.
 
-## Unreleased
+## [1.1.0-beta.3] - 2026-07-29
 
 - Stops `locho host` from printing service capabilities automatically.
 - Adds explicit `locho share` and `locho secret` commands with service-typed
   capability tokens consumed directly by `locho attach`.
 - Adds `locho attach --config` for multiple local HTTP and TCP listeners sharing
   one reconnecting iroh connection.
+- Stabilizes reconnect handling when multiple services share an attachment
+  process.
+
+This prerelease continues the reliability and attachment workflow work from
+`1.1.0-beta.2`. It is intended for beta testing and is not the stable release
+channel.
 
 ## [1.1.0-beta.2] - 2026-07-28
 
