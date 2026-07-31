@@ -48,5 +48,6 @@ release notes must state that verification is pending.
 - [ ] Confirm the GitHub Release contains every supported archive, checksum, and
       installer.
 - [ ] Download each published artifact into a clean temporary directory and
-      repeat checksum, installer, `--help`, and quickstart verification.
+      repeat checksum, installer, `--help`, `--version`, and quickstart
+      verification.
 - [ ] Record any target-specific verification limitations in the release notes.

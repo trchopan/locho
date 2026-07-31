@@ -16,8 +16,21 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::{fmt::SubscriberBuilder, EnvFilter};
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (commit ",
+    env!("LOCHO_GIT_COMMIT"),
+    ", ",
+    env!("LOCHO_GIT_DIRTY"),
+    ")"
+);
+
 #[derive(Parser)]
-#[command(name = "locho", about = "Private HTTP and TCP service tunnel")]
+#[command(
+    name = "locho",
+    version = VERSION,
+    about = "Private HTTP and TCP service tunnel"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
