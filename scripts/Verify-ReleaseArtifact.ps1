@@ -64,4 +64,8 @@ if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged binary failed --help"
 }
+& $binary --version | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged binary failed --version"
+}
 Write-Output $binary

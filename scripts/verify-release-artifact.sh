@@ -51,4 +51,5 @@ done
 
 [[ -x "$binary" ]] || { printf 'archive binary is not executable: %s\n' "$binary" >&2; exit 1; }
 "$binary" --help >/dev/null
+"$binary" --version >/dev/null
 printf '%s\n' "$binary"
