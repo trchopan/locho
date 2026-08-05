@@ -1,0 +1,45 @@
+# cargo-deny policy for the resolved dependency graph.
+
+[advisories]
+version = 2
+yanked = "deny"
+# The current cargo-deny schema uses this scope setting for unmaintained
+# advisories. cargo-deny 0.20 reports these as errors by default; CI explicitly
+# demotes them to warnings while the project evaluates replacement options.
+unmaintained = "all"
+
+[bans]
+multiple-versions = "warn"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[graph]
+# Check every feature combination exposed by the package. With no explicit
+# target list, cargo-deny evaluates the dependency graph for all targets it
+# supports.
+all-features = true
