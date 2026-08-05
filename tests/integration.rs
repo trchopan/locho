@@ -1747,9 +1747,10 @@ fn accept_with_deadline(listener: &TcpListener) -> (TcpStream, std::net::SocketA
     let deadline = Instant::now() + TEST_IO_TIMEOUT;
     loop {
         match listener.accept() {
-            Ok(connection) => {
+            Ok((stream, address)) => {
                 listener.set_nonblocking(false).unwrap();
-                return connection;
+                stream.set_nonblocking(false).unwrap();
+                return (stream, address);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
