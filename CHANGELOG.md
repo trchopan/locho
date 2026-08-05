@@ -11,6 +11,7 @@ All notable changes to `locho` are documented here.
 - Improves reconnect behavior after host termination and for shared
   attachments.
 - Hardens capability proof verification with constant-time comparison.
+- Adds dependency security policy checks and automated dependency updates.
 
 This release is intended for developer workflows, internal tools, controlled
 service sharing, and debugging. It does not provide WebSocket upgrades, live

@@ -1136,6 +1136,7 @@ fn http_attachment_closes_stalled_response_body() {
         "100",
     );
     attachment.wait_for("Local proxy:");
+    attachment.wait_for("transport path: direct(");
 
     let started = Instant::now();
     let (response, closed) = send_http_request_allowing_truncated_body(attach_port, "/stalled");
@@ -1746,9 +1747,10 @@ fn accept_with_deadline(listener: &TcpListener) -> (TcpStream, std::net::SocketA
     let deadline = Instant::now() + TEST_IO_TIMEOUT;
     loop {
         match listener.accept() {
-            Ok(connection) => {
+            Ok((stream, address)) => {
                 listener.set_nonblocking(false).unwrap();
-                return connection;
+                stream.set_nonblocking(false).unwrap();
+                return (stream, address);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
