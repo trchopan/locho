@@ -42,9 +42,9 @@ release notes must state that verification is pending.
 
 - [ ] Merge the release-candidate changes with a clean CI result.
 - [ ] Update `Cargo.toml` and `Cargo.lock` to the final version.
-- [ ] Move the final notes from `Unreleased` into the versioned changelog entry.
+- [ ] Confirm the final notes are in the versioned changelog entry.
 - [ ] Run the complete release gate again from a clean checkout.
-- [ ] Create and push the matching tag, for example `v1.0.0`.
+- [ ] Create and push the matching tag, for example `v1.1.0`.
 - [ ] Confirm the GitHub Release contains every supported archive, checksum, and
       installer.
 - [ ] Download each published artifact into a clean temporary directory and
