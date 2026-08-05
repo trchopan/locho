@@ -556,11 +556,9 @@ where
                 error!(%error, "tunnel response write failed after headers");
                 return Ok(());
             }
-        } else {
-            if let Err(error) = write_body_chunk(writer, &chunk).await {
-                error!(%error, "tunnel response write failed after headers");
-                return Ok(());
-            }
+        } else if let Err(error) = write_body_chunk(writer, &chunk).await {
+            error!(%error, "tunnel response write failed after headers");
+            return Ok(());
         }
     }
     if body_len.is_none() {
