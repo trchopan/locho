@@ -55,7 +55,7 @@ version=$(cargo metadata --no-deps --format-version 1 \
     exit 1
 }
 
-run dist build --artifacts=all --target="$target" --tag="v$version" --allow-dirty
+run dist build --artifacts=all --target="$target" --tag="v$version"
 archive="target/distrib/locho-${target}.tar.xz"
 [[ -f target/distrib/locho-installer.sh ]] || {
     printf 'cargo-dist did not produce the shell installer\n' >&2

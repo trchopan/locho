@@ -2,6 +2,23 @@
 
 All notable changes to `locho` are documented here.
 
+## [1.1.0] - 2026-08-05
+
+- Adds typed, service-scoped capability tokens with explicit `share` and
+  `secret` commands.
+- Adds multi-service attachment configurations for HTTP and TCP listeners that
+  share one reconnecting iroh connection.
+- Improves reconnect behavior after host termination and for shared
+  attachments.
+- Hardens capability proof verification with constant-time comparison.
+- Adds dependency security policy checks and automated dependency updates.
+
+This release is intended for developer workflows, internal tools, controlled
+service sharing, and debugging. It does not provide WebSocket upgrades, live
+configuration reload, arbitrary host routing, per-user authorization, or
+production availability guarantees. Configuration changes and capability
+rotation require restarting the host.
+
 ## [1.1.0-beta.3] - 2026-07-29
 
 - Stops `locho host` from printing service capabilities automatically.
@@ -30,7 +47,7 @@ intended for beta testing and is not the stable release channel.
   TCP transfers under relay congestion.
 - Preserves complete direct, relay, and mixed transport diagnostics.
 - Includes the TCP mode when generating attachment commands for TCP services.
-- Documents Rust 1.91 as the minimum supported version.
+- Documents Rust 1.96 as the minimum supported version.
 
 ## [1.0.0] - 2026-07-21
 
