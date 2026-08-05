@@ -47,7 +47,7 @@ intended for beta testing and is not the stable release channel.
   TCP transfers under relay congestion.
 - Preserves complete direct, relay, and mixed transport diagnostics.
 - Includes the TCP mode when generating attachment commands for TCP services.
-- Documents Rust 1.91 as the minimum supported version.
+- Documents Rust 1.96 as the minimum supported version.
 
 ## [1.0.0] - 2026-07-21
 

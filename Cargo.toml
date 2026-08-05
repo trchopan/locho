@@ -2,7 +2,7 @@
 name = "locho"
 version = "1.1.0"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.96"
 authors = ["Quang Tran <m@chop.dev>"]
 description = "HTTP reverse proxy over an iroh tunnel"
 license = "MIT"
