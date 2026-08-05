@@ -1136,6 +1136,7 @@ fn http_attachment_closes_stalled_response_body() {
         "100",
     );
     attachment.wait_for("Local proxy:");
+    attachment.wait_for("transport path: direct(");
 
     let started = Instant::now();
     let (response, closed) = send_http_request_allowing_truncated_body(attach_port, "/stalled");
