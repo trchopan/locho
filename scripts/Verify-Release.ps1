@@ -39,7 +39,7 @@ try {
     $target = (rustc -vV | Select-String '^host: ').ToString().Substring(6).Trim()
     $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
         Where-Object { $_.name -eq "locho" } | Select-Object -First 1 -ExpandProperty version
-    Invoke-Step "dist build --artifacts=all --target=$target --tag=v$version --allow-dirty"
+    Invoke-Step "dist build --artifacts=all --target=$target --tag=v$version"
 
     $archive = "target/distrib/locho-$target.zip"
     if (-not (Test-Path -LiteralPath "target/distrib/locho-installer.ps1" -PathType Leaf)) {

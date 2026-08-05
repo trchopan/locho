@@ -1,8 +1,8 @@
 [package]
 name = "locho"
-version = "1.1.0-beta.3"
+version = "1.1.0"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.96"
 authors = ["Quang Tran <m@chop.dev>"]
 description = "HTTP reverse proxy over an iroh tunnel"
 license = "MIT"
@@ -33,6 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 socket2 = { version = "0.5.10", features = ["all"] }
+subtle = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
