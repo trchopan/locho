@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Result};
-use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 pub fn generate_secret() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::fill(&mut bytes);
     hex::encode(bytes)
 }
 
