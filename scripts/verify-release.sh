@@ -21,6 +21,19 @@ fi
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
+expected_commit=${LOCHO_EXPECTED_COMMIT:-$(git rev-parse HEAD)}
+actual_commit=$(git rev-parse HEAD)
+[[ "$actual_commit" == "$expected_commit" ]] || {
+    printf 'release commit mismatch: expected %s, got %s\n' "$expected_commit" "$actual_commit" >&2
+    exit 1
+}
+[[ -z "$(git status --porcelain --untracked-files=normal)" ]] || {
+    printf 'release verification requires a clean checkout\n' >&2
+    exit 1
+}
+export LOCHO_EXPECTED_COMMIT="$expected_commit"
+export LOCHO_EXPECTED_DIRTY=clean
+
 run() {
     printf '\n+ %s\n' "$*"
     "$@"
@@ -63,7 +76,7 @@ archive="target/distrib/locho-${target}.tar.xz"
 }
 sh -n target/distrib/locho-installer.sh
 grep -F "locho-${target}.tar.xz" target/distrib/sha256.sum >/dev/null
-binary=$(scripts/verify-release-artifact.sh "$archive" target/release-artifact)
+binary=$(scripts/verify-release-artifact.sh "$archive" target/release-artifact "$expected_commit")
 env LOCHO_TEST_BINARY="$binary" \
     cargo test --test release_smoke -- --ignored
 

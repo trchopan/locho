@@ -7,6 +7,21 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 try {
+    $expectedCommit = if ($env:LOCHO_EXPECTED_COMMIT) {
+        $env:LOCHO_EXPECTED_COMMIT
+    } else {
+        (git rev-parse HEAD).Trim()
+    }
+    $actualCommit = (git rev-parse HEAD).Trim()
+    if ($actualCommit -ne $expectedCommit) {
+        throw "Release commit mismatch: expected $expectedCommit, got $actualCommit"
+    }
+    if ((git status --porcelain --untracked-files=normal | Out-String).Trim()) {
+        throw "Release verification requires a clean checkout"
+    }
+    $env:LOCHO_EXPECTED_COMMIT = $expectedCommit
+    $env:LOCHO_EXPECTED_DIRTY = "clean"
+
     function Invoke-Step {
         param([Parameter(Mandatory = $true)][string] $Command)
         Write-Host "`n+ $Command"
@@ -49,7 +64,8 @@ try {
         throw "Native archive is missing from sha256.sum"
     }
     $binary = & "$PSScriptRoot/Verify-ReleaseArtifact.ps1" `
-        -Archive $archive -ExtractionDirectory "target/release-artifact"
+        -Archive $archive -ExtractionDirectory "target/release-artifact" `
+        -ExpectedCommit $expectedCommit
     if ($LASTEXITCODE -ne 0) {
         throw "Packaged artifact verification failed"
     }

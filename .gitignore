@@ -1,4 +1,6 @@
 /target/
+/plan-dist-manifest.json
+/dist-manifest.json
 
 # Local environment and editor files
 .env
