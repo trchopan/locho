@@ -2,6 +2,14 @@
 
 All notable changes to `locho` are documented here.
 
+## [1.1.1] - 2026-08-06
+
+- Fixes release binaries reporting a dirty checkout when generated cargo-dist
+  manifests are present.
+- Verifies release binary commit provenance and clean-checkout metadata across
+  packaged artifacts.
+- Removes internal distribution manifests from published GitHub Releases.
+
 ## [1.1.0] - 2026-08-06
 
 - Adds typed, service-scoped capability tokens with explicit `share` and
