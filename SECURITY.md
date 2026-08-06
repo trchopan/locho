@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-The currently supported release is `1.1.0`. Older releases and
+The currently supported release is `1.1.1`. Older releases and
 development snapshots are not supported; fixes may be backported at maintainer
 discretion.
 

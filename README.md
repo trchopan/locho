@@ -221,7 +221,7 @@ accepted for migration, but new commands should use the capability-token form.
 
 Released binaries are published on the
 [GitHub Releases page](https://github.com/trchopan/locho/releases). The
-supported `1.1.0` targets are:
+supported `1.1.1` targets are:
 
 - Linux x86_64 and ARM64
 - macOS x86_64 and Apple silicon
