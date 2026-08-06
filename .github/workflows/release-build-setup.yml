@@ -1,0 +1,11 @@
+- name: Validate release checkout
+  shell: bash
+  run: |
+    set -euo pipefail
+    expected="${GITHUB_SHA:?GITHUB_SHA is required}"
+    actual="$(git rev-parse HEAD)"
+    [[ "$expected" =~ ^[0-9a-f]{40}$ ]]
+    [[ "$actual" == "$expected" ]]
+    [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+    printf 'LOCHO_EXPECTED_COMMIT=%s\n' "$expected" >> "$GITHUB_ENV"
+    printf 'LOCHO_EXPECTED_DIRTY=clean\n' >> "$GITHUB_ENV"
