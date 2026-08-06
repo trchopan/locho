@@ -48,5 +48,5 @@ inherits = "release"
 lto = "thin"
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
 rustls = "0.23"
