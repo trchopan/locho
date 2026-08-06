@@ -1,0 +1,27 @@
+name: Cleanup Release Metadata
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Remove internal dist manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" \
+            --json assets --jq '.assets[].name' | grep -Fxq dist-manifest.json; then
+            gh release delete-asset "$RELEASE_TAG" dist-manifest.json \
+              --repo "$REPOSITORY" --yes
+          fi

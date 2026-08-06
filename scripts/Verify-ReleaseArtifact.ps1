@@ -4,7 +4,9 @@ param(
     [string] $Archive,
 
     [Parameter(Mandatory = $true)]
-    [string] $ExtractionDirectory
+    [string] $ExtractionDirectory,
+
+    [string] $ExpectedCommit = $env:LOCHO_EXPECTED_COMMIT
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,5 +69,12 @@ if ($LASTEXITCODE -ne 0) {
 & $binary --version | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged binary failed --version"
+}
+$version = (& $binary --version).Trim()
+if ($version -notmatch '^locho\s+\d+\.\d+\.\d+[^\s]*\s+\(commit\s+[0-9a-f]{40},\s+clean\)$') {
+    throw "Packaged binary has invalid release provenance: $version"
+}
+if ($ExpectedCommit -and $version -notlike "*commit $ExpectedCommit, clean)") {
+    throw "Packaged binary commit does not match $ExpectedCommit"
 }
 Write-Output $binary

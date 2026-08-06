@@ -127,6 +127,17 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Validate release checkout"
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_SHA:?GITHUB_SHA is required}"
+          actual="$(git rev-parse HEAD)"
+          [[ "$expected" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$actual" == "$expected" ]]
+          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+          printf 'LOCHO_EXPECTED_COMMIT=%s\n' "$expected" >> "$GITHUB_ENV"
+          printf 'LOCHO_EXPECTED_DIRTY=clean\n' >> "$GITHUB_ENV"
+        shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
@@ -294,3 +305,12 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+  custom-cleanup-release-assets:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/cleanup-release-assets.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit

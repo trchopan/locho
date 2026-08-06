@@ -2,13 +2,15 @@
 
 set -euo pipefail
 
+unset LOCHO_EXPECTED_COMMIT LOCHO_EXPECTED_DIRTY
+
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 verifier="$script_dir/verify-release-artifact.sh"
 fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/locho-artifact-test.XXXXXX")
 trap 'rm -rf "$fixture_dir"' EXIT
 
 mkdir "$fixture_dir/package"
-printf '#!/bin/sh\nexit 0\n' > "$fixture_dir/package/locho"
+printf '#!/bin/sh\nprintf "locho 0.0.0 (commit %040d, clean)\\n" 0\n' > "$fixture_dir/package/locho"
 chmod +x "$fixture_dir/package/locho"
 printf 'README\n' > "$fixture_dir/package/README.md"
 printf 'CHANGELOG\n' > "$fixture_dir/package/CHANGELOG.md"

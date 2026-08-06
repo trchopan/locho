@@ -2,14 +2,15 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    printf 'usage: %s ARCHIVE EXTRACTION_DIRECTORY\n' "$0" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    printf 'usage: %s ARCHIVE EXTRACTION_DIRECTORY [EXPECTED_COMMIT]\n' "$0" >&2
     exit 2
 fi
 
 archive=$1
 extract_dir=$2
 checksum="${archive}.sha256"
+expected_commit=${3:-${LOCHO_EXPECTED_COMMIT:-}}
 
 case "$extract_dir" in
     ""|"."|".."|/)
@@ -51,5 +52,13 @@ done
 
 [[ -x "$binary" ]] || { printf 'archive binary is not executable: %s\n' "$binary" >&2; exit 1; }
 "$binary" --help >/dev/null
-"$binary" --version >/dev/null
+version=$("$binary" --version)
+if [[ ! "$version" =~ ^locho\ [0-9]+\.[0-9]+\.[0-9]+([^[:space:]]*)\ \(commit\ [0-9a-f]{40},\ clean\)$ ]]; then
+    printf 'packaged binary has invalid release provenance: %s\n' "$version" >&2
+    exit 1
+fi
+if [[ -n "$expected_commit" && "$version" != *"commit $expected_commit, clean)" ]]; then
+    printf 'packaged binary commit does not match %s\n' "$expected_commit" >&2
+    exit 1
+fi
 printf '%s\n' "$binary"

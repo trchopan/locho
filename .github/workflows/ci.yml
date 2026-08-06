@@ -15,6 +15,9 @@ jobs:
   check:
     name: Format, lint, and test
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    env:
+      LOCHO_EXPECTED_COMMIT: ${{ github.sha }}
+      LOCHO_EXPECTED_DIRTY: clean
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +47,9 @@ jobs:
   msrv:
     name: Minimum supported Rust
     runs-on: ubuntu-latest
+    env:
+      LOCHO_EXPECTED_COMMIT: ${{ github.sha }}
+      LOCHO_EXPECTED_DIRTY: clean
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -62,6 +68,9 @@ jobs:
   artifact-smoke:
     name: Packaged artifact smoke (${{ matrix.os }})
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    env:
+      LOCHO_EXPECTED_COMMIT: ${{ github.sha }}
+      LOCHO_EXPECTED_DIRTY: clean
     strategy:
       fail-fast: false
       matrix:
