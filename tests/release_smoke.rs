@@ -163,11 +163,12 @@ impl HttpsUpstream {
             rcgen::CertificateParams::new(vec!["locho-test-ca".to_string()]).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let ca_cert = ca_params.self_signed(&ca_key_pair).unwrap();
+        let issuer = rcgen::Issuer::new(ca_params, ca_key_pair);
         let key_pair = rcgen::KeyPair::generate().unwrap();
         let params =
             rcgen::CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
                 .unwrap();
-        let cert = params.signed_by(&key_pair, &ca_cert, &ca_key_pair).unwrap();
+        let cert = params.signed_by(&key_pair, &issuer).unwrap();
         let ca_cert_path = state_dir.join("upstream-ca.pem");
         fs::write(&ca_cert_path, ca_cert.pem()).unwrap();
         let tls_config = ServerConfig::builder()
