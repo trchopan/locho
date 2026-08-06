@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+unset LOCHO_EXPECTED_COMMIT LOCHO_EXPECTED_DIRTY
+
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 verifier="$script_dir/verify-release-artifact.sh"
 fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/locho-artifact-test.XXXXXX")
