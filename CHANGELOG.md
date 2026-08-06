@@ -2,7 +2,7 @@
 
 All notable changes to `locho` are documented here.
 
-## [1.1.0] - 2026-08-05
+## [1.1.0] - 2026-08-06
 
 - Adds typed, service-scoped capability tokens with explicit `share` and
   `secret` commands.
