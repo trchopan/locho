@@ -9,8 +9,8 @@ HTTP_SIZE=1024
 HTTP_REQUEST_SIZE=0
 TCP_SIZE=256
 OUTPUT_ROOT="$REPO/artifacts"
-HTTP_LEVELS="1 10 50 100 200"
-TCP_LEVELS="1 10 50 100"
+HTTP_LEVELS="1 10 50 100"
+TCP_LEVELS="1 10 50"
 
 usage() { echo "usage: $0 [--duration 15m] [--http-concurrency LIST] [--tcp-concurrency LIST] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--output DIR]"; }
 parse_duration() {
