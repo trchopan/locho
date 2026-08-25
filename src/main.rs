@@ -85,6 +85,8 @@ enum Command {
         tcp: bool,
         #[arg(long, default_value = "127.0.0.1:8765")]
         listen: SocketAddr,
+        #[arg(long)]
+        http_timeout_secs: Option<u64>,
     },
 }
 
@@ -164,10 +166,16 @@ async fn main() -> Result<()> {
             direct_address,
             tcp,
             listen,
+            http_timeout_secs,
         } => {
             if let Some(config) = config {
-                if host_id.is_some() || capability.is_some() || legacy_secret.is_some() || tcp {
-                    bail!("--config cannot be combined with positional attach arguments or --tcp");
+                if host_id.is_some()
+                    || capability.is_some()
+                    || legacy_secret.is_some()
+                    || tcp
+                    || http_timeout_secs.is_some()
+                {
+                    bail!("--config cannot be combined with positional attach arguments, --tcp, or --http-timeout-secs");
                 }
                 attach::run_config(config, direct_address).await
             } else {
@@ -175,7 +183,14 @@ async fn main() -> Result<()> {
                 let capability =
                     capability.ok_or_else(|| anyhow::anyhow!("attach requires CAPABILITY"))?;
                 let capability = normalize_capability(&capability, legacy_secret, tcp)?;
-                attach::run(host_id, capability, direct_address, listen).await
+                attach::run(
+                    host_id,
+                    capability,
+                    direct_address,
+                    listen,
+                    http_timeout_secs,
+                )
+                .await
             }
         }
     }
@@ -251,5 +266,24 @@ mod tests {
     #[test]
     fn rejects_tcp_flag_with_capability_syntax() {
         assert!(normalize_capability("database:tcp:secret", None, true).is_err());
+    }
+
+    #[test]
+    fn parses_http_timeout_for_positional_attach() {
+        let cli = Cli::try_parse_from([
+            "locho",
+            "attach",
+            "host",
+            "api:http:secret",
+            "--http-timeout-secs",
+            "90",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Attach {
+                http_timeout_secs, ..
+            } => assert_eq!(http_timeout_secs, Some(90)),
+            _ => panic!("parsed the wrong command"),
+        }
     }
 }

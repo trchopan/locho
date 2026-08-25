@@ -1,10 +1,15 @@
-use crate::capability::{self, Capability};
+use crate::{
+    capability::{self, Capability},
+    config::ServiceType,
+    protocol::{HTTP_REQUEST_TIMEOUT, MAX_HTTP_REQUEST_TIMEOUT_SECS},
+};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::{
     collections::HashSet,
     net::{IpAddr, SocketAddr},
     path::Path,
+    time::Duration,
 };
 
 const MAX_CONFIGURED_SERVICES: usize = 128;
@@ -25,12 +30,26 @@ pub struct AttachConfig {
 pub struct AttachServiceConfig {
     pub capability: String,
     pub listen_port: u16,
+    #[serde(default)]
+    pub http_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug)]
 pub struct AttachmentConfig {
     pub capability: Capability,
     pub listen: SocketAddr,
+    pub http_timeout: Duration,
+}
+
+pub(crate) fn resolve_http_timeout(timeout_secs: Option<u64>) -> Result<Duration> {
+    let timeout_secs = timeout_secs.unwrap_or(HTTP_REQUEST_TIMEOUT.as_secs());
+    if timeout_secs == 0 || timeout_secs > MAX_HTTP_REQUEST_TIMEOUT_SECS {
+        bail!(
+            "HTTP attachment timeout must be between 1 and {} seconds",
+            MAX_HTTP_REQUEST_TIMEOUT_SECS
+        )
+    }
+    Ok(Duration::from_secs(timeout_secs))
 }
 
 impl AttachConfig {
@@ -70,9 +89,22 @@ impl AttachConfig {
                 if !ports.insert(service.listen_port) {
                     bail!("duplicate attachment listen port {}", service.listen_port);
                 }
+                let http_timeout = match capability.service_type {
+                    ServiceType::Http => resolve_http_timeout(service.http_timeout_secs)?,
+                    ServiceType::Tcp => {
+                        if service.http_timeout_secs.is_some() {
+                            bail!(
+                                "HTTP attachment timeout is only supported for HTTP service {}",
+                                index + 1
+                            )
+                        }
+                        HTTP_REQUEST_TIMEOUT
+                    }
+                };
                 Ok(AttachmentConfig {
                     capability,
                     listen: SocketAddr::new(self.listen_host, service.listen_port),
+                    http_timeout,
                 })
             })
             .collect()
@@ -115,6 +147,7 @@ mod tests {
                 [[services]]
                 capability = "api:http:api-secret"
                 listen_port = 8765
+                http_timeout_secs = 90
 
                 [[services]]
                 capability = "database:tcp:db-secret"
@@ -127,10 +160,12 @@ mod tests {
         let attachments = config.attachments().unwrap();
         assert_eq!(attachments.len(), 2);
         assert_eq!(attachments[0].capability.service, "api");
+        assert_eq!(attachments[0].http_timeout, Duration::from_secs(90));
         assert_eq!(
             attachments[1].capability.service_type,
             crate::config::ServiceType::Tcp
         );
+        assert_eq!(attachments[1].http_timeout, HTTP_REQUEST_TIMEOUT);
         assert_eq!(attachments[1].listen, "127.0.0.1:5432".parse().unwrap());
     }
 
@@ -145,6 +180,10 @@ mod tests {
             "#,
         )
         .unwrap();
+        assert_eq!(
+            config.attachments().unwrap()[0].http_timeout,
+            HTTP_REQUEST_TIMEOUT
+        );
         assert_eq!(config.listen_host, "127.0.0.1".parse::<IpAddr>().unwrap());
     }
 
@@ -177,6 +216,32 @@ mod tests {
             "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_http_timeout() {
+        for timeout_secs in [0, MAX_HTTP_REQUEST_TIMEOUT_SECS + 1] {
+            let config: AttachConfig = toml::from_str(&format!(
+                "host_id = \"aabb\"\n[[services]]\ncapability = \"api:http:secret\"\nlisten_port = 8765\nhttp_timeout_secs = {timeout_secs}\n"
+            ))
+            .unwrap();
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_http_timeout_for_tcp_service() {
+        let config: AttachConfig = toml::from_str(
+            r#"
+                host_id = "aabb"
+                [[services]]
+                capability = "database:tcp:secret"
+                listen_port = 5432
+                http_timeout_secs = 90
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
     }
 
     #[test]

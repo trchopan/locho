@@ -99,6 +99,12 @@ upgrades are not supported; use a TCP service when a non-HTTP protocol is
 required. HTTPS uses normal root validation by default. A private HTTPS
 upstream may specify an explicit PEM `ca_cert` in its service configuration.
 
+The attachment can independently configure its response timeout with
+`http_timeout_secs` in `attachments.toml`, or `--http-timeout-secs` for a
+positional attach. It defaults to 60 seconds, applies while waiting for the
+response and between response-body chunks, and is separate from the host's
+upstream timeout.
+
 ## How are TCP services used?
 
 A TCP service is attached to a local TCP listener. Native clients then connect
@@ -125,7 +131,8 @@ Ctrl-C stops accepting new local or remote connections and closes active tunnel
 connections. The process waits up to 10 seconds for active tasks to finish
 before forcing termination. Tunnel handshakes have a 10-second timeout, HTTP
 upstream request/response operations use the configured timeout, which defaults
-to 60 seconds, and TCP sessions have a 5-minute idle timeout.
+to 60 seconds, HTTP attachment response guards default to 60 seconds, and TCP
+sessions have a 5-minute idle timeout.
 
 ## Does locho create a VPN?
 

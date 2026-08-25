@@ -145,11 +145,25 @@ pub async fn run(
     capability: String,
     direct_address: Option<SocketAddr>,
     listen: SocketAddr,
+    http_timeout_secs: Option<u64>,
 ) -> Result<()> {
     let capability = crate::capability::parse(&capability)?;
+    let http_timeout = match capability.service_type {
+        crate::config::ServiceType::Http => attach_config::resolve_http_timeout(http_timeout_secs)?,
+        crate::config::ServiceType::Tcp => {
+            if http_timeout_secs.is_some() {
+                anyhow::bail!("--http-timeout-secs is only supported for HTTP attachments")
+            }
+            HTTP_REQUEST_TIMEOUT
+        }
+    };
     run_attachments(
         host_id,
-        vec![attach_config::AttachmentConfig { capability, listen }],
+        vec![attach_config::AttachmentConfig {
+            capability,
+            listen,
+            http_timeout,
+        }],
         direct_address,
     )
     .await
@@ -195,16 +209,17 @@ async fn run_attachments(
                     )
                 })?,
             attachment.capability.clone(),
+            attachment.http_timeout,
         ));
     }
     let listeners = listeners
         .into_iter()
-        .map(|(listener, capability)| {
+        .map(|(listener, capability, http_timeout)| {
             let listen = listener.local_addr()?;
-            Ok((listener, capability, listen))
+            Ok((listener, capability, listen, http_timeout))
         })
         .collect::<Result<Vec<_>>>()?;
-    for (_, capability, listen) in &listeners {
+    for (_, capability, listen, _) in &listeners {
         if matches!(capability.service_type, crate::config::ServiceType::Tcp) {
             println!(
                 "locho attached\n\nService: {}\nLocal TCP listener: {}",
@@ -235,7 +250,7 @@ async fn run_attachments(
     ));
     let total_connections = std::sync::Arc::new(Semaphore::new(MAX_TOTAL_CONNECTIONS));
     let mut listener_tasks = JoinSet::new();
-    for (listener, capability, _listen) in listeners {
+    for (listener, capability, _listen, http_timeout) in listeners {
         let connection = connection_state.clone();
         let service = capability.service.clone();
         let secret = capability.secret.clone();
@@ -262,6 +277,7 @@ async fn run_attachments(
                     service,
                     secret,
                     total_connections,
+                    http_timeout,
                     shutdown,
                 )
                 .await
@@ -536,6 +552,7 @@ async fn run_http_listener(
     service: String,
     secret: String,
     total_connections: std::sync::Arc<Semaphore>,
+    http_timeout: std::time::Duration,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let http_connections = std::sync::Arc::new(Semaphore::new(MAX_HTTP_CONNECTIONS));
@@ -570,8 +587,18 @@ async fn run_http_listener(
                         let connection = connection.clone();
                         let service = service_name.clone();
                         let secret = secret.clone();
+                        let http_timeout = http_timeout;
                         async move {
-                            Ok::<_, Infallible>(handle_request(request, connection, service, secret).await)
+                            Ok::<_, Infallible>(
+                                handle_request(
+                                    request,
+                                    connection,
+                                    service,
+                                    secret,
+                                    http_timeout,
+                                )
+                                .await,
+                            )
                         }
                     });
                     http1::Builder::new()
@@ -759,11 +786,22 @@ fn is_idle_timeout(error: &anyhow::Error) -> bool {
         .is_some()
 }
 
+struct HttpTunnelRequest {
+    service: String,
+    secret: String,
+    http_timeout: std::time::Duration,
+    method: http::Method,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Incoming,
+}
+
 async fn handle_request(
     request: Request<Incoming>,
     connection: ConnectionState,
     service: String,
     secret: String,
+    http_timeout: std::time::Duration,
 ) -> HttpResponse {
     let method = request.method().clone();
     let path = request
@@ -779,12 +817,15 @@ async fn handle_request(
     let headers = http_utils::headers_to_pairs(request.headers());
     match tunnel_request(
         connection,
-        service,
-        secret,
-        method,
-        path,
-        headers,
-        request.into_body(),
+        HttpTunnelRequest {
+            service,
+            secret,
+            http_timeout,
+            method,
+            path,
+            headers,
+            body: request.into_body(),
+        },
     )
     .await
     {
@@ -808,16 +849,10 @@ async fn handle_request(
 
 async fn tunnel_request(
     connection: ConnectionState,
-    service: String,
-    secret: String,
-    method: http::Method,
-    path: String,
-    headers: Vec<(String, String)>,
-    body: Incoming,
+    request: HttpTunnelRequest,
 ) -> Result<HttpResponse> {
     let lease = acquire_connection(connection).await?;
-    let result =
-        tunnel_request_on_lease(&lease, service, secret, method, path, headers, body).await;
+    let result = tunnel_request_on_lease(&lease, request).await;
     if result.as_ref().is_err_and(is_transport_failure) {
         lease.invalidate();
     }
@@ -826,13 +861,17 @@ async fn tunnel_request(
 
 async fn tunnel_request_on_lease(
     lease: &ConnectionLease,
-    service: String,
-    secret: String,
-    method: http::Method,
-    path: String,
-    headers: Vec<(String, String)>,
-    body: Incoming,
+    request: HttpTunnelRequest,
 ) -> Result<HttpResponse> {
+    let HttpTunnelRequest {
+        service,
+        secret,
+        http_timeout,
+        method,
+        path,
+        headers,
+        body,
+    } = request;
     let (mut writer, mut reader) = timeout(HANDSHAKE_TIMEOUT, lease.connection.open_bi())
         .await
         .context("HTTP tunnel stream open timed out")?
@@ -895,7 +934,7 @@ async fn tunnel_request_on_lease(
             .map_err(transport_failure)?;
     }
     let response: LochoResponseHead = timeout(
-        HTTP_ATTACHMENT_SAFETY_TIMEOUT,
+        http_timeout + HANDSHAKE_TIMEOUT,
         read_json_head(&mut reader, MAX_HEAD_LEN),
     )
     .await
@@ -920,7 +959,7 @@ async fn tunnel_request_on_lease(
             while remaining > 0 {
                 let count = remaining.min(BODY_CHUNK_LEN as u64) as usize;
                 let read = timeout(
-                    http_response_body_timeout(),
+                    http_timeout,
                     reader.read_exact(&mut buffer[..count]),
                 )
                     .await
@@ -931,10 +970,13 @@ async fn tunnel_request_on_lease(
             }
         } else {
             loop {
-                let chunk = timeout(http_response_body_timeout(), read_body_chunk(&mut reader))
-                    .await
-                    .context("HTTP response body read timed out")?
-                    .inspect_err(|_| body_guard.invalidate())?;
+                let chunk = timeout(
+                    http_timeout,
+                    read_body_chunk(&mut reader),
+                )
+                .await
+                .context("HTTP response body read timed out")?
+                .inspect_err(|_| body_guard.invalidate())?;
                 let Some(chunk) = chunk else { break };
                 yield Frame::data(chunk);
             }
@@ -951,16 +993,6 @@ async fn tunnel_request_on_lease(
         }
     }
     Ok(output)
-}
-
-fn http_response_body_timeout() -> std::time::Duration {
-    #[cfg(feature = "integration-test")]
-    if let Some(milliseconds) = std::env::var_os("LOCHO_TEST_HTTP_BODY_TIMEOUT_MS") {
-        if let Ok(milliseconds) = milliseconds.to_string_lossy().parse::<u64>() {
-            return std::time::Duration::from_millis(milliseconds);
-        }
-    }
-    HTTP_ATTACHMENT_SAFETY_TIMEOUT
 }
 
 fn error_response(status: StatusCode) -> HttpResponse {

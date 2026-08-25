@@ -304,7 +304,7 @@ fn one_attachment_process_supports_multiple_services() {
     fs::write(
         &attach_config,
         format!(
-            "host_id = \"{}\"\ndirect_address = \"{direct_address}\"\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {first_port}\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {second_port}\n",
+            "host_id = \"{}\"\ndirect_address = \"{direct_address}\"\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {first_port}\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {second_port}\nhttp_timeout_secs = 90\n",
             first_parts[2], first_parts[3], second_parts[3]
         ),
     )
@@ -745,6 +745,8 @@ fn attach_config_rejects_mixed_cli_arguments() {
             "api:http:secret",
             "--config",
             "attachments.toml",
+            "--http-timeout-secs",
+            "90",
         ])
         .output()
         .unwrap();
@@ -1127,12 +1129,12 @@ fn http_attachment_closes_stalled_response_body() {
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
-    let mut attachment = start_http_attachment_with_body_timeout(
+    let attach_command = format!("{attach_command} --http-timeout-secs 1");
+    let mut attachment = start_http_attachment(
         state_dir.path(),
         &attach_command,
         attach_port,
         &direct_address,
-        "100",
     );
     attachment.wait_for("Local proxy:");
     attachment.wait_for("transport path: direct(");
@@ -1579,23 +1581,10 @@ fn start_http_attachment(
     port: u16,
     direct_address: &str,
 ) -> ProcessOutput {
-    start_http_attachment_with_body_timeout(state_dir, command_line, port, direct_address, "")
-}
-
-fn start_http_attachment_with_body_timeout(
-    state_dir: &Path,
-    command_line: &str,
-    port: u16,
-    direct_address: &str,
-    body_timeout_milliseconds: &str,
-) -> ProcessOutput {
     let mut command = Command::new(locho_binary());
     command
         .env("LOCHO_STATE_DIR", state_dir)
         .env("LOCHO_TEST_DIRECT_ADDR", direct_address);
-    if !body_timeout_milliseconds.is_empty() {
-        command.env("LOCHO_TEST_HTTP_BODY_TIMEOUT_MS", body_timeout_milliseconds);
-    }
     for argument in command_line
         .split_whitespace()
         .skip_while(|argument| *argument == "locho")
