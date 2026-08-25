@@ -230,6 +230,20 @@ mod tests {
     }
 
     #[test]
+    fn accepts_http_timeout_boundaries() {
+        for timeout_secs in [1, MAX_HTTP_REQUEST_TIMEOUT_SECS] {
+            let config: AttachConfig = toml::from_str(&format!(
+                "host_id = \"aabb\"\n[[services]]\ncapability = \"api:http:secret\"\nlisten_port = 8765\nhttp_timeout_secs = {timeout_secs}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                config.attachments().unwrap()[0].http_timeout,
+                Duration::from_secs(timeout_secs)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_http_timeout_for_tcp_service() {
         let config: AttachConfig = toml::from_str(
             r#"

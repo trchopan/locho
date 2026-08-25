@@ -658,6 +658,53 @@ fn http_attachment_reports_upstream_timeout() {
 
 #[cfg(feature = "integration-test")]
 #[test]
+fn host_closes_stalled_response_after_headers() {
+    let state_dir = TestDir::new();
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        let (mut stream, _) = accept_with_deadline(&upstream_listener);
+        let _ = read_http_message(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\nx")
+            .unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\nupstream_timeout_secs = 1\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
+    host.wait_for("locho direct-address ");
+    let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
+    let attach_port = free_port();
+    let mut attachment = start_http_attachment(
+        state_dir.path(),
+        &attach_command,
+        attach_port,
+        &direct_address,
+    );
+    attachment.wait_for("Local proxy:");
+
+    let started = Instant::now();
+    let (response, closed) = send_http_request_allowing_truncated_body(attach_port, "/stalled");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(closed);
+    assert_eq!(response.status, 200);
+    assert!(response.body.len() < 1024);
+
+    assert!(upstream_thread.join().is_ok());
+    attachment.stop();
+    host.stop();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
 fn diagnose_reports_configuration_without_capabilities() {
     let state_dir = TestDir::new();
     let config_path = state_dir.path().join("locho.toml");
@@ -747,6 +794,22 @@ fn attach_config_rejects_mixed_cli_arguments() {
             "attachments.toml",
             "--http-timeout-secs",
             "90",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--config cannot be combined"));
+}
+
+#[test]
+fn attach_config_rejects_listen_override() {
+    let output = Command::new(locho_binary())
+        .args([
+            "attach",
+            "--config",
+            "attachments.toml",
+            "--listen",
+            "127.0.0.1:9000",
         ])
         .output()
         .unwrap();
@@ -1129,13 +1192,17 @@ fn http_attachment_closes_stalled_response_body() {
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
-    let attach_command = format!("{attach_command} --http-timeout-secs 1");
-    let mut attachment = start_http_attachment(
-        state_dir.path(),
-        &attach_command,
-        attach_port,
-        &direct_address,
-    );
+    let (host_id, service, secret) = parse_attach_command(&attach_command);
+    let attachment_config = state_dir.path().join("attachments.toml");
+    fs::write(
+        &attachment_config,
+        format!(
+            "host_id = \"{host_id}\"\ndirect_address = \"{direct_address}\"\n\n[[services]]\ncapability = \"{service}:http:{secret}\"\nlisten_port = {attach_port}\nhttp_timeout_secs = 1\n"
+        ),
+    )
+    .unwrap();
+    let mut attachment =
+        start_config_attachment(state_dir.path(), &attachment_config, &direct_address);
     attachment.wait_for("Local proxy:");
     attachment.wait_for("transport path: direct(");
 
@@ -1592,6 +1659,20 @@ fn start_http_attachment(
         command.arg(argument);
     }
     command.args(["--listen", &format!("127.0.0.1:{port}")]);
+    ProcessOutput::spawn(command)
+}
+
+fn start_config_attachment(
+    state_dir: &Path,
+    config_path: &Path,
+    direct_address: &str,
+) -> ProcessOutput {
+    let mut command = Command::new(locho_binary());
+    command
+        .env("LOCHO_STATE_DIR", state_dir)
+        .env("LOCHO_TEST_DIRECT_ADDR", direct_address)
+        .args(["attach", "--config"])
+        .arg(config_path);
     ProcessOutput::spawn(command)
 }
 

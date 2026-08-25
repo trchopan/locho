@@ -213,7 +213,9 @@ request/response timeout that defaults to 60 seconds and accepts values from 1
 to 300 seconds. Hop-by-hop headers are not forwarded. WebSocket upgrades are
 not supported. HTTPS certificates are validated against the normal system roots
 by default; `ca_cert` may explicitly add a PEM CA certificate for a private
-upstream.
+upstream. If an upstream fails after response headers have been forwarded, the
+attachment closes the response stream; an HTTP client may observe a truncated
+body rather than a replacement gateway status.
 
 A TCP service is attached to a local port and used by its native client:
 

@@ -24,6 +24,7 @@ const VERSION: &str = concat!(
     env!("LOCHO_GIT_DIRTY"),
     ")"
 );
+const DEFAULT_ATTACH_LISTEN: &str = "127.0.0.1:8765";
 
 #[derive(Parser)]
 #[command(
@@ -174,8 +175,12 @@ async fn main() -> Result<()> {
                     || legacy_secret.is_some()
                     || tcp
                     || http_timeout_secs.is_some()
+                    || listen
+                        != DEFAULT_ATTACH_LISTEN
+                            .parse()
+                            .expect("valid default listener")
                 {
-                    bail!("--config cannot be combined with positional attach arguments, --tcp, or --http-timeout-secs");
+                    bail!("--config cannot be combined with positional attach arguments, --tcp, --listen, or --http-timeout-secs");
                 }
                 attach::run_config(config, direct_address).await
             } else {

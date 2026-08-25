@@ -56,6 +56,17 @@ struct HttpBodyLeaseGuard {
 }
 
 #[derive(Debug)]
+struct HttpResponseTimeout;
+
+impl fmt::Display for HttpResponseTimeout {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HTTP response timed out")
+    }
+}
+
+impl std::error::Error for HttpResponseTimeout {}
+
+#[derive(Debug)]
 struct TunnelUnavailable;
 
 impl fmt::Display for TunnelUnavailable {
@@ -137,6 +148,12 @@ impl HttpBodyLeaseGuard {
 
     fn complete(&mut self) {
         self.lease = None;
+    }
+}
+
+impl Drop for HttpBodyLeaseGuard {
+    fn drop(&mut self) {
+        self.invalidate();
     }
 }
 
@@ -834,6 +851,8 @@ async fn handle_request(
             error!(%error, "tunnel request failed");
             if error.downcast_ref::<TunnelUnavailable>().is_some() {
                 error_response(StatusCode::SERVICE_UNAVAILABLE)
+            } else if error.downcast_ref::<HttpResponseTimeout>().is_some() {
+                error_response(StatusCode::GATEWAY_TIMEOUT)
             } else if error.to_string().contains("403") {
                 error_response(StatusCode::FORBIDDEN)
             } else if error.to_string().contains("501") {
@@ -853,7 +872,9 @@ async fn tunnel_request(
 ) -> Result<HttpResponse> {
     let lease = acquire_connection(connection).await?;
     let result = tunnel_request_on_lease(&lease, request).await;
-    if result.as_ref().is_err_and(is_transport_failure) {
+    if result.as_ref().is_err_and(|error| {
+        is_transport_failure(error) || error.downcast_ref::<HttpResponseTimeout>().is_some()
+    }) {
         lease.invalidate();
     }
     result
@@ -933,13 +954,11 @@ async fn tunnel_request_on_lease(
             .await
             .map_err(transport_failure)?;
     }
-    let response: LochoResponseHead = timeout(
-        http_timeout + HANDSHAKE_TIMEOUT,
-        read_json_head(&mut reader, MAX_HEAD_LEN),
-    )
-    .await
-    .context("HTTP attachment handshake timed out")?
-    .map_err(transport_failure)?;
+    let response: LochoResponseHead =
+        timeout(http_timeout, read_json_head(&mut reader, MAX_HEAD_LEN))
+            .await
+            .map_err(|_| anyhow::Error::new(HttpResponseTimeout))?
+            .map_err(transport_failure)?;
     if response.version != PROTOCOL_VERSION {
         return Err(anyhow!(
             "unsupported tunnel response version {}",
@@ -963,8 +982,12 @@ async fn tunnel_request_on_lease(
                     reader.read_exact(&mut buffer[..count]),
                 )
                     .await
-                    .context("HTTP response body read timed out")?;
-                read.inspect_err(|_| body_guard.invalidate())?;
+                    .map_err(|_| anyhow::Error::new(HttpResponseTimeout))
+                    .and_then(|result| result.context("HTTP response body read failed"));
+                if read.is_err() {
+                    body_guard.invalidate();
+                }
+                read?;
                 yield Frame::data(Bytes::copy_from_slice(&buffer[..count]));
                 remaining -= count as u64;
             }
@@ -974,9 +997,13 @@ async fn tunnel_request_on_lease(
                     http_timeout,
                     read_body_chunk(&mut reader),
                 )
-                .await
-                .context("HTTP response body read timed out")?
-                .inspect_err(|_| body_guard.invalidate())?;
+                    .await
+                    .map_err(|_| anyhow::Error::new(HttpResponseTimeout))
+                    .and_then(|result| result.context("HTTP response body read failed"));
+                if chunk.is_err() {
+                    body_guard.invalidate();
+                }
+                let chunk = chunk?;
                 let Some(chunk) = chunk else { break };
                 yield Frame::data(chunk);
             }
@@ -1062,5 +1089,11 @@ mod tests {
         )
         .await
         .expect("cancelled retry should not wait for the full backoff");
+    }
+
+    #[test]
+    fn response_timeout_has_gateway_status() {
+        let response = error_response(StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 }

@@ -275,6 +275,17 @@ mod tests {
     }
 
     #[test]
+    fn accepts_http_timeout_boundaries() {
+        for timeout_secs in [1, crate::protocol::MAX_HTTP_REQUEST_TIMEOUT_SECS] {
+            let mut config = Config {
+                services: vec![http("api")],
+            };
+            config.services[0].upstream_timeout_secs = Some(timeout_secs);
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    #[test]
     fn rejects_timeout_on_tcp_service() {
         let config = Config {
             services: vec![ServiceConfig {
