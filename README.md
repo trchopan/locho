@@ -99,6 +99,9 @@ service has an independent attachment capability:
 name = "api"
 type = "http"
 upstream = "https://example.com"
+# Optional total upstream request/response timeout in seconds (1-300).
+# Defaults to 60 seconds.
+# upstream_timeout_secs = 90
 # Optional PEM CA certificate for a private HTTPS upstream.
 # ca_cert = "/path/to/upstream-ca.pem"
 
@@ -201,10 +204,11 @@ curl http://127.0.0.1:8765/path
 
 HTTP request and response bodies are streamed through the tunnel. Known-length
 bodies use length framing; chunked bodies use bounded chunk framing. Individual
-bodies are limited to 32 MiB, and HTTP requests have a 30-second upstream
-timeout. Hop-by-hop headers are not forwarded. WebSocket upgrades are not
-supported. HTTPS certificates are validated against the normal system roots by
-default; `ca_cert` may explicitly add a PEM CA certificate for a private
+bodies are limited to 32 MiB, and HTTP requests use a configurable upstream
+request/response timeout that defaults to 60 seconds and accepts values from 1
+to 300 seconds. Hop-by-hop headers are not forwarded. WebSocket upgrades are
+not supported. HTTPS certificates are validated against the normal system roots
+by default; `ca_cert` may explicitly add a PEM CA certificate for a private
 upstream.
 
 A TCP service is attached to a local port and used by its native client:
@@ -301,8 +305,8 @@ are required.
 Host and attachment processes handle Ctrl-C gracefully: they stop accepting new
 connections, close active tunnel connections, and wait up to 10 seconds for
 active tasks to finish before terminating remaining tasks. Tunnel handshakes
-also have a 10-second timeout, and HTTP clients enforce a 30-second upstream
-request/response timeout.
+also have a 10-second timeout, and HTTP clients enforce the configured upstream
+request/response timeout, which defaults to 60 seconds.
 
 Configuration is loaded and fully validated before the host starts. Service
 names are unique, limited to letters, numbers, `-`, and `_`, HTTP upstreams

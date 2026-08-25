@@ -76,7 +76,8 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
         .iter()
         .filter(|service| matches!(service.service_type, ServiceType::Http))
         .map(|service| {
-            let mut builder = Client::builder().timeout(test_http_request_timeout());
+            let mut builder =
+                Client::builder().timeout(http_request_timeout(service.upstream_timeout_secs));
             if let Some(ca_cert) = ca_certificates.get(&service.name) {
                 builder = builder.add_root_certificate(ca_cert.clone());
             }
@@ -570,14 +571,10 @@ where
     Ok(())
 }
 
-fn test_http_request_timeout() -> std::time::Duration {
-    #[cfg(feature = "integration-test")]
-    if let Some(milliseconds) = std::env::var_os("LOCHO_TEST_HTTP_TIMEOUT_MS") {
-        if let Ok(milliseconds) = milliseconds.to_string_lossy().parse::<u64>() {
-            return std::time::Duration::from_millis(milliseconds);
-        }
-    }
-    HTTP_REQUEST_TIMEOUT
+fn http_request_timeout(configured_timeout_secs: Option<u64>) -> std::time::Duration {
+    configured_timeout_secs
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(HTTP_REQUEST_TIMEOUT)
 }
 
 struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
@@ -629,6 +626,7 @@ mod tests {
                     name: "api".into(),
                     service_type: ServiceType::Http,
                     upstream: Some(Url::parse("https://example.com").unwrap()),
+                    upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: None,
                 }],
@@ -647,6 +645,15 @@ mod tests {
         assert!(validate_bind_address("[::1]:12345".parse().unwrap()).is_err());
     }
 
+    #[test]
+    fn http_timeout_defaults_and_accepts_configuration() {
+        assert_eq!(http_request_timeout(None), HTTP_REQUEST_TIMEOUT);
+        assert_eq!(
+            http_request_timeout(Some(90)),
+            std::time::Duration::from_secs(90)
+        );
+    }
+
     fn tcp_services(endpoint: std::net::SocketAddr) -> Arc<HostServices> {
         Arc::new(HostServices {
             config: Config {
@@ -654,6 +661,7 @@ mod tests {
                     name: "database".into(),
                     service_type: ServiceType::Tcp,
                     upstream: None,
+                    upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: Some(endpoint),
                 }],

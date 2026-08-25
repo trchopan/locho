@@ -626,19 +626,18 @@ fn http_attachment_reports_upstream_timeout() {
         let (stream, _) = accept_with_deadline(&upstream_listener);
         stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
         stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(1_100));
     });
     let config_path = state_dir.path().join("locho.toml");
     fs::write(
         &config_path,
         format!(
-            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\n"
+            "[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{upstream_address}\"\nupstream_timeout_secs = 1\n"
         ),
     )
     .unwrap();
     let direct_address = format!("127.0.0.1:{}", free_udp_port());
-    let mut host =
-        start_host_with_timeout(state_dir.path(), &config_path, &direct_address, Some("100"));
+    let mut host = start_host(state_dir.path(), &config_path, &direct_address);
     host.wait_for("locho direct-address ");
     let attach_command = host.wait_for_attach(state_dir.path(), &config_path, "api");
     let attach_port = free_port();
@@ -1527,15 +1526,6 @@ fn decode_chunked_body(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn start_host(state_dir: &Path, config_path: &Path, direct_address: &str) -> ProcessOutput {
-    start_host_with_timeout(state_dir, config_path, direct_address, None)
-}
-
-fn start_host_with_timeout(
-    state_dir: &Path,
-    config_path: &Path,
-    direct_address: &str,
-    timeout_milliseconds: Option<&str>,
-) -> ProcessOutput {
     let mut command = Command::new(locho_binary());
     command
         .env("LOCHO_STATE_DIR", state_dir)
@@ -1543,9 +1533,6 @@ fn start_host_with_timeout(
         .arg("host")
         .arg("--config")
         .arg(config_path);
-    if let Some(timeout_milliseconds) = timeout_milliseconds {
-        command.env("LOCHO_TEST_HTTP_TIMEOUT_MS", timeout_milliseconds);
-    }
     ProcessOutput::spawn(command)
 }
 

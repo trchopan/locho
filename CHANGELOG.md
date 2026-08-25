@@ -2,6 +2,11 @@
 
 All notable changes to `locho` are documented here.
 
+## [Unreleased]
+
+- Adds an optional per-HTTP-service `upstream_timeout_secs` setting, defaulting
+  to 60 seconds and capped at 300 seconds.
+
 ## [1.1.1] - 2026-08-06
 
 - Fixes release binaries reporting a dirty checkout when generated cargo-dist

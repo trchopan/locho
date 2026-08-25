@@ -895,7 +895,7 @@ async fn tunnel_request_on_lease(
             .map_err(transport_failure)?;
     }
     let response: LochoResponseHead = timeout(
-        HTTP_REQUEST_TIMEOUT + HANDSHAKE_TIMEOUT,
+        HTTP_ATTACHMENT_SAFETY_TIMEOUT,
         read_json_head(&mut reader, MAX_HEAD_LEN),
     )
     .await
@@ -960,7 +960,7 @@ fn http_response_body_timeout() -> std::time::Duration {
             return std::time::Duration::from_millis(milliseconds);
         }
     }
-    HTTP_REQUEST_TIMEOUT
+    HTTP_ATTACHMENT_SAFETY_TIMEOUT
 }
 
 fn error_response(status: StatusCode) -> HttpResponse {

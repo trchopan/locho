@@ -12,8 +12,11 @@ pub const MAX_TCP_CONNECTIONS: usize = 128;
 pub const MAX_HTTP_CONNECTIONS: usize = 128;
 pub const TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-pub const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 pub const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const MAX_HTTP_REQUEST_TIMEOUT_SECS: u64 = 300;
+pub const HTTP_ATTACHMENT_SAFETY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(MAX_HTTP_REQUEST_TIMEOUT_SECS + HANDSHAKE_TIMEOUT.as_secs());
 pub const ATTACH_RECONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const RECONNECT_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
 pub const RECONNECT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
