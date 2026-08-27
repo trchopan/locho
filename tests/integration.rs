@@ -656,7 +656,7 @@ fn http_attachment_reports_upstream_timeout() {
     host.stop();
 }
 
-#[cfg(feature = "integration-test")]
+#[cfg(all(feature = "integration-test", unix))]
 #[test]
 fn host_closes_stalled_response_after_headers() {
     let state_dir = TestDir::new();
