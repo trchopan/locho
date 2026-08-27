@@ -1662,6 +1662,7 @@ fn start_http_attachment(
     ProcessOutput::spawn(command)
 }
 
+#[cfg(unix)]
 fn start_config_attachment(
     state_dir: &Path,
     config_path: &Path,
