@@ -93,10 +93,17 @@ curl http://127.0.0.1:8765/path
 The host forwards requests to the explicitly configured HTTP upstream.
 
 Request and response bodies are streamed and limited to 32 MiB per body. The
-upstream request timeout is 30 seconds. WebSocket upgrades are not supported;
-use a TCP service when a non-HTTP protocol is required. HTTPS uses normal root
-validation by default. A private HTTPS upstream may specify an explicit PEM
-`ca_cert` in its service configuration.
+upstream request/response timeout defaults to 60 seconds and can be overridden
+per HTTP service with `upstream_timeout_secs` from 1 to 300 seconds. WebSocket
+upgrades are not supported; use a TCP service when a non-HTTP protocol is
+required. HTTPS uses normal root validation by default. A private HTTPS
+upstream may specify an explicit PEM `ca_cert` in its service configuration.
+
+The attachment can independently configure its response timeout with
+`http_timeout_secs` in `attachments.toml`, or `--http-timeout-secs` for a
+positional attach. It defaults to 60 seconds, applies while waiting for the
+response and between response-body chunks, and is separate from the host's
+upstream timeout.
 
 ## How are TCP services used?
 
@@ -123,8 +130,9 @@ configured endpoint.
 Ctrl-C stops accepting new local or remote connections and closes active tunnel
 connections. The process waits up to 10 seconds for active tasks to finish
 before forcing termination. Tunnel handshakes have a 10-second timeout, HTTP
-upstream request/response operations have a 30-second timeout, and TCP sessions
-have a 5-minute idle timeout.
+upstream request/response operations use the configured timeout, which defaults
+to 60 seconds, HTTP attachment response guards default to 60 seconds, and TCP
+sessions have a 5-minute idle timeout.
 
 ## Does locho create a VPN?
 

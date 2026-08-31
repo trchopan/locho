@@ -30,6 +30,8 @@ pub struct ServiceConfig {
     #[serde(rename = "type")]
     pub service_type: ServiceType,
     pub upstream: Option<Url>,
+    #[serde(default)]
+    pub upstream_timeout_secs: Option<u64>,
     pub ca_cert: Option<PathBuf>,
     pub endpoint: Option<SocketAddr>,
 }
@@ -88,6 +90,17 @@ impl Config {
                             )
                         })?;
                     }
+                    if let Some(timeout_secs) = service.upstream_timeout_secs {
+                        if timeout_secs == 0
+                            || timeout_secs > crate::protocol::MAX_HTTP_REQUEST_TIMEOUT_SECS
+                        {
+                            bail!(
+                                "HTTP service {:?} upstream_timeout_secs must be between 1 and {}",
+                                service.name,
+                                crate::protocol::MAX_HTTP_REQUEST_TIMEOUT_SECS
+                            )
+                        }
+                    }
                     let local_test_http = cfg!(feature = "integration-test")
                         && upstream.scheme() == "http"
                         && upstream.host_str() == Some("127.0.0.1");
@@ -101,9 +114,12 @@ impl Config {
                     }
                 }
                 ServiceType::Tcp => {
-                    if service.upstream.is_some() || service.ca_cert.is_some() {
+                    if service.upstream.is_some()
+                        || service.upstream_timeout_secs.is_some()
+                        || service.ca_cert.is_some()
+                    {
                         bail!(
-                            "TCP service {:?} cannot define upstream or ca_cert",
+                            "TCP service {:?} cannot define upstream, upstream_timeout_secs, or ca_cert",
                             service.name
                         )
                     }
@@ -143,6 +159,7 @@ mod tests {
             name: name.into(),
             service_type: ServiceType::Http,
             upstream: Some(Url::parse("https://example.com").unwrap()),
+            upstream_timeout_secs: None,
             ca_cert: None,
             endpoint: None,
         }
@@ -157,6 +174,7 @@ mod tests {
                     name: "database".into(),
                     service_type: ServiceType::Tcp,
                     upstream: None,
+                    upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: Some("127.0.0.1:5432".parse().unwrap()),
                 },
@@ -182,6 +200,7 @@ mod tests {
                 name: "api".into(),
                 service_type: ServiceType::Http,
                 upstream: Some(Url::parse("http://example.com").unwrap()),
+                upstream_timeout_secs: None,
                 ca_cert: None,
                 endpoint: None,
             }],
@@ -200,6 +219,7 @@ mod tests {
                 name = "api"
                 type = "http"
                 upstream = "https://example.com"
+                upstream_timeout_secs = 90
 
                 [[services]]
                 name = "database"
@@ -210,6 +230,8 @@ mod tests {
         .unwrap();
         assert!(config.validate().is_ok());
         assert_eq!(config.services.len(), 2);
+        assert_eq!(config.services[0].upstream_timeout_secs, Some(90));
+        assert_eq!(config.services[1].upstream_timeout_secs, None);
     }
 
     #[test]
@@ -233,8 +255,46 @@ mod tests {
                 name: "database".into(),
                 service_type: ServiceType::Tcp,
                 upstream: None,
+                upstream_timeout_secs: None,
                 ca_cert: None,
                 endpoint: Some("127.0.0.1:0".parse().unwrap()),
+            }],
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_http_timeout() {
+        for timeout_secs in [0, crate::protocol::MAX_HTTP_REQUEST_TIMEOUT_SECS + 1] {
+            let mut config = Config {
+                services: vec![http("api")],
+            };
+            config.services[0].upstream_timeout_secs = Some(timeout_secs);
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_http_timeout_boundaries() {
+        for timeout_secs in [1, crate::protocol::MAX_HTTP_REQUEST_TIMEOUT_SECS] {
+            let mut config = Config {
+                services: vec![http("api")],
+            };
+            config.services[0].upstream_timeout_secs = Some(timeout_secs);
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_timeout_on_tcp_service() {
+        let config = Config {
+            services: vec![ServiceConfig {
+                name: "database".into(),
+                service_type: ServiceType::Tcp,
+                upstream: None,
+                upstream_timeout_secs: Some(90),
+                ca_cert: None,
+                endpoint: Some("127.0.0.1:5432".parse().unwrap()),
             }],
         };
         assert!(config.validate().is_err());

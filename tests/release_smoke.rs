@@ -480,13 +480,13 @@ fn release_binary_reports_http_upstream_timeout() {
     let binary = release_binary();
     let state_dir = TestDir::new();
     let https_upstream =
-        HttpsUpstream::start_with_options(state_dir.path(), 1, Duration::from_secs(31));
+        HttpsUpstream::start_with_options(state_dir.path(), 1, Duration::from_secs(2));
     let config_path = state_dir.path().join("locho.toml");
     let direct_address = format!("127.0.0.1:{}", free_port());
     fs::write(
         &config_path,
         format!(
-            "[[services]]\nname = \"web\"\ntype = \"http\"\nupstream = \"https://127.0.0.1:{}\"\nca_cert = \"{}\"\n",
+            "[[services]]\nname = \"web\"\ntype = \"http\"\nupstream = \"https://127.0.0.1:{}\"\nupstream_timeout_secs = 1\nca_cert = \"{}\"\n",
             https_upstream.address.port(),
             toml_string(&https_upstream.ca_cert),
         ),
@@ -516,7 +516,7 @@ fn release_binary_reports_http_upstream_timeout() {
     );
     http.wait_for("Local proxy:");
     assert_eq!(
-        http_get_with_timeout(http_port, "/slow", Duration::from_secs(35)).0,
+        http_get_with_timeout(http_port, "/slow", Duration::from_secs(5)).0,
         504
     );
 

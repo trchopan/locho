@@ -10,6 +10,7 @@ TCP_CONCURRENCY=10
 HTTP_SIZE=1024
 HTTP_REQUEST_SIZE=0
 TCP_SIZE=256
+HTTP_TIMEOUT_SECS=60
 OUTPUT_ROOT="$REPO/artifacts"
 CHURN_INTERVAL=60
 SUCCESS_SAMPLE_RATE=100
@@ -17,7 +18,7 @@ INTERVAL_SECONDS=10
 MIN_DURATION=360
 
 usage() {
-  echo "usage: $0 [--duration 1h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--churn-interval SECONDS] [--success-sample-rate N] [--interval SECONDS] [--output DIR]"
+  echo "usage: $0 [--duration 1h] [--http-concurrency N] [--tcp-concurrency N] [--http-size BYTES] [--http-request-size BYTES] [--tcp-size BYTES] [--http-timeout-secs SECONDS] [--churn-interval SECONDS] [--success-sample-rate N] [--interval SECONDS] [--output DIR]"
 }
 
 parse_duration() {
@@ -37,6 +38,7 @@ while [ $# -gt 0 ]; do
     --http-size) HTTP_SIZE=$2; shift 2;;
     --http-request-size) HTTP_REQUEST_SIZE=$2; shift 2;;
     --tcp-size) TCP_SIZE=$2; shift 2;;
+    --http-timeout-secs) HTTP_TIMEOUT_SECS=$2; shift 2;;
     --churn-interval) CHURN_INTERVAL=$2; shift 2;;
     --success-sample-rate) SUCCESS_SAMPLE_RATE=$2; shift 2;;
     --interval) INTERVAL_SECONDS=$2; shift 2;;
@@ -52,7 +54,7 @@ case "$DURATION" in *.*|*[!0-9]*) echo "duration must be an integer number of se
   exit 2
 }
 [ "$DURATION" -le 3600 ] || { echo "duration must not exceed 1 hour" >&2; exit 2; }
-for value in "$HTTP_CONCURRENCY" "$TCP_CONCURRENCY" "$HTTP_SIZE" "$HTTP_REQUEST_SIZE" "$TCP_SIZE" "$CHURN_INTERVAL" "$SUCCESS_SAMPLE_RATE" "$INTERVAL_SECONDS"; do
+for value in "$HTTP_CONCURRENCY" "$TCP_CONCURRENCY" "$HTTP_SIZE" "$HTTP_REQUEST_SIZE" "$HTTP_TIMEOUT_SECS" "$TCP_SIZE" "$CHURN_INTERVAL" "$SUCCESS_SAMPLE_RATE" "$INTERVAL_SECONDS"; do
   case "$value" in *.*|*[!0-9]*) echo "numeric options must be non-negative integers" >&2; exit 2;; esac
 done
 [ "$HTTP_CONCURRENCY" -gt 0 ] || { echo "HTTP concurrency must be positive" >&2; exit 2; }
@@ -60,6 +62,7 @@ done
 [ "$CHURN_INTERVAL" -gt 0 ] || { echo "churn interval must be positive" >&2; exit 2; }
 [ "$SUCCESS_SAMPLE_RATE" -gt 0 ] || { echo "success sample rate must be positive" >&2; exit 2; }
 [ "$INTERVAL_SECONDS" -gt 0 ] || { echo "interval must be positive" >&2; exit 2; }
+[ "$HTTP_TIMEOUT_SECS" -ge 1 ] && [ "$HTTP_TIMEOUT_SECS" -le 300 ] || { echo "HTTP timeout must be between 1 and 300 seconds" >&2; exit 2; }
 
 mkdir -p "$OUTPUT_ROOT"
 OUTPUT_ROOT=$(CDPATH= cd -- "$OUTPUT_ROOT" && pwd)
@@ -110,7 +113,7 @@ cleanup() {
     printf '%b\n' "$image_metadata"
     echo "duration_seconds=$DURATION"
     echo "http_concurrency=$HTTP_CONCURRENCY tcp_concurrency=$TCP_CONCURRENCY"
-    echo "http_size=$HTTP_SIZE http_request_size=$HTTP_REQUEST_SIZE tcp_size=$TCP_SIZE churn_interval=$CHURN_INTERVAL success_sample_rate=$SUCCESS_SAMPLE_RATE interval_seconds=$INTERVAL_SECONDS"
+    echo "http_size=$HTTP_SIZE http_request_size=$HTTP_REQUEST_SIZE http_timeout_secs=$HTTP_TIMEOUT_SECS tcp_size=$TCP_SIZE churn_interval=$CHURN_INTERVAL success_sample_rate=$SUCCESS_SAMPLE_RATE interval_seconds=$INTERVAL_SECONDS"
     echo "start=$START end=$END deadline=$DEADLINE exit_status=$status"
   } > "$RUN/metadata.txt"
   rm -rf "$RUNTIME"
@@ -159,6 +162,7 @@ name = "api"
 type = "http"
 upstream = "https://upstream_http:8443"
 ca_cert = "/run/locho/ca.crt"
+upstream_timeout_secs = $HTTP_TIMEOUT_SECS
 
 [[services]]
 name = "echo"

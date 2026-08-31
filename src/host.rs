@@ -11,6 +11,7 @@ use iroh::{endpoint::presets, Endpoint};
 use reqwest::Client;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -18,7 +19,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at, Instant};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -76,7 +77,8 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
         .iter()
         .filter(|service| matches!(service.service_type, ServiceType::Http))
         .map(|service| {
-            let mut builder = Client::builder().timeout(test_http_request_timeout());
+            let mut builder =
+                Client::builder().timeout(http_request_timeout(service.upstream_timeout_secs));
             if let Some(ca_cert) = ca_certificates.get(&service.name) {
                 builder = builder.add_root_certificate(ca_cert.clone());
             }
@@ -303,20 +305,47 @@ where
         (ServiceType::Tcp, _) => return write_error(&mut writer, 501).await,
         _ => return write_error(&mut writer, 500).await,
     };
-    if let Err(error) = forward_to_upstream(upstream, &client, req, reader, &mut writer).await {
-        let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
-        error!(%error, ?causes, "upstream request failed");
-        let status = error
-            .downcast_ref::<reqwest::Error>()
-            .filter(|error| error.is_timeout())
-            .map(|_| 504)
-            .unwrap_or(502);
-        let status = if error.to_string().contains("body exceeds limit") {
-            413
-        } else {
-            status
-        };
-        return write_error(&mut writer, status).await;
+    let response_started = Arc::new(AtomicBool::new(false));
+    let deadline = Instant::now() + http_request_timeout(service.upstream_timeout_secs);
+    match timeout_at(
+        deadline,
+        forward_to_upstream_with_state(
+            upstream,
+            &client,
+            req,
+            reader,
+            &mut writer,
+            Arc::clone(&response_started),
+        ),
+    )
+    .await
+    {
+        Err(_) => {
+            error!("upstream request timed out");
+            if !response_started.load(Ordering::Acquire) {
+                let _ = timeout_at(deadline, write_error(&mut writer, 504)).await;
+            }
+            return Ok(());
+        }
+        Ok(Err(error)) => {
+            let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+            error!(%error, ?causes, "upstream request failed");
+            if response_started.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let status = error
+                .downcast_ref::<reqwest::Error>()
+                .filter(|error| error.is_timeout())
+                .map(|_| 504)
+                .unwrap_or(502);
+            let status = if error.to_string().contains("body exceeds limit") {
+                413
+            } else {
+                status
+            };
+            return write_error(&mut writer, status).await;
+        }
+        Ok(Ok(())) => {}
     }
     Ok(())
 }
@@ -440,12 +469,36 @@ async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, status: u16) -> Resu
     write_body(writer, &[]).await
 }
 
-pub async fn forward_to_upstream<R, W>(
+#[cfg(test)]
+async fn forward_to_upstream<R, W>(
+    upstream: Url,
+    client: &Client,
+    req: LochoRequestHead,
+    reader: R,
+    writer: &mut W,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    forward_to_upstream_with_state(
+        upstream,
+        client,
+        req,
+        reader,
+        writer,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+}
+
+async fn forward_to_upstream_with_state<R, W>(
     upstream: Url,
     client: &Client,
     req: LochoRequestHead,
     mut reader: R,
     writer: &mut W,
+    response_started: Arc<AtomicBool>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -535,6 +588,7 @@ where
         headers,
         body_len,
     };
+    response_started.store(true, Ordering::Release);
     write_json_head(writer, &head).await?;
     let mut response_body = response.bytes_stream();
     let mut total = 0usize;
@@ -543,41 +597,31 @@ where
             Ok(chunk) => chunk,
             Err(error) => {
                 error!(%error, "upstream response stream failed after headers");
-                return Ok(());
+                return Err(error.into());
             }
         };
         total += chunk.len();
         if total > MAX_BODY_LEN {
-            error!("upstream response exceeds limit after headers");
-            return Ok(());
+            bail!("upstream response exceeds limit after headers");
         }
         if body_len.is_some() {
-            if let Err(error) = write_body(writer, &chunk).await {
-                error!(%error, "tunnel response write failed after headers");
-                return Ok(());
-            }
+            write_body(writer, &chunk).await?;
         } else if let Err(error) = write_body_chunk(writer, &chunk).await {
             error!(%error, "tunnel response write failed after headers");
-            return Ok(());
+            return Err(error);
         }
     }
     if body_len.is_none() {
-        if let Err(error) = write_body_end(writer).await {
-            error!(%error, "tunnel response end write failed after headers");
-        }
+        write_body_end(writer).await?;
     }
     info!(status, "upstream response");
     Ok(())
 }
 
-fn test_http_request_timeout() -> std::time::Duration {
-    #[cfg(feature = "integration-test")]
-    if let Some(milliseconds) = std::env::var_os("LOCHO_TEST_HTTP_TIMEOUT_MS") {
-        if let Ok(milliseconds) = milliseconds.to_string_lossy().parse::<u64>() {
-            return std::time::Duration::from_millis(milliseconds);
-        }
-    }
-    HTTP_REQUEST_TIMEOUT
+fn http_request_timeout(configured_timeout_secs: Option<u64>) -> std::time::Duration {
+    configured_timeout_secs
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(HTTP_REQUEST_TIMEOUT)
 }
 
 struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
@@ -629,6 +673,7 @@ mod tests {
                     name: "api".into(),
                     service_type: ServiceType::Http,
                     upstream: Some(Url::parse("https://example.com").unwrap()),
+                    upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: None,
                 }],
@@ -647,6 +692,15 @@ mod tests {
         assert!(validate_bind_address("[::1]:12345".parse().unwrap()).is_err());
     }
 
+    #[test]
+    fn http_timeout_defaults_and_accepts_configuration() {
+        assert_eq!(http_request_timeout(None), HTTP_REQUEST_TIMEOUT);
+        assert_eq!(
+            http_request_timeout(Some(90)),
+            std::time::Duration::from_secs(90)
+        );
+    }
+
     fn tcp_services(endpoint: std::net::SocketAddr) -> Arc<HostServices> {
         Arc::new(HostServices {
             config: Config {
@@ -654,6 +708,7 @@ mod tests {
                     name: "database".into(),
                     service_type: ServiceType::Tcp,
                     upstream: None,
+                    upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: Some(endpoint),
                 }],
