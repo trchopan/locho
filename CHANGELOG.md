@@ -2,7 +2,10 @@
 
 All notable changes to `locho` are documented here.
 
-## [Unreleased]
+## [1.2.0-beta.1] - 2026-08-31
+
+This prerelease adds configurable HTTP timeout controls. It is intended for
+beta testing and is not the stable release channel.
 
 - Adds an optional per-HTTP-service `upstream_timeout_secs` setting, defaulting
   to 60 seconds and capped at 300 seconds.
