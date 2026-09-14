@@ -476,17 +476,22 @@ fn release_binary_completes_http_tcp_and_rotation_workflow() {
 
 #[test]
 #[ignore = "requires a separately built release binary"]
-fn release_binary_reports_http_upstream_timeout() {
+fn release_binary_honors_90_second_http_timeout() {
+    const HTTP_TIMEOUT_SECS: u64 = 90;
+
     let binary = release_binary();
     let state_dir = TestDir::new();
-    let https_upstream =
-        HttpsUpstream::start_with_options(state_dir.path(), 1, Duration::from_secs(2));
+    let https_upstream = HttpsUpstream::start_with_options(
+        state_dir.path(),
+        1,
+        Duration::from_secs(HTTP_TIMEOUT_SECS + 2),
+    );
     let config_path = state_dir.path().join("locho.toml");
     let direct_address = format!("127.0.0.1:{}", free_port());
     fs::write(
         &config_path,
         format!(
-            "[[services]]\nname = \"web\"\ntype = \"http\"\nupstream = \"https://127.0.0.1:{}\"\nupstream_timeout_secs = 1\nca_cert = \"{}\"\n",
+            "[[services]]\nname = \"web\"\ntype = \"http\"\nupstream = \"https://127.0.0.1:{}\"\nupstream_timeout_secs = {HTTP_TIMEOUT_SECS}\nca_cert = \"{}\"\n",
             https_upstream.address.port(),
             toml_string(&https_upstream.ca_cert),
         ),
@@ -504,7 +509,10 @@ fn release_binary_reports_http_upstream_timeout() {
             &direct_address,
         ],
     );
-    let web_command = host.wait_for_attach(&binary, state_dir.path(), &config_path, "web");
+    let web_command = format!(
+        "{} --http-timeout-secs {HTTP_TIMEOUT_SECS}",
+        host.wait_for_attach(&binary, state_dir.path(), &config_path, "web")
+    );
     let http_port = free_port();
     let mut http = start_attachment(
         &binary,
@@ -515,9 +523,18 @@ fn release_binary_reports_http_upstream_timeout() {
         false,
     );
     http.wait_for("Local proxy:");
-    assert_eq!(
-        http_get_with_timeout(http_port, "/slow", Duration::from_secs(5)).0,
-        504
+    let started = Instant::now();
+    let status = http_get_with_timeout(
+        http_port,
+        "/slow",
+        Duration::from_secs(HTTP_TIMEOUT_SECS + 15),
+    )
+    .0;
+    let elapsed = started.elapsed();
+    assert_eq!(status, 504);
+    assert!(
+        elapsed >= Duration::from_secs(HTTP_TIMEOUT_SECS - 5),
+        "request timed out too early after {elapsed:?}; one side may still use the 60-second default"
     );
 
     http.stop();
