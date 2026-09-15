@@ -177,16 +177,20 @@ chmod +x "$RUNTIME/http-client/start-http-client.sh" "$RUNTIME/tcp-client/start-
 $COMPOSE up -d --build --wait locho_host upstream_http upstream_tcp >/dev/null
 for _ in $(seq 1 60); do [ -s "$RUNTIME/host/state/host_state.json" ] && break; sleep 1; done
 [ -s "$RUNTIME/host/state/host_state.json" ] || { echo "host did not become ready" >&2; exit 1; }
-python3 - "$RUNTIME/host/state/host_state.json" "$RUNTIME" <<'PY'
+python3 - "$RUNTIME/host/state/host_state.json" "$RUNTIME" "$HTTP_TIMEOUT_SECS" <<'PY'
 import json
 import sys
 
 state = json.load(open(sys.argv[1]))
 root = sys.argv[2]
+http_timeout_secs = sys.argv[3]
 for name, service in (("http", "api"), ("tcp", "echo")):
     directory = "http-client" if name == "http" else "tcp-client"
+    attachment = f"{state['endpoint_id']} {service} {state['service_secrets'][service]}"
+    if name == "http":
+        attachment += f" --http-timeout-secs {http_timeout_secs}"
     with open(f"{root}/{directory}/{name}-attach", "w") as output:
-        output.write(f"{state['endpoint_id']} {service} {state['service_secrets'][service]}\n")
+        output.write(attachment + "\n")
 PY
 $COMPOSE up -d --build --no-deps locho_client_http locho_client_tcp loadgen >/dev/null
 for _ in $(seq 1 60); do

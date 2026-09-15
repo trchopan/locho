@@ -52,9 +52,9 @@ operation in memory. Container statistics are sampled every five seconds by the
 collector, including restart count and exit status. No throughput threshold is
 imposed; compare runs using the same machine and commit.
 
-The soak runner accepts `--http-timeout-secs` and writes that value into the
-host configuration. Use a short value only with a deliberately delayed fixture;
-the normal HTTPS fixture is expected to complete within the timeout.
+The soak runner accepts `--http-timeout-secs` and applies that value to both the
+host and HTTP attachment. Use a short value only with a deliberately delayed
+fixture; the normal HTTPS fixture is expected to complete within the timeout.
 
 The standard stress baseline stays below Locho's documented TCP connection
 limit. Run `--tcp-concurrency "1 10 50 100"` separately when validating the
