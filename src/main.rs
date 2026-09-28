@@ -13,6 +13,7 @@ mod task;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::{fmt::SubscriberBuilder, EnvFilter};
@@ -221,7 +222,19 @@ fn init_tracing() {
         default_log_filter()
     };
 
-    SubscriberBuilder::default().with_env_filter(filter).init();
+    SubscriberBuilder::default()
+        .with_ansi(ansi_logs_enabled())
+        .with_env_filter(filter)
+        .init();
+}
+
+fn ansi_logs_enabled() -> bool {
+    let no_color = std::env::var_os("NO_COLOR");
+    ansi_logs_enabled_for(std::io::stdout().is_terminal(), no_color.as_deref())
+}
+
+fn ansi_logs_enabled_for(is_terminal: bool, no_color: Option<&std::ffi::OsStr>) -> bool {
+    is_terminal && no_color.is_none_or(|value| value.is_empty())
 }
 
 fn default_log_filter() -> EnvFilter {
@@ -293,6 +306,7 @@ fn normalize_capability(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn normalizes_legacy_attach_syntax() {
@@ -389,5 +403,13 @@ mod tests {
     #[test]
     fn leaves_relay_config_out_of_generated_commands_when_not_supplied() {
         assert_eq!(format_attach_options(None, None), "");
+    }
+
+    #[test]
+    fn ansi_logs_follow_terminal_and_no_color_settings() {
+        assert!(ansi_logs_enabled_for(true, None));
+        assert!(ansi_logs_enabled_for(true, Some(OsStr::new(""))));
+        assert!(!ansi_logs_enabled_for(true, Some(OsStr::new("1"))));
+        assert!(!ansi_logs_enabled_for(false, None));
     }
 }

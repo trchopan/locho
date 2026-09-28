@@ -4,6 +4,11 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+- Adds service and short endpoint identifiers to host request and attachment
+  connection logs, with HTTP request paths kept at the end of request log
+  fields.
+- Enables ANSI log colors only for terminal output and honors non-empty
+  `NO_COLOR` for plain logs.
 - Adds shared custom iroh relay transport configuration for host, attach, and
   diagnose.
 - Supports custom-only and custom-plus-N0 relay transport maps, optional bearer

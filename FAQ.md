@@ -263,6 +263,23 @@ Security still depends on correct operation:
 locho does not provide per-user identity, per-machine authorization, centralized
 policy, or audit-grade access records.
 
+## What information is included in logs?
+
+Host request logs include the configured `service`, the client's short iroh
+endpoint ID, and HTTP method and status information. Attachment request logs
+include the configured `service`; connection and transport logs include the
+remote host's short iroh endpoint ID. HTTP request paths are emitted at the end
+of request log fields.
+
+Short endpoint IDs are display identifiers derived from the full cryptographic
+endpoint ID. They are useful for correlating logs but are not a security
+boundary and should not be treated as globally unique. Full endpoint IDs,
+capability secrets, and secret proofs are not intentionally logged by locho.
+
+Logs use ANSI colors when written to an interactive terminal. Redirected or
+piped output uses plain logs, and setting `NO_COLOR` to any non-empty value
+also disables ANSI colors.
+
 ## Why use locho instead of SSH forwarding?
 
 SSH remains an excellent choice for remote administration and forwarding
