@@ -1,4 +1,4 @@
-use crate::{attach_config, auth, http_utils, protocol::*};
+use crate::{attach_config, auth, http_utils, protocol::*, relay};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_core::Stream;
@@ -12,10 +12,7 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
-use iroh::{
-    endpoint::{presets, Connection},
-    Endpoint, EndpointAddr, EndpointId,
-};
+use iroh::{endpoint::Connection, Endpoint, EndpointAddr, EndpointId};
 use std::net::SocketAddr;
 use std::{convert::Infallible, fmt, io::Write, pin::Pin};
 use tokio::net::{TcpListener, TcpStream};
@@ -160,6 +157,7 @@ impl Drop for HttpBodyLeaseGuard {
 pub async fn run(
     host_id: String,
     capability: String,
+    relay_config_path: Option<std::path::PathBuf>,
     direct_address: Option<SocketAddr>,
     listen: SocketAddr,
     http_timeout_secs: Option<u64>,
@@ -181,6 +179,7 @@ pub async fn run(
             listen,
             http_timeout,
         }],
+        relay::load(relay_config_path.as_deref())?,
         direct_address,
     )
     .await
@@ -188,17 +187,25 @@ pub async fn run(
 
 pub async fn run_config(
     config_path: std::path::PathBuf,
+    relay_config_path: Option<std::path::PathBuf>,
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let config = attach_config::AttachConfig::load(&config_path)?;
     let direct_address = direct_address.or(config.direct_address);
     let host_id = config.host_id.clone();
-    run_attachments(host_id, config.attachments()?, direct_address).await
+    run_attachments(
+        host_id,
+        config.attachments()?,
+        relay::load(relay_config_path.as_deref())?,
+        direct_address,
+    )
+    .await
 }
 
 async fn run_attachments(
     host_id: String,
     attachments: Vec<attach_config::AttachmentConfig>,
+    relay_settings: Option<relay::RelaySettings>,
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
@@ -210,7 +217,9 @@ async fn run_attachments(
             .transpose()
             .context("invalid LOCHO_TEST_DIRECT_ADDR")?,
     };
-    let endpoint = Endpoint::builder(presets::N0).bind().await?;
+    let endpoint = relay::endpoint_builder(relay_settings.as_ref())
+        .bind()
+        .await?;
     let endpoint_addr = direct_address
         .map(|address| EndpointAddr::new(node_id).with_ip_addr(address))
         .unwrap_or_else(|| EndpointAddr::new(node_id));

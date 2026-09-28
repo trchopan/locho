@@ -2,6 +2,16 @@
 
 All notable changes to `locho` are documented here.
 
+## Unreleased
+
+- Adds shared custom iroh relay transport configuration for host, attach, and
+  diagnose.
+- Supports custom-only and custom-plus-N0 relay transport maps, optional bearer
+  tokens from environment variables, and per-relay QUIC Address Discovery
+  settings.
+- Includes the relay configuration path in generated share and rotation attach
+  commands when explicitly provided.
+
 ## [1.2.0-beta.1] - 2026-08-31
 
 This prerelease adds configurable HTTP timeout controls. It is intended for

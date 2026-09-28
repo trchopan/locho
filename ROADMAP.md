@@ -85,7 +85,6 @@ promise for a particular release:
 - Optional human-readable service exchange.
 - Additional protocol support where the security boundary remains explicit.
 - Performance improvements such as stream multiplexing.
-- LAN-first or self-hosted relay configuration.
 - Docker and CI examples.
 - Additional platform targets where packaging and native verification are
   maintainable.
