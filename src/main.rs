@@ -7,6 +7,7 @@ mod diagnostics;
 mod host;
 mod http_utils;
 mod protocol;
+mod relay;
 mod state;
 mod task;
 
@@ -43,6 +44,8 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
+        relay_config: Option<PathBuf>,
+        #[arg(long)]
         bind_address: Option<SocketAddr>,
     },
     ResetIdentity,
@@ -50,6 +53,8 @@ enum Command {
         service: String,
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        relay_config: Option<PathBuf>,
         #[arg(long)]
         direct_address: Option<SocketAddr>,
     },
@@ -63,11 +68,15 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
+        relay_config: Option<PathBuf>,
+        #[arg(long)]
         direct_address: Option<SocketAddr>,
     },
     Diagnose {
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        relay_config: Option<PathBuf>,
         #[arg(long)]
         host_id: Option<String>,
         #[arg(long)]
@@ -80,6 +89,8 @@ enum Command {
         legacy_secret: Option<String>,
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        relay_config: Option<PathBuf>,
         #[arg(long)]
         direct_address: Option<SocketAddr>,
         #[arg(long, hide = true)]
@@ -97,12 +108,14 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Host {
             config,
+            relay_config,
             bind_address,
-        } => host::run(config, bind_address).await,
+        } => host::run(config, relay_config, bind_address).await,
         Command::ResetIdentity => state::reset_identity(),
         Command::RotateSecret {
             service,
             config,
+            relay_config,
             direct_address,
         } => {
             let service_type = config
@@ -110,21 +123,19 @@ async fn main() -> Result<()> {
                 .map(|path| service_type(path, &service))
                 .transpose()?;
             let (host_id, secret) = state::rotate_secret(&service)?;
-            let direct_address = direct_address
-                .map(|address| format!(" --direct-address {address}"))
-                .unwrap_or_default();
+            let attach_options = format_attach_options(direct_address, relay_config.as_deref());
             if let Some(service_type) = service_type {
                 println!(
                     "attachment capability rotated for service {:?}\n\nAttach with:\n\nlocho attach {} {}{}",
                     service,
                     host_id,
                     capability::format(&service, &service_type, &secret),
-                    direct_address
+                    attach_options
                 );
             } else {
                 println!(
                     "attachment capability rotated for service {:?}\n\nAttach with:\n\nlocho attach {} {} {}{}",
-                    service, host_id, service, secret, direct_address
+                    service, host_id, service, secret, attach_options
                 );
             }
             Ok(())
@@ -138,32 +149,33 @@ async fn main() -> Result<()> {
         Command::Share {
             service,
             config,
+            relay_config,
             direct_address,
         } => {
             let service_type = service_type(&config, &service)?;
             let secret = state::read_service_secret(&service)?;
             let host_id = state::read_host_endpoint_id()?;
-            let direct_address = direct_address
-                .map(|address| format!(" --direct-address {address}"))
-                .unwrap_or_default();
+            let attach_options = format_attach_options(direct_address, relay_config.as_deref());
             println!(
                 "locho attach {} {}{}",
                 host_id,
                 capability::format(&service, &service_type, &secret),
-                direct_address
+                attach_options
             );
             Ok(())
         }
         Command::Diagnose {
             config,
+            relay_config,
             host_id,
             direct_address,
-        } => diagnostics::run(config, host_id, direct_address).await,
+        } => diagnostics::run(config, relay_config, host_id, direct_address).await,
         Command::Attach {
             host_id,
             capability,
             legacy_secret,
             config,
+            relay_config,
             direct_address,
             tcp,
             listen,
@@ -182,7 +194,7 @@ async fn main() -> Result<()> {
                 {
                     bail!("--config cannot be combined with positional attach arguments, --tcp, --listen, or --http-timeout-secs");
                 }
-                attach::run_config(config, direct_address).await
+                attach::run_config(config, relay_config, direct_address).await
             } else {
                 let host_id = host_id.ok_or_else(|| anyhow::anyhow!("attach requires HOST_ID"))?;
                 let capability =
@@ -191,6 +203,7 @@ async fn main() -> Result<()> {
                 attach::run(
                     host_id,
                     capability,
+                    relay_config,
                     direct_address,
                     listen,
                     http_timeout_secs,
@@ -213,6 +226,31 @@ fn init_tracing() {
 
 fn default_log_filter() -> EnvFilter {
     EnvFilter::new("info,iroh::net_report::report=error")
+}
+
+fn format_attach_options(
+    direct_address: Option<SocketAddr>,
+    relay_config: Option<&Path>,
+) -> String {
+    let mut options = direct_address
+        .map(|address| format!(" --direct-address {address}"))
+        .unwrap_or_default();
+    if let Some(path) = relay_config {
+        options.push_str(" --relay-config ");
+        options.push_str(&shell_quote(path));
+    }
+    options
+}
+
+fn shell_quote(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'\\' | b'.' | b'_' | b'-' | b':')
+    }) {
+        value.into_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn service_type(config_path: &Path, service: &str) -> Result<config::ServiceType> {
@@ -290,5 +328,66 @@ mod tests {
             } => assert_eq!(http_timeout_secs, Some(90)),
             _ => panic!("parsed the wrong command"),
         }
+    }
+
+    #[test]
+    fn parses_relay_configuration_for_host_attach_and_diagnose() {
+        for args in [
+            &[
+                "locho",
+                "host",
+                "--config",
+                "locho.toml",
+                "--relay-config",
+                "relay.toml",
+            ][..],
+            &[
+                "locho",
+                "attach",
+                "host",
+                "api:http:secret",
+                "--relay-config",
+                "relay.toml",
+            ][..],
+            &["locho", "diagnose", "--relay-config", "relay.toml"][..],
+            &[
+                "locho",
+                "share",
+                "api",
+                "--config",
+                "locho.toml",
+                "--relay-config",
+                "relay.toml",
+            ][..],
+            &[
+                "locho",
+                "rotate-secret",
+                "api",
+                "--relay-config",
+                "relay.toml",
+            ][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+    }
+
+    #[test]
+    fn quotes_relay_config_paths_in_generated_commands() {
+        assert_eq!(
+            format_attach_options(None, Some(Path::new("relay config.toml"))),
+            " --relay-config 'relay config.toml'"
+        );
+        assert_eq!(
+            format_attach_options(
+                Some("127.0.0.1:12345".parse().unwrap()),
+                Some(Path::new("relay.toml"))
+            ),
+            " --direct-address 127.0.0.1:12345 --relay-config relay.toml"
+        );
+    }
+
+    #[test]
+    fn leaves_relay_config_out_of_generated_commands_when_not_supplied() {
+        assert_eq!(format_attach_options(None, None), "");
     }
 }

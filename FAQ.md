@@ -168,6 +168,26 @@ printing service capabilities. A `direct` path uses UDP peer connectivity, a
 both paths are available. An attachment also logs and prints its initial
 transport path and any later path changes.
 
+To use a self-hosted relay, pass the same `--relay-config PATH` file to the
+host, attachment, and diagnostic commands. The file can select custom-only
+operation or merge custom relays with the N0 relays. Relay selection is not a
+strict priority order: iroh prefers a working direct path and measures relay
+reachability and latency. Optional bearer tokens are read from environment
+variables named by `token_env` and are not included in diagnostics.
+
+Custom-only means custom relay transport only. iroh's current N0 discovery
+services remain enabled, so a connection by bare host ID may still require
+access to N0 discovery. Use an explicit direct address if that dependency is
+not acceptable. The generated command from `locho share` or `locho
+rotate-secret` includes `--relay-config` when you provide it; ensure that path
+is valid on the attachment machine.
+
+locho does not host the relay server itself. Follow the
+[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.1.0/iroh-relay)
+for deployment, TLS, QAD, access control, and metrics. The relay server's
+access-token configuration is separate from locho's client-side `token_env`
+setting.
+
 If peer discovery cannot advertise a reachable host address, start the host with
 `--bind-address ADDRESS` and pass that address to the attachment with
 `--direct-address ADDRESS`. This is an explicit address hint; it does not bypass
@@ -175,7 +195,7 @@ service capability authorization.
 
 ### What does the QAD warning mean?
 
-QAD means QUIC Address Discovery. iroh sends probes to multiple relay servers
+QAD means QUIC Address Discovery. iroh sends probes to configured relay servers
 and asks what public IPv4 address and UDP port each relay observes. A warning
 that the address varies by destination means the network uses a
 destination-dependent NAT mapping, which is common with CGNAT, VPNs, and some
@@ -187,6 +207,10 @@ encrypted relay fallback. The `locho diagnose` command waits briefly for a
 possible direct-path upgrade before reporting the observed path. A relay-only
 result means the connection was still using the relay when the observation
 ended, not that the relay can read application traffic.
+
+Custom relay QAD is enabled by default and uses UDP port 7842. Set
+`quic_address_discovery = false` for a relay behind an HTTPS-only reverse
+proxy.
 
 ## Can a relay read the application traffic?
 

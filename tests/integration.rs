@@ -708,6 +708,7 @@ fn host_closes_stalled_response_after_headers() {
 fn diagnose_reports_configuration_without_capabilities() {
     let state_dir = TestDir::new();
     let config_path = state_dir.path().join("locho.toml");
+    let relay_config_path = state_dir.path().join("relay.toml");
     let host_key = SecretKey::generate();
     fs::write(state_dir.path().join("host.key"), host_key.to_bytes()).unwrap();
     fs::write(
@@ -737,17 +738,32 @@ fn diagnose_reports_configuration_without_capabilities() {
         ),
     )
     .unwrap();
+    fs::write(
+        &relay_config_path,
+        "include_n0_relays = false\n\n[[relays]]\nurl = \"https://relay.example.org\"\ntoken_env = \"LOCHO_TEST_RELAY_TOKEN\"\nquic_address_discovery = false\n",
+    )
+    .unwrap();
 
     let output = Command::new(locho_binary())
         .env("LOCHO_STATE_DIR", state_dir.path())
+        .env("LOCHO_TEST_RELAY_TOKEN", "diagnostic-relay-secret")
         .args(["diagnose", "--config"])
         .arg(&config_path)
+        .args(["--relay-config"])
+        .arg(&relay_config_path)
         .output()
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains("configuration: valid (1 services"));
     assert!(stdout.contains("service: database (Tcp)"));
+    assert!(stdout.contains("relay configuration: custom (1 relays, include_n0_relays=false)"));
+    assert!(stdout.contains("relay: https://relay.example.org/ (QAD disabled)"));
+    assert!(!stdout.contains("LOCHO_TEST_RELAY_TOKEN"));
+    assert!(!stdout.contains("diagnostic-relay-secret"));
+    assert!(!stderr.contains("LOCHO_TEST_RELAY_TOKEN"));
+    assert!(!stderr.contains("diagnostic-relay-secret"));
     assert!(!stdout.contains("attach "));
     assert!(!stdout.contains("diagnostic-secret"));
     assert!(!stdout.contains("service-secret"));

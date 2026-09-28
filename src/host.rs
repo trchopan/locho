@@ -3,11 +3,11 @@ use crate::{
     config::{Config, ServiceType},
     http_utils,
     protocol::*,
+    relay,
 };
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use iroh::{endpoint::presets, Endpoint};
 use reqwest::Client;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -25,8 +25,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
 
-pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Result<()> {
+pub async fn run(
+    config_path: PathBuf,
+    relay_config_path: Option<PathBuf>,
+    bind_address: Option<SocketAddr>,
+) -> Result<()> {
     let config = Config::load(&config_path)?;
+    let relay_settings = relay::load(relay_config_path.as_deref())?;
     let _state_lock = crate::state::acquire_state_lock()?;
     let host_secret_key = crate::state::load_or_create_host_secret_key()?;
     #[cfg(feature = "integration-test")]
@@ -37,7 +42,7 @@ pub async fn run(config_path: PathBuf, bind_address: Option<SocketAddr>) -> Resu
             .transpose()
             .context("invalid LOCHO_TEST_BIND_ADDR")?,
     };
-    let mut endpoint_builder = Endpoint::builder(presets::N0)
+    let mut endpoint_builder = relay::endpoint_builder(relay_settings.as_ref())
         .alpns(vec![ALPN.to_vec()])
         .secret_key(host_secret_key);
     if let Some(address) = bind_address {

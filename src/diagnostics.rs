@@ -1,7 +1,7 @@
-use crate::{attach::format_transport_paths, config::Config, protocol::ALPN, state};
+use crate::{attach::format_transport_paths, config::Config, protocol::ALPN, relay, state};
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
-use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{EndpointAddr, EndpointId, SecretKey};
 use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::time::{sleep, timeout};
 
@@ -10,6 +10,7 @@ const PATH_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn run(
     config_path: Option<PathBuf>,
+    relay_config_path: Option<PathBuf>,
     host_id: Option<String>,
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
@@ -18,6 +19,29 @@ pub async fn run(
     }
     println!("locho diagnostics");
     println!("state directory: {}", state::app_data_dir()?.display());
+
+    let relay_settings = relay::load(relay_config_path.as_deref())?;
+    if let Some(settings) = &relay_settings {
+        let (relays, include_n0_relays) = settings.report();
+        println!(
+            "relay configuration: custom ({} relays, include_n0_relays={})",
+            relays.len(),
+            include_n0_relays
+        );
+        for relay in relays {
+            println!(
+                "relay: {} (QAD {})",
+                relay.url,
+                if relay.quic_address_discovery {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+    } else {
+        println!("relay configuration: N0 default");
+    }
 
     let state_dir = state::app_data_dir()?;
     let host_key_path = state_dir.join("host.key");
@@ -49,7 +73,9 @@ pub async fn run(
 
     if let Some(host_id) = host_id {
         let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
-        let endpoint = Endpoint::builder(presets::N0).bind().await?;
+        let endpoint = relay::endpoint_builder(relay_settings.as_ref())
+            .bind()
+            .await?;
         let mut endpoint_addr = EndpointAddr::new(node_id);
         if let Some(address) = direct_address {
             endpoint_addr = endpoint_addr.with_ip_addr(address);
@@ -234,6 +260,7 @@ mod tests {
     #[test]
     fn direct_address_requires_host_id() {
         let result = tokio::runtime::Runtime::new().unwrap().block_on(run(
+            None,
             None,
             None,
             Some("127.0.0.1:12345".parse().unwrap()),

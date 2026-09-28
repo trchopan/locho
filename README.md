@@ -117,15 +117,112 @@ Start the host with the validated configuration:
 locho host --config locho.toml
 ```
 
-The host prints its ID and the configured service names, but never prints
-capabilities. Generate a complete, shareable attach command explicitly:
+### Custom relays
+
+Host, attachment, and diagnostic endpoints can use the same optional relay
+configuration file. The file supports custom-only operation by default, or
+custom relays alongside the normal N0 relays:
+
+```toml
+# relay.toml
+include_n0_relays = false
+
+[[relays]]
+url = "https://relay.example.org"
+token_env = "LOCHO_RELAY_TOKEN"
+quic_address_discovery = true
+```
+
+`quic_address_discovery` defaults to `true` and uses the relay's default QAD
+UDP port, 7842. Set it to `false` when the relay is reachable through an HTTPS
+reverse proxy that does not expose QAD. `token_env` names an environment
+variable containing an optional bearer token; the token is never printed by
+locho or included in normal diagnostics.
+
+Use the same relay file for both sides of a connection:
 
 ```sh
-locho share api --config locho.toml
+export LOCHO_RELAY_TOKEN="..."
+locho host --config locho.toml --relay-config relay.toml
+locho attach <host-id> api:http:<secret> --relay-config relay.toml
+locho diagnose --host-id <host-id> --relay-config relay.toml
+```
+
+For fallback to N0, set `include_n0_relays = true`. Relay entries are a set of
+connectivity candidates, not a priority list. iroh still prefers a working
+direct path over relayed paths, and selects among available relays based on
+reachability and measured latency. Without `--relay-config`, locho retains its
+existing N0 relay behavior.
+
+`include_n0_relays = false` means custom relay transport only. The current
+endpoint builder still uses iroh's N0 discovery services to publish and resolve
+host IDs, so a bare host-ID connection may still need access to N0 discovery.
+Use an explicit direct address when that discovery dependency is not acceptable.
+
+The simplest local `iroh-relay --dev` mode uses plain HTTP, but locho requires
+HTTPS relay URLs. For locho clients, use a relay with a trusted TLS certificate;
+the upstream self-signed/local TLS setup also requires client CA configuration
+that locho does not currently expose.
+
+### Manual relay verification
+
+For a relay-only or fallback check, deploy the version-matched `iroh-relay`
+server from the documentation above and configure a shared server token, for
+example:
+
+```toml
+access.shared_token = ["replace-with-a-secret"]
+```
+
+Keep the token out of files shared with clients and expose it through
+`LOCHO_RELAY_TOKEN`:
+
+```toml
+# relay.toml
+include_n0_relays = false
+
+[[relays]]
+url = "https://relay.example.org"
+token_env = "LOCHO_RELAY_TOKEN"
+quic_address_discovery = false
+```
+
+Run the host and attachment with the same relay file, then verify the path:
+
+```sh
+export LOCHO_RELAY_TOKEN="replace-with-a-secret"
+locho host --config locho.toml --relay-config relay.toml
+locho share api --config locho.toml --relay-config relay.toml
+locho attach <host-id> api:http:<secret> --relay-config relay.toml
+locho diagnose --host-id <host-id> --relay-config relay.toml
+```
+
+The diagnostic output should report the configured relay and a `relay(...)` or
+`mixed(...)` transport when direct connectivity is unavailable. To verify N0
+fallback, change `include_n0_relays` to `true` and repeat with a custom relay
+that is unavailable. Exact path selection is network-dependent because iroh
+still prefers working direct paths and measures relay reachability and latency.
+
+locho configures relay clients; it does not run a relay server. To host a
+self-hosted iroh relay, use the version-matched
+[`iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.1.0/iroh-relay),
+which covers building the server, TLS, QUIC Address Discovery, access control,
+and metrics. Configure the server's shared access token separately from
+locho's `token_env` client setting, and keep the two processes on compatible
+iroh versions.
+
+The host prints its ID and the configured service names, but never prints
+capabilities. Generate an attach command explicitly:
+
+```sh
+locho share api --config locho.toml --relay-config relay.toml
 ```
 
 The command output contains a capability token in the form
-`<service>:<type>:<secret>`. Share that output through a trusted channel.
+`<service>:<type>:<secret>` and, when supplied, the `--relay-config` option.
+The relay configuration path must exist on the attachment machine; adjust the
+path if the host and attachment use different filesystem layouts. Share the
+output through a trusted channel.
 
 For a host that must provide an explicit reachable address to an attachment,
 bind it to that address and pass the same address to `locho attach` with
@@ -134,9 +231,11 @@ discovery cannot advertise the host address:
 
 ```sh
 locho host --config locho.toml --bind-address 192.0.2.10:12345
-locho share api --config locho.toml --direct-address 192.0.2.10:12345
+locho share api --config locho.toml --relay-config relay.toml \
+  --direct-address 192.0.2.10:12345
 locho attach <host-id> api:http:<secret> \
-  --direct-address 192.0.2.10:12345 --listen 127.0.0.1:8765
+  --relay-config relay.toml --direct-address 192.0.2.10:12345 \
+  --listen 127.0.0.1:8765
 ```
 
 Use a fixed reachable port instead of `0` when sharing the address with an
@@ -187,14 +286,15 @@ TCP services are attached to a local TCP listener and forward bidirectionally:
 Rotate one service capability without affecting other services:
 
 ```sh
-locho rotate-secret api --config locho.toml
+locho rotate-secret api --config locho.toml --relay-config relay.toml
 ```
 
 When the host requires an explicit address, include it in the rotation command
 so the generated attach command is complete:
 
 ```sh
-locho rotate-secret api --config locho.toml --direct-address 192.0.2.10:12345
+locho rotate-secret api --config locho.toml --relay-config relay.toml \
+  --direct-address 192.0.2.10:12345
 ```
 
 The host holds its state lock while running, so stop the host before rotating a

@@ -35,6 +35,11 @@ capability rotation, malformed requests, timeouts, and graceful shutdown. The
 release smoke tests exercise the ordinary release binary without the test-only
 feature.
 
+Custom relay verification is environment-dependent and is not part of the
+deterministic CI gate. Follow the [manual relay verification](README.md#manual-relay-verification)
+procedure when changing relay configuration, authentication, or endpoint
+construction.
+
 ## Release Verification
 
 The complete release gate also builds cargo-dist artifacts, verifies checksums,
