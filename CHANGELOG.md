@@ -2,7 +2,10 @@
 
 All notable changes to `locho` are documented here.
 
-## Unreleased
+## [1.2.0-beta.2] - 2026-09-28
+
+This prerelease adds request logging context and configurable relay transport
+support. It is intended for beta testing and is not the stable release channel.
 
 - Adds service and short endpoint identifiers to host request and attachment
   connection logs, with HTTP request paths kept at the end of request log
