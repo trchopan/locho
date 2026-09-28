@@ -204,14 +204,16 @@ async fn handle_connection(
             return;
         }
     };
+    let client_id = connection.remote_id().fmt_short().to_string();
     let mut streams = JoinSet::new();
     loop {
         tokio::select! {
             result = connection.accept_bi() => match result {
                 Ok((send, recv)) => {
                     let services = Arc::clone(&services);
+                    let client_id = client_id.clone();
                     streams.spawn(async move {
-                        handle_stream(send, recv, services).await
+                        handle_stream(send, recv, services, client_id).await
                     });
                 }
                 Err(_) => break,
@@ -241,6 +243,7 @@ async fn handle_stream<W, R>(
     mut writer: W,
     mut reader: R,
     services: Arc<HostServices>,
+    client_id: String,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -249,19 +252,23 @@ where
     let head = match read_request_head(&mut reader, HANDSHAKE_TIMEOUT).await {
         Ok(head) => head,
         Err(error) if error.to_string().contains("timed out") => {
-            error!(%error, "tunnel request header timed out");
+            error!(client_id = %client_id, %error, "tunnel request header timed out");
             write_error(&mut writer, 408).await?;
             return Ok(());
         }
         Err(error) => {
-            error!(%error, "malformed request header");
+            error!(client_id = %client_id, %error, "malformed request header");
             write_error(&mut writer, 400).await?;
             return Ok(());
         }
     };
     match head {
-        StreamRequestHead::Http(req) => handle_http_stream(writer, reader, req, services).await,
-        StreamRequestHead::Tcp(req) => handle_tcp_stream(writer, reader, req, services).await,
+        StreamRequestHead::Http(req) => {
+            handle_http_stream(writer, reader, req, services, client_id).await
+        }
+        StreamRequestHead::Tcp(req) => {
+            handle_tcp_stream(writer, reader, req, services, client_id).await
+        }
     }
 }
 
@@ -282,16 +289,36 @@ async fn handle_http_stream<W, R>(
     reader: R,
     req: LochoRequestHead,
     services: Arc<HostServices>,
+    client_id: String,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin + Send + 'static,
 {
+    let service_name = req.service.clone();
+    let method_name = req.method.clone();
+    let path = req.path_and_query.clone();
     let req = match validate_http_request(req, &services) {
         Ok(body) => body,
-        Err(status) => return write_error(&mut writer, status).await,
+        Err(status) => {
+            warn!(
+                service = %service_name,
+                client_id = %client_id,
+                method = %method_name,
+                status,
+                path = %path,
+                "HTTP request rejected"
+            );
+            return write_error(&mut writer, status).await;
+        }
     };
-    info!(method = %req.method, path = %req.path_and_query, "authenticated stream accepted");
+    info!(
+        service = %service_name,
+        client_id = %client_id,
+        method = %method_name,
+        path = %path,
+        "authenticated stream accepted"
+    );
     let service = services
         .config
         .services
@@ -321,12 +348,19 @@ where
             reader,
             &mut writer,
             Arc::clone(&response_started),
+            &client_id,
         ),
     )
     .await
     {
         Err(_) => {
-            error!("upstream request timed out");
+            error!(
+                service = %service_name,
+                client_id = %client_id,
+                method = %method_name,
+                path = %path,
+                "upstream request timed out"
+            );
             if !response_started.load(Ordering::Acquire) {
                 let _ = timeout_at(deadline, write_error(&mut writer, 504)).await;
             }
@@ -334,7 +368,15 @@ where
         }
         Ok(Err(error)) => {
             let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
-            error!(%error, ?causes, "upstream request failed");
+            error!(
+                service = %service_name,
+                client_id = %client_id,
+                method = %method_name,
+                %error,
+                ?causes,
+                path = %path,
+                "upstream request failed"
+            );
             if response_started.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -381,12 +423,20 @@ async fn handle_tcp_stream<W, R>(
     reader: R,
     req: TcpRequestHead,
     services: Arc<HostServices>,
+    client_id: String,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
+    let requested_service = req.service.clone();
     if req.version != PROTOCOL_VERSION {
+        warn!(
+            service = %requested_service,
+            client_id = %client_id,
+            status = 400,
+            "TCP request rejected"
+        );
         return write_error(&mut writer, 400).await;
     }
     let service = match services
@@ -396,19 +446,46 @@ where
         .find(|service| service.name == req.service)
     {
         Some(service) => service,
-        None => return write_error(&mut writer, 404).await,
+        None => {
+            warn!(
+                service = %requested_service,
+                client_id = %client_id,
+                status = 404,
+                "TCP request rejected"
+            );
+            return write_error(&mut writer, 404).await;
+        }
     };
     let secret = services
         .secrets
         .get(&service.name)
         .ok_or_else(|| anyhow::anyhow!("missing service secret"))?;
     if auth::verify_secret_proof(secret, &req.secret_proof).is_err() {
+        warn!(
+            service = %service.name,
+            client_id = %client_id,
+            status = 403,
+            "TCP request rejected"
+        );
         return write_error(&mut writer, 403).await;
     }
     let endpoint = match (&service.service_type, service.endpoint) {
         (ServiceType::Tcp, Some(endpoint)) => endpoint,
-        _ => return write_error(&mut writer, 400).await,
+        _ => {
+            warn!(
+                service = %service.name,
+                client_id = %client_id,
+                status = 400,
+                "TCP request rejected"
+            );
+            return write_error(&mut writer, 400).await;
+        }
     };
+    info!(
+        service = %service.name,
+        client_id = %client_id,
+        "authenticated TCP stream accepted"
+    );
     let _permit = match services.tcp_connections.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return write_error(&mut writer, 429).await,
@@ -426,11 +503,22 @@ where
     let upstream = match upstream {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => {
-            error!(service = %service.name, %endpoint, %error, "TCP upstream unavailable");
+            error!(
+                service = %service.name,
+                client_id = %client_id,
+                %endpoint,
+                %error,
+                "TCP upstream unavailable"
+            );
             return write_error(&mut writer, 502).await;
         }
         Err(_) => {
-            error!(service = %service.name, %endpoint, "TCP upstream connection timed out");
+            error!(
+                service = %service.name,
+                client_id = %client_id,
+                %endpoint,
+                "TCP upstream connection timed out"
+            );
             return write_error(&mut writer, 504).await;
         }
     };
@@ -446,8 +534,18 @@ where
     .await?;
     write_body(&mut writer, &[]).await?;
     let tunnel = tokio::io::join(reader, writer);
-    relay_with_idle_timeout(tunnel, upstream).await?;
-    Ok(())
+    let result = relay_with_idle_timeout(tunnel, upstream).await;
+    if let Err(error) = &result {
+        if error.downcast_ref::<TunnelIdleTimeout>().is_none() {
+            error!(
+                service = %service.name,
+                client_id = %client_id,
+                %error,
+                "TCP tunnel relay failed"
+            );
+        }
+    }
+    result
 }
 
 fn test_tcp_connect_timeout() -> std::time::Duration {
@@ -493,6 +591,7 @@ where
         reader,
         writer,
         Arc::new(AtomicBool::new(false)),
+        "test",
     )
     .await
 }
@@ -504,11 +603,15 @@ async fn forward_to_upstream_with_state<R, W>(
     mut reader: R,
     writer: &mut W,
     response_started: Arc<AtomicBool>,
+    client_id: &str,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
+    let service = req.service.clone();
+    let method_name = req.method.clone();
+    let path = req.path_and_query.clone();
     let url = http_utils::join_upstream_url(&upstream, &req.path_and_query)?;
     let method =
         reqwest::Method::from_bytes(req.method.as_bytes()).context("invalid request method")?;
@@ -601,7 +704,14 @@ where
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
-                error!(%error, "upstream response stream failed after headers");
+                error!(
+                    service = %service,
+                    client_id = %client_id,
+                    method = %method_name,
+                    %error,
+                    path = %path,
+                    "upstream response stream failed after headers"
+                );
                 return Err(error.into());
             }
         };
@@ -612,14 +722,28 @@ where
         if body_len.is_some() {
             write_body(writer, &chunk).await?;
         } else if let Err(error) = write_body_chunk(writer, &chunk).await {
-            error!(%error, "tunnel response write failed after headers");
+            error!(
+                service = %service,
+                client_id = %client_id,
+                method = %method_name,
+                %error,
+                path = %path,
+                "tunnel response write failed after headers"
+            );
             return Err(error);
         }
     }
     if body_len.is_none() {
         write_body_end(writer).await?;
     }
-    info!(status, "upstream response");
+    info!(
+        service = %service,
+        client_id = %client_id,
+        method = %method_name,
+        status,
+        path = %path,
+        "upstream response"
+    );
     Ok(())
 }
 
@@ -662,13 +786,45 @@ mod tests {
     use crate::config::{Config, ServiceConfig, ServiceType};
     use http_body_util::BodyExt;
     use std::collections::HashMap;
+    use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     fn http_client() -> Client {
         Client::builder().build().unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    struct LogBufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for LogBufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogBufferWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            LogBufferWriter(Arc::clone(&self.0))
+        }
+    }
+
+    impl LogBuffer {
+        fn contents(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
     }
 
     fn services() -> Arc<HostServices> {
@@ -728,7 +884,12 @@ mod tests {
         let (client, server) = duplex(4096);
         let (mut client_reader, mut client_writer) = tokio::io::split(client);
         let (server_reader, server_writer) = tokio::io::split(server);
-        let task = tokio::spawn(handle_stream(server_writer, server_reader, services()));
+        let task = tokio::spawn(handle_stream(
+            server_writer,
+            server_reader,
+            services(),
+            "test-client".into(),
+        ));
         write_json_head(&mut client_writer, &StreamRequestHead::Http(request))
             .await
             .unwrap();
@@ -758,6 +919,73 @@ mod tests {
         assert_eq!(response.status, 403);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_http_request_logs_context_without_secret_proof() {
+        let logs = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt::SubscriberBuilder::default()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .finish();
+        let secret_proof = "not-a-secret-proof";
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let response = request_response(request("api", secret_proof)).await;
+
+        assert_eq!(response.status, 403);
+        let logs = logs.contents();
+        let service_position = logs.find("service=api").expect(&logs);
+        let client_position = logs.find("client_id=test-client").expect(&logs);
+        let method_position = logs.find("method=GET").expect(&logs);
+        let status_position = logs.find("status=403").expect(&logs);
+        let path_position = logs.find("path=/").expect(&logs);
+        assert!(service_position < client_position);
+        assert!(client_position < method_position);
+        assert!(method_position < status_position);
+        assert!(status_position < path_position);
+        assert!(logs.contains("HTTP request rejected"));
+        assert!(!logs.contains(secret_proof));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_tcp_request_logs_context_without_secret_proof() {
+        let logs = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt::SubscriberBuilder::default()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .finish();
+        let secret_proof = "not-a-secret-proof";
+        let (client, server) = duplex(4096);
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let task = tokio::spawn(handle_stream(
+            server_writer,
+            server_reader,
+            tcp_services("127.0.0.1:1".parse().unwrap()),
+            "test-client".into(),
+        ));
+        write_json_head(
+            &mut client_writer,
+            &StreamRequestHead::Tcp(TcpRequestHead {
+                version: PROTOCOL_VERSION,
+                service: "database".into(),
+                secret_proof: secret_proof.into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let response: LochoResponseHead = read_json_head(&mut client_reader, MAX_HEAD_LEN)
+            .await
+            .unwrap();
+        task.await.unwrap().unwrap();
+
+        assert_eq!(response.status, 403);
+        let logs = logs.contents();
+        assert!(logs.contains("service=database"), "{logs}");
+        assert!(logs.contains("client_id=test-client"), "{logs}");
+        assert!(logs.contains("TCP request rejected"), "{logs}");
+        assert!(!logs.contains(secret_proof));
+    }
+
     #[tokio::test]
     async fn unknown_service_is_rejected() {
         let response = request_response(request("missing", &auth::secret_proof("correct"))).await;
@@ -785,7 +1013,12 @@ mod tests {
         let (client, server) = duplex(4096);
         let (mut client_reader, mut client_writer) = tokio::io::split(client);
         let (server_reader, server_writer) = tokio::io::split(server);
-        let task = tokio::spawn(handle_stream(server_writer, server_reader, services()));
+        let task = tokio::spawn(handle_stream(
+            server_writer,
+            server_reader,
+            services(),
+            "test-client".into(),
+        ));
         write_json_head(
             &mut client_writer,
             &StreamRequestHead::Tcp(TcpRequestHead {
@@ -823,6 +1056,7 @@ mod tests {
             server_writer,
             server_reader,
             tcp_services(upstream_addr),
+            "test-client".into(),
         ));
         write_json_head(
             &mut client_writer,
@@ -862,6 +1096,7 @@ mod tests {
             server_writer,
             server_reader,
             tcp_services(endpoint),
+            "test-client".into(),
         ));
         write_json_head(
             &mut client_writer,

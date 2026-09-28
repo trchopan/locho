@@ -209,6 +209,7 @@ async fn run_attachments(
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
+    let host_id = node_id.fmt_short().to_string();
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {
         Some(address) => Some(address),
@@ -270,6 +271,7 @@ async fn run_attachments(
     let supervisor = tokio::spawn(connection_supervisor(
         endpoint.clone(),
         endpoint_addr,
+        host_id,
         connection_sender,
         supervisor_receiver,
         shutdown.clone(),
@@ -351,6 +353,7 @@ async fn run_attachments(
 async fn connection_supervisor(
     endpoint: Endpoint,
     endpoint_addr: EndpointAddr,
+    host_id: String,
     sender: watch::Sender<Option<ActiveConnection>>,
     mut receiver: ConnectionReceiver,
     shutdown: CancellationToken,
@@ -365,7 +368,7 @@ async fn connection_supervisor(
                 match result {
                     Ok(Ok(connection)) => connection,
                     Ok(Err(error)) => {
-                        warn!(%error, "tunnel connection failed; retrying");
+                        warn!(host_id = %host_id, %error, "tunnel connection failed; retrying");
                         let delay = reconnect_delay(recovering_after_connection_loss, backoff);
                         retry_delay(&shutdown, delay).await;
                         if !recovering_after_connection_loss {
@@ -374,7 +377,7 @@ async fn connection_supervisor(
                         continue;
                     }
                     Err(_) => {
-                        warn!("tunnel connection timed out; retrying");
+                        warn!(host_id = %host_id, "tunnel connection timed out; retrying");
                         let delay = reconnect_delay(recovering_after_connection_loss, backoff);
                         retry_delay(&shutdown, delay).await;
                         if !recovering_after_connection_loss {
@@ -392,7 +395,7 @@ async fn connection_supervisor(
             connection: connection.clone(),
         }));
         receiver.borrow_and_update();
-        let mut monitor = spawn_transport_monitor(&connection, generation);
+        let mut monitor = spawn_transport_monitor(&connection, generation, host_id.clone());
         let monitor_finished = async {
             if let Some(monitor) = monitor.as_mut() {
                 monitor.await.unwrap_or(TransportMonitorExit::Ended)
@@ -411,13 +414,13 @@ async fn connection_supervisor(
                     connection_stable = true;
                 }
                 _ = connection.closed() => {
-                    info!("tunnel connection closed; reconnecting");
+                    info!(host_id = %host_id, "tunnel connection closed; reconnecting");
                     let _ = sender.send(None);
                     recovering_after_connection_loss = true;
                     break;
                 }
                 monitor_exit = &mut monitor_finished => {
-                    info!(?monitor_exit, "tunnel transport monitor ended; reconnecting");
+                    info!(host_id = %host_id, ?monitor_exit, "tunnel transport monitor ended; reconnecting");
                     let _ = sender.send(None);
                     recovering_after_connection_loss = true;
                     connection.close(0u32.into(), b"transport monitor ended");
@@ -425,7 +428,7 @@ async fn connection_supervisor(
                 }
                 changed = receiver.changed() => {
                     if changed.is_ok() && receiver.borrow().is_none() {
-                        info!("tunnel connection invalidated; reconnecting");
+                        info!(host_id = %host_id, "tunnel connection invalidated; reconnecting");
                         recovering_after_connection_loss = true;
                         connection.close(0u32.into(), b"tunnel connection invalidated");
                         break;
@@ -484,12 +487,13 @@ fn reconnect_delay(
 fn spawn_transport_monitor(
     connection: &Connection,
     generation: u64,
+    host_id: String,
 ) -> Option<tokio::task::JoinHandle<TransportMonitorExit>> {
     let initial_path = transport_path(connection);
     if initial_path == "none" {
-        warn!("connected to host but transport path is not yet available");
+        warn!(host_id = %host_id, "connected to host but transport path is not yet available");
     } else {
-        info!(generation, transport_path = %initial_path, "transport path established");
+        info!(host_id = %host_id, generation, transport_path = %initial_path, "transport path established");
         println!("transport path: {initial_path}");
     }
     let connection = connection.clone();
@@ -508,7 +512,7 @@ fn spawn_transport_monitor(
             if !transport_path_changed(&last_path, &connection_type) {
                 continue;
             }
-            info!(generation, transport_path = %connection_type, "transport path changed");
+            info!(host_id = %host_id, generation, transport_path = %connection_type, "transport path changed");
             println!("transport path: {connection_type}");
             if connection_type == "none" {
                 return TransportMonitorExit::PathLost;
@@ -594,7 +598,7 @@ async fn run_http_listener(
                     Ok(permit) => permit,
                     Err(_) => {
                         drop(stream);
-                        error!(?peer, "HTTP connection limit reached");
+                        error!(service = %service_name, ?peer, "HTTP connection limit reached");
                         continue;
                     }
                 };
@@ -681,7 +685,7 @@ async fn run_tcp_listener(
                     Ok(permit) => permit,
                     Err(_) => {
                         drop(stream);
-                        error!(?peer, "TCP connection limit reached");
+                        error!(service = %service, ?peer, "TCP connection limit reached");
                         continue;
                     }
                 };
@@ -755,10 +759,22 @@ async fn handle_tcp_connection(
     service: String,
     secret: String,
 ) -> Result<()> {
-    let lease = acquire_connection(connection).await?;
-    let result = handle_tcp_connection_on_lease(&lease, local, service, secret).await;
+    info!(service = %service, "local TCP connection");
+    let lease = match acquire_connection(connection).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            error!(service = %service, %error, "TCP tunnel unavailable");
+            return Err(error);
+        }
+    };
+    let result = handle_tcp_connection_on_lease(&lease, local, service.clone(), secret).await;
     if result.as_ref().is_err_and(is_transport_failure) {
         lease.invalidate();
+    }
+    if let Err(error) = &result {
+        if !is_idle_timeout(error) {
+            error!(service = %service, %error, "TCP tunnel failed");
+        }
     }
     result
 }
@@ -830,13 +846,21 @@ async fn handle_request(
     http_timeout: std::time::Duration,
 ) -> HttpResponse {
     let method = request.method().clone();
+    let service_name = service.clone();
+    let method_name = method.to_string();
     let path = request
         .uri()
         .path_and_query()
         .map(|v| v.as_str())
         .unwrap_or("/")
         .to_string();
-    info!(%method, path = %path, "local request");
+    let path_name = path.clone();
+    info!(
+        service = %service_name,
+        method = %method_name,
+        path = %path,
+        "local request"
+    );
     if !http_utils::is_supported_method(&method) {
         return error_response(StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -857,7 +881,13 @@ async fn handle_request(
     {
         Ok(response) => response,
         Err(error) => {
-            error!(%error, "tunnel request failed");
+            error!(
+                service = %service_name,
+                method = %method_name,
+                %error,
+                path = %path_name,
+                "tunnel request failed"
+            );
             if error.downcast_ref::<TunnelUnavailable>().is_some() {
                 error_response(StatusCode::SERVICE_UNAVAILABLE)
             } else if error.downcast_ref::<HttpResponseTimeout>().is_some() {
@@ -902,6 +932,9 @@ async fn tunnel_request_on_lease(
         headers,
         body,
     } = request;
+    let service_name = service.clone();
+    let method_name = method.to_string();
+    let path_name = path.clone();
     let (mut writer, mut reader) = timeout(HANDSHAKE_TIMEOUT, lease.connection.open_bi())
         .await
         .context("HTTP tunnel stream open timed out")?
@@ -1019,7 +1052,13 @@ async fn tunnel_request_on_lease(
         }
         body_guard.complete();
     }) as HttpStream;
-    info!(status = %status, "local response");
+    info!(
+        service = %service_name,
+        method = %method_name,
+        status = %status,
+        path = %path_name,
+        "local response"
+    );
     let mut output = Response::builder()
         .status(status)
         .body(StreamBody::new(stream))?;
