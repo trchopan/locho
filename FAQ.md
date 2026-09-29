@@ -183,7 +183,7 @@ rotate-secret` includes `--relay-config` when you provide it; ensure that path
 is valid on the attachment machine.
 
 locho does not host the relay server itself. Follow the
-[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.1.0/iroh-relay)
+[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.2.0/iroh-relay)
 for deployment, TLS, QAD, access control, and metrics. The relay server's
 access-token configuration is separate from locho's client-side `token_env`
 setting.
