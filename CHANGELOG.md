@@ -2,6 +2,25 @@
 
 All notable changes to `locho` are documented here.
 
+## [1.2.0] - 2026-09-29
+
+This release adds configurable HTTP timeout controls, custom relay transport
+support, and more useful request logging context.
+
+- Adds per-service upstream HTTP timeouts and attachment-side HTTP response
+  timeouts, defaulting to 60 seconds and configurable from 1 to 300 seconds.
+- Adds shared custom iroh relay configuration for host, attach, and diagnose,
+  including custom-only and custom-plus-N0 transport maps.
+- Supports optional relay bearer tokens from environment variables and
+  per-relay QUIC Address Discovery settings.
+- Includes an explicitly provided relay configuration path in generated share
+  and rotation attach commands.
+- Adds service and short endpoint identifiers to request and connection logs.
+- Enables ANSI log colors only for terminal output and honors non-empty
+  `NO_COLOR` for plain logs.
+
+Linux ARM64 artifacts are cross-compiled; native verification is pending.
+
 ## [1.2.0-beta.2] - 2026-09-28
 
 This prerelease adds request logging context and configurable relay transport

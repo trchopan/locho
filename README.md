@@ -205,7 +205,7 @@ still prefers working direct paths and measures relay reachability and latency.
 
 locho configures relay clients; it does not run a relay server. To host a
 self-hosted iroh relay, use the version-matched
-[`iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.1.0/iroh-relay),
+[`iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.2.0/iroh-relay),
 which covers building the server, TLS, QUIC Address Discovery, access control,
 and metrics. Configure the server's shared access token separately from
 locho's `token_env` client setting, and keep the two processes on compatible
@@ -331,16 +331,11 @@ accepted for migration, but new commands should use the capability-token form.
 
 Released binaries are published on the
 [GitHub Releases page](https://github.com/trchopan/locho/releases). The
-supported `1.1.1` targets are:
+supported `1.2.0` targets are:
 
 - Linux x86_64 and ARM64
 - macOS x86_64 and Apple silicon
 - Windows x86_64
-
-> **Beta warning:** `v1.2.0-beta.2` is a prerelease for testing request logging
-> context and configurable relay transport support. It is not published as
-> `latest`; use the [direct beta release assets](https://github.com/trchopan/locho/releases/tag/v1.2.0-beta.2)
-> only if you want to test this version.
 
 On Unix, install the latest release with:
 
