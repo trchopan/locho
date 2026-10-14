@@ -1,0 +1,92 @@
+name: Flutter native feasibility
+on:
+  pull_request:
+    paths:
+      - 'packages/locho_flutter/**'
+      - 'crates/**'
+      - '.github/workflows/flutter.yml'
+      - 'scripts/flutter-device-smoke.py'
+      - 'scripts/check-android-pages.py'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/locho_flutter/**'
+      - 'crates/**'
+      - '.github/workflows/flutter.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dart-and-codegen:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/locho_flutter
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.5'
+          channel: stable
+          cache: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/locho_flutter/rust
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test example/lib example/integration_test
+      - run: flutter analyze
+      - run: flutter test
+      - run: cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path rust/Cargo.toml
+      - run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
+      - run: cargo install cargo-expand --version 1.0.127 --locked
+      - run: flutter_rust_bridge_codegen generate
+      - run: git diff --exit-code -- lib/src/rust rust/src/frb_generated.rs
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/locho_flutter/example
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.5'
+          channel: stable
+          cache: true
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'ndk;28.2.13676358' 'platforms;android-36' 'build-tools;36.0.0'
+      - run: flutter pub get
+      - run: flutter build apk --debug --target-platform android-arm64,android-x64
+      - run: flutter build apk --release --target-platform android-arm64,android-x64
+      - run: python3 ../../../scripts/check-android-pages.py build/app/outputs/flutter-apk/app-release.apk
+      - run: '$ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 build/app/outputs/flutter-apk/app-release.apk'
+  ios-build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: packages/locho_flutter/example
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.5'
+          channel: stable
+          cache: true
+      - run: flutter config --no-enable-swift-package-manager
+      - run: flutter pub get
+      - run: flutter build ios --simulator --debug
+      - run: flutter build ios --release --no-codesign
