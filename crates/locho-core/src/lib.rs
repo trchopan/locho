@@ -10,3 +10,5 @@ pub mod protocol;
 #[cfg(feature = "transport")]
 pub mod relay;
 pub mod service;
+#[cfg(feature = "transport")]
+pub mod session;

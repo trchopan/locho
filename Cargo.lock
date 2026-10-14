@@ -1792,6 +1792,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "futures-util",
  "hex",
  "http",
  "iroh",
@@ -1800,6 +1801,7 @@ dependencies = [
  "sha2",
  "subtle",
  "tokio",
+ "tokio-util",
  "url",
 ]
 

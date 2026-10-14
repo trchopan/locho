@@ -12,13 +12,14 @@ and browser SDKs, not a complete attachment SDK.
   framing/body helpers, and forwarded-TCP idle behavior.
 - Existing authorization proof derivation and constant-time verification.
 - Service types/name validation and typed, sanitized capability parsing.
-- Optional `transport` feature: validated in-memory relay settings and bearer
-  credentials, preserving custom/default relay-map behavior.
+- Optional `transport` feature: validated in-memory relay settings, plus owned
+  peer sessions, watch-style status, generation-scoped leases and authorized TCP
+  streams. The CLI drives the shared supervisor on its existing runtime.
 
 The CLI/host use these same implementations. Native secret generation remains in
 the CLI, avoiding an OS RNG requirement in the protocol-only library. Filesystem,
 TOML/environment adaptation, process signals, logging initialization, endpoint
-creation, listener ownership and supervision remain in native CLI modules.
+creation and local listener ownership remain in native CLI modules.
 Debug representations redact capability secrets, protocol proofs and application
 headers; serialization retains the existing wire format.
 
@@ -40,6 +41,61 @@ fn relay_policy(token_from_application: String) -> Result<RelaySettings, RelayEr
 Relay policy configures the client's endpoint. It is not a host peer-address hint.
 Passing a token to native iroh does not establish browser relay-auth support.
 
+## Peer Session Ownership
+
+`PeerSession::start(endpoint, target)` transfers exclusive logical endpoint ownership
+and returns a handle plus `SessionDriver`. The caller must run `driver.run()` on a
+persistent executor; the core never calls `spawn` or creates a runtime. Native
+callers use their Tokio runtime. A browser executor and clock still need feasibility
+verification; avoiding native spawning does not by itself establish WASM support.
+
+```rust,no_run
+use iroh::{Endpoint, EndpointAddr};
+use locho_core::session::{PeerSession, SessionError};
+use std::time::Duration;
+
+async fn foreground_session(endpoint: Endpoint, target: EndpointAddr)
+    -> Result<(), SessionError>
+{
+    let (session, driver) = PeerSession::start(endpoint, target);
+    let task = tokio::spawn(driver.run());
+    let connected = session.wait_connected(Duration::from_secs(15)).await;
+    let closed = session.close().await;
+    let _ = task.await;
+    connected?;
+    closed
+}
+```
+
+- Handle clones share ownership. Dropping the last handle requests cancellation;
+  subscriptions and connection leases do not keep the owner alive.
+- Endpoint bind/initialization deadlines remain caller-owned. A timed-out
+  `wait_connected` leaves the session running. No automatic upstream probe occurs.
+- `connected` authenticates the host identity only. Current status and `subscribe()`
+  expose revisions and sanitized connection/terminal errors. Read the initial watch
+  value before waiting for changes; updates can coalesce, including close transitions.
+- `close()` is idempotent and cancels active peer traffic. The running driver bounds
+  endpoint cleanup to ten seconds; close waits at most eleven seconds. A retained
+  but unpolled driver may yield a shutdown timeout; a dropped/aborted driver publishes
+  `DriverStopped` in the final snapshot. Orderly endpoint cleanup requires polling
+  the driver through completion. Status survives for late subscribers.
+- One session can serve multiple capabilities; independent sessions require distinct
+  owned endpoints. An old lease cannot invalidate a newer connection generation.
+- `open_tcp` rejects non-TCP capabilities and bounds acquisition plus stream opening,
+  request writing and handshake reading by the caller deadline. It returns an
+  authorized `AsyncRead + AsyncWrite` stream, not an HTTP response. Locho rejection
+  statuses are typed errors separate from application HTTP responses.
+- Successful v3 handshakes require version 3, status 200, empty headers and body
+  length zero. Invalid responses fail without forwarding handshake bytes. Service
+  rejection/cancellation does not invalidate a healthy peer.
+- At most 512 shared TCP streams can be opening/owned per session. Excess operations
+  fail immediately rather than queue; stream drop resets both halves and releases
+  capacity. The host's existing per-service limits still apply. Cancellation passed
+  to `open_tcp` applies to startup only; after return, the application owns the stream
+  and drops it to cancel. Existing native listener limits are preserved separately.
+- Transport loss fails in-flight streams; no requests/messages are replayed. CLI HTTP
+  framing/error mapping remains in its adapter and uses generation-scoped leases.
+
 ## Build and Verification
 
 ```sh
@@ -59,8 +115,8 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 1. Browser `wasm32-unknown-unknown` crypto/runtime/discovery/relay proof against a
    real host; record custom relay authentication and stale peer-hint behavior.
-2. Native owned-session/loopback adapter with typed status, cancellation and bounded
-   cleanup, followed by FRB runtime and physical iOS/Android attach/GET/close proof.
+2. Native loopback attachment adapter on the owned peer session, followed by FRB
+   runtime and physical iOS/Android attach/GET/close proof.
 3. Freeze ticket addressing schema after the connectivity proof; implement parser,
    shared vectors and explicit CLI ticket output.
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
