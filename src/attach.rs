@@ -13,10 +13,10 @@ use hyper::{
 use hyper_util::rt::TokioIo;
 use iroh::{EndpointAddr, EndpointId};
 pub(crate) use locho_core::session::format_transport_paths;
-use locho_core::session::{ConnectionLease, PeerSession, SessionError, SessionState};
+use locho_core::session::{ConnectionLease, PeerSession, SessionState};
 use std::net::SocketAddr;
 use std::{convert::Infallible, fmt, io::Write, pin::Pin};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -403,61 +403,25 @@ async fn run_tcp_listener(
     total_connections: std::sync::Arc<Semaphore>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let tcp_connections = std::sync::Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
     println!(
         "locho attached\n\nService: {}\nLocal TCP listener: {}",
         service,
         listener.local_addr()?
     );
     std::io::stdout().flush()?;
-    let mut clients = JoinSet::new();
-    loop {
-        tokio::select! {
-            result = listener.accept() => {
-                let (stream, peer) = result?;
-                let connection = connection.clone();
-                let service = service.clone();
-                let secret = secret.clone();
-                let permit = match tcp_connections.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        drop(stream);
-                        error!(service = %service, ?peer, "TCP connection limit reached");
-                        continue;
-                    }
-                };
-                let total_permit = match total_connections.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        drop(stream);
-                        error!(service = %service, ?peer, "global connection limit reached");
-                        continue;
-                    }
-                };
-                clients.spawn(async move {
-                    let _permit = permit;
-                    let _total_permit = total_permit;
-                    handle_tcp_connection(stream, connection, service, secret).await
-                });
-            }
-            _ = shutdown.cancelled() => break,
-            completed = clients.join_next(), if !clients.is_empty() => {
-                if let Some(result) = completed {
-                    crate::task::log_result(result, "TCP client");
-                }
-                crate::task::reap_finished_results(&mut clients, "TCP client");
-            }
-        }
-    }
-    if timeout(SHUTDOWN_TIMEOUT, async {
-        while clients.join_next().await.is_some() {}
-    })
-    .await
-    .is_err()
-    {
-        warn!("shutdown deadline reached; aborting active local TCP connections");
-        clients.abort_all();
-    }
+    let capability = crate::capability::Capability {
+        service,
+        service_type: crate::config::ServiceType::Tcp,
+        secret,
+    };
+    locho_client_native::forward::serve_tcp(
+        listener,
+        connection,
+        capability,
+        total_connections,
+        shutdown,
+    )
+    .await?;
     Ok(())
 }
 
@@ -466,64 +430,6 @@ async fn acquire_connection(state: ConnectionState) -> Result<ConnectionLease> {
         .acquire(ATTACH_RECONNECT_TIMEOUT)
         .await
         .map_err(|_| anyhow::Error::new(TunnelUnavailable))
-}
-
-async fn handle_tcp_connection(
-    local: TcpStream,
-    connection: ConnectionState,
-    service: String,
-    secret: String,
-) -> Result<()> {
-    info!(service = %service, "local TCP connection");
-    let lease = match acquire_connection(connection).await {
-        Ok(lease) => lease,
-        Err(error) => {
-            error!(service = %service, %error, "TCP tunnel unavailable");
-            return Err(error);
-        }
-    };
-    let result = handle_tcp_connection_on_lease(&lease, local, service.clone(), secret).await;
-    if result.as_ref().is_err_and(is_transport_failure) {
-        lease.invalidate();
-    }
-    if let Err(error) = &result {
-        if !is_idle_timeout(error) {
-            error!(service = %service, %error, "TCP tunnel failed");
-        }
-    }
-    result
-}
-
-async fn handle_tcp_connection_on_lease(
-    lease: &ConnectionLease,
-    local: TcpStream,
-    service: String,
-    secret: String,
-) -> Result<()> {
-    let capability = crate::capability::Capability {
-        service,
-        service_type: crate::config::ServiceType::Tcp,
-        secret,
-    };
-    let remote = lease
-        .open_tcp(&capability, HANDSHAKE_TIMEOUT, &CancellationToken::new())
-        .await
-        .map_err(|error| match error {
-            SessionError::Transport(_) => transport_failure(error.into()),
-            _ => anyhow::Error::new(error),
-        })?;
-    let result = relay_with_idle_timeout(local, remote).await;
-    if result.as_ref().is_err_and(|error| !is_idle_timeout(error)) {
-        return result.map_err(transport_failure);
-    }
-    result?;
-    Ok(())
-}
-
-fn is_idle_timeout(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<crate::protocol::TunnelIdleTimeout>()
-        .is_some()
 }
 
 struct HttpTunnelRequest {
