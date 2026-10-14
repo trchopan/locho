@@ -1,8 +1,10 @@
 # SDK Foundation
 
-The workspace currently contains the existing `locho` CLI and an unpublished
-`locho-core` 0.1.0 library. This is the first shared extraction for future Flutter
-and browser SDKs, not a complete attachment SDK.
+The workspace contains the `locho` CLI, unpublished `locho-core` 0.1.0 shared
+library and `locho-client-native` 0.1.0 native attachment adapter. See
+[Native TCP attachment API](native-client.md) for caller-owned runtime, loopback
+startup/status/shutdown and HTTP integration. Flutter/browser packages remain
+subsequent deliverables.
 
 ## Implemented Boundary
 
@@ -19,7 +21,9 @@ and browser SDKs, not a complete attachment SDK.
 The CLI/host use these same implementations. Native secret generation remains in
 the CLI, avoiding an OS RNG requirement in the protocol-only library. Filesystem,
 TOML/environment adaptation, process signals, logging initialization, endpoint
-creation and local listener ownership remain in native CLI modules.
+creation and local listener ownership live in native adapters. The CLI and native
+client share TCP listener forwarding; CLI HTTP framing and process adaptation stay
+in CLI modules.
 Debug representations redact capability secrets, protocol proofs and application
 headers; serialization retains the existing wire format.
 
@@ -115,8 +119,8 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 1. Browser `wasm32-unknown-unknown` crypto/runtime/discovery/relay proof against a
    real host; record custom relay authentication and stale peer-hint behavior.
-2. Native loopback attachment adapter on the owned peer session, followed by FRB
-   runtime and physical iOS/Android attach/GET/close proof.
+2. FRB runtime/native packaging and physical iOS/Android attach/GET/close proof on
+   the implemented native loopback attachment adapter.
 3. Freeze ticket addressing schema after the connectivity proof; implement parser,
    shared vectors and explicit CLI ticket output.
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
