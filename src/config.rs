@@ -7,21 +7,7 @@ use std::{
 };
 use url::Url;
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ServiceType {
-    Http,
-    Tcp,
-}
-
-impl ServiceType {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Tcp => "tcp",
-        }
-    }
-}
+pub use locho_core::service::{is_safe_service_name, ServiceType};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,14 +126,6 @@ impl Config {
         }
         Ok(())
     }
-}
-
-pub(crate) fn is_safe_service_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 #[cfg(test)]

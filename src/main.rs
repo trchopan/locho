@@ -1,15 +1,15 @@
 mod attach;
 mod attach_config;
 mod auth;
-mod capability;
 mod config;
 mod diagnostics;
 mod host;
 mod http_utils;
-mod protocol;
 mod relay;
 mod state;
 mod task;
+
+use locho_core::{capability, protocol};
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};

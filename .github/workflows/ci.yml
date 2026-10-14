@@ -104,7 +104,7 @@ jobs:
         id: package
         shell: bash
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+          version=$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"locho","version":"\([^"]*\)".*/\1/p')
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

@@ -1,12 +1,12 @@
 use anyhow::{bail, Context, Result};
-use http::HeaderValue;
 use iroh::{
-    endpoint::{default_relay_mode, presets, Builder},
-    Endpoint, RelayConfig, RelayMap, RelayMode, RelayUrl,
+    endpoint::{presets, Builder},
+    Endpoint,
 };
+pub(crate) use locho_core::relay::RelaySettings;
+use locho_core::relay::{validate_token, RelayOptions};
 use serde::Deserialize;
-use std::{collections::HashSet, path::Path, sync::Arc};
-use url::Url;
+use std::path::Path;
 
 const DEFAULT_QUIC_ADDRESS_DISCOVERY: bool = true;
 
@@ -29,96 +29,35 @@ struct RelayEntry {
     quic_address_discovery: bool,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct ConfiguredRelay {
-    pub(crate) url: RelayUrl,
-    pub(crate) quic_address_discovery: bool,
-}
-
-#[derive(Clone)]
-pub(crate) struct RelaySettings {
-    mode: RelayMode,
-    relays: Vec<ConfiguredRelay>,
-    include_n0_relays: bool,
-}
-
-impl std::fmt::Debug for RelaySettings {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RelaySettings")
-            .field("relays", &self.relays)
-            .field("include_n0_relays", &self.include_n0_relays)
-            .finish_non_exhaustive()
-    }
-}
-
-impl RelaySettings {
-    fn parse(contents: &str) -> Result<Self> {
-        let file: RelayFile =
-            toml::from_str(contents).context("failed to parse relay configuration")?;
-        let mut urls = HashSet::new();
-        let custom_map = RelayMap::empty();
-        let mut relays = Vec::with_capacity(file.relays.len());
-
-        for (index, entry) in file.relays.into_iter().enumerate() {
-            let url = parse_relay_url(&entry.url)
-                .with_context(|| format!("invalid relay URL at relays[{}]", index + 1))?;
-            if !urls.insert(url.clone()) {
-                bail!("duplicate relay URL {:?}", url.as_str());
-            }
-
-            let token = entry
+fn parse(contents: &str) -> Result<RelaySettings> {
+    // TOML errors can include source excerpts containing credentials.
+    let file: RelayFile = toml::from_str(contents)
+        .map_err(|_| anyhow::anyhow!("failed to parse relay configuration"))?;
+    let options = file
+        .relays
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let auth_token = entry
                 .token_env
                 .as_deref()
                 .map(|name| read_token(name, index + 1))
                 .transpose()?;
-            let mut relay_config = if entry.quic_address_discovery {
-                RelayConfig::from(url.clone())
-            } else {
-                RelayConfig::new(url.clone(), None)
-            };
-            if let Some(token) = token {
-                relay_config = relay_config.with_auth_token(token);
-            }
-            custom_map.insert(url.clone(), Arc::new(relay_config));
-            relays.push(ConfiguredRelay {
-                url,
+            Ok(RelayOptions {
+                url: entry.url,
+                auth_token,
                 quic_address_discovery: entry.quic_address_discovery,
-            });
-        }
-
-        if !file.include_n0_relays && custom_map.is_empty() {
-            bail!("relay configuration must define at least one relay when include_n0_relays is false")
-        }
-
-        let relay_map = if file.include_n0_relays {
-            default_relay_mode().relay_map()
-        } else {
-            RelayMap::empty()
-        };
-        relay_map.extend(&custom_map);
-
-        Ok(Self {
-            mode: RelayMode::Custom(relay_map),
-            relays,
-            include_n0_relays: file.include_n0_relays,
+            })
         })
-    }
-
-    pub(crate) fn mode(&self) -> RelayMode {
-        self.mode.clone()
-    }
-
-    pub(crate) fn report(&self) -> (&[ConfiguredRelay], bool) {
-        (&self.relays, self.include_n0_relays)
-    }
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RelaySettings::new(file.include_n0_relays, options)?)
 }
 
 pub(crate) fn load(path: Option<&Path>) -> Result<Option<RelaySettings>> {
     path.map(|path| {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read relay configuration {}", path.display()))?;
-        RelaySettings::parse(&contents)
+        parse(&contents)
             .with_context(|| format!("relay configuration check failed for {}", path.display()))
     })
     .transpose()
@@ -130,23 +69,6 @@ pub(crate) fn endpoint_builder(settings: Option<&RelaySettings>) -> Builder {
         Some(settings) => builder.relay_mode(settings.mode()),
         None => builder,
     }
-}
-
-fn parse_relay_url(value: &str) -> Result<RelayUrl> {
-    let url = Url::parse(value).context("relay URL is not valid")?;
-    if url.scheme() != "https" {
-        bail!("relay URL must use HTTPS")
-    }
-    if !url.has_host() {
-        bail!("relay URL must include a host")
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        bail!("relay URL must not contain credentials")
-    }
-    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-        bail!("relay URL must be a base URL without a path, query, or fragment")
-    }
-    Ok(RelayUrl::from(url))
 }
 
 fn read_token(name: &str, index: usize) -> Result<String> {
@@ -166,7 +88,7 @@ fn read_token(name: &str, index: usize) -> Result<String> {
             index
         )
     })?;
-    if token.is_empty() || HeaderValue::from_str(&format!("Bearer {token}")).is_err() {
+    if validate_token(&token).is_err() {
         bail!(
             "relay {} authentication token is not a valid bearer token",
             index
@@ -188,7 +110,7 @@ mod tests {
 
     #[test]
     fn parses_custom_only_relay_configuration() {
-        let settings = RelaySettings::parse(
+        let settings = parse(
             r#"
                 [[relays]]
                 url = "https://relay.example.org"
@@ -207,7 +129,7 @@ mod tests {
 
     #[test]
     fn merges_custom_relays_with_n0_relays() {
-        let settings = RelaySettings::parse(
+        let settings = parse(
             r#"
                 include_n0_relays = true
 
@@ -232,7 +154,7 @@ mod tests {
     fn resolves_auth_token_without_leaking_it_in_errors() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("LOCHO_RELAY_TEST_TOKEN", "secret/token=with+base64");
-        let settings = RelaySettings::parse(
+        let settings = parse(
             r#"
                 [[relays]]
                 url = "https://relay.example.org"
@@ -253,7 +175,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_custom_configuration() {
-        let error = RelaySettings::parse("include_n0_relays = false").unwrap_err();
+        let error = parse("include_n0_relays = false").unwrap_err();
         assert!(error.to_string().contains("at least one relay"));
     }
 
@@ -264,9 +186,14 @@ mod tests {
             "https://relay.example.org/relay",
             "https://relay.example.org?token=x",
         ] {
-            let error =
-                RelaySettings::parse(&format!("[[relays]]\nurl = \"{value}\"")).unwrap_err();
+            let error = parse(&format!("[[relays]]\nurl = \"{value}\"")).unwrap_err();
             assert!(!error.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn malformed_configuration_does_not_echo_source_credentials() {
+        let error = parse("[[relays]]\nurl = \"https://private-secret@relay.example.org\"\nunknown = \"private-secret\"").unwrap_err();
+        assert!(!format!("{error:#} {error:?}").contains("private-secret"));
     }
 }

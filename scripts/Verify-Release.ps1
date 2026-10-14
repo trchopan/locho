@@ -32,9 +32,10 @@ try {
     }
 
     Invoke-Step "cargo fmt --all -- --check"
-    Invoke-Step "cargo clippy --all-targets --all-features -- -D warnings"
+    Invoke-Step "cargo clippy --workspace --all-targets --all-features -- -D warnings"
     # These tests launch multiple processes and use shared local networking resources.
-    Invoke-Step "cargo test --all-targets --all-features -- --test-threads=1"
+    Invoke-Step "cargo test --workspace --all-targets --all-features -- --test-threads=1"
+    Invoke-Step "cargo test -p locho-core --no-default-features"
     Invoke-Step "cargo build --release"
     Invoke-Step "cargo build --release --features integration-test --target-dir target/integration-release"
 

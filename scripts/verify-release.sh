@@ -40,9 +40,10 @@ run() {
 }
 
 run cargo fmt --all -- --check
-run cargo clippy --all-targets --all-features -- -D warnings
+run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # These tests launch multiple processes and use shared local networking resources.
-run cargo test --all-targets --all-features -- --test-threads=1
+run cargo test --workspace --all-targets --all-features -- --test-threads=1
+run cargo test -p locho-core --no-default-features
 run cargo build --release
 run cargo build --release --features integration-test --target-dir target/integration-release
 env LOCHO_TEST_BINARY=target/integration-release/release/locho \

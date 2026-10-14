@@ -33,7 +33,7 @@ impl std::fmt::Display for TunnelIdleTimeout {
 
 impl std::error::Error for TunnelIdleTimeout {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct TcpRequestHead {
     pub version: u8,
     pub service: String,
@@ -47,7 +47,7 @@ pub enum StreamRequestHead {
     Tcp(TcpRequestHead),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LochoRequestHead {
     pub version: u8,
     pub service: String,
@@ -58,12 +58,45 @@ pub struct LochoRequestHead {
     pub body_len: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LochoResponseHead {
     pub version: u8,
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body_len: Option<u64>,
+}
+
+impl std::fmt::Debug for TcpRequestHead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TcpRequestHead")
+            .field("version", &self.version)
+            .field("secret_proof", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for LochoRequestHead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Paths, service input and application headers may carry credentials too.
+        formatter
+            .debug_struct("LochoRequestHead")
+            .field("version", &self.version)
+            .field("secret_proof", &"[REDACTED]")
+            .field("body_len", &self.body_len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for LochoResponseHead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LochoResponseHead")
+            .field("version", &self.version)
+            .field("status", &self.status)
+            .field("body_len", &self.body_len)
+            .finish_non_exhaustive()
+    }
 }
 
 pub async fn write_json_head<T: Serialize, W: AsyncWrite + Unpin>(
@@ -197,6 +230,54 @@ where
 mod tests {
     use super::*;
     use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn tcp_request_matches_existing_wire_vector() {
+        assert_eq!(ALPN, b"locho/3");
+        assert_eq!(PROTOCOL_VERSION, 3);
+        let payload = br#"{"kind":"tcp","version":3,"service":"database","secret_proof":"proof"}"#;
+        let request = StreamRequestHead::Tcp(TcpRequestHead {
+            version: PROTOCOL_VERSION,
+            service: "database".into(),
+            secret_proof: "proof".into(),
+        });
+        let (mut writer, mut reader) = duplex(4096);
+        write_json_head(&mut writer, &request).await.unwrap();
+        writer.shutdown().await.unwrap();
+        let mut actual = Vec::new();
+        reader.read_to_end(&mut actual).await.unwrap();
+        let mut expected = (payload.len() as u32).to_be_bytes().to_vec();
+        expected.extend_from_slice(payload);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn diagnostic_headers_redact_proofs_and_application_credentials() {
+        let secret = "sensitive-credential";
+        let tcp = StreamRequestHead::Tcp(TcpRequestHead {
+            version: PROTOCOL_VERSION,
+            service: secret.into(),
+            secret_proof: secret.into(),
+        });
+        let http = StreamRequestHead::Http(LochoRequestHead {
+            version: PROTOCOL_VERSION,
+            service: secret.into(),
+            secret_proof: secret.into(),
+            method: "GET".into(),
+            path_and_query: format!("/?token={secret}"),
+            headers: vec![("authorization".into(), secret.into())],
+            body_len: Some(0),
+        });
+        let response = LochoResponseHead {
+            version: PROTOCOL_VERSION,
+            status: 200,
+            headers: vec![("set-cookie".into(), secret.into())],
+            body_len: Some(0),
+        };
+        assert!(!format!("{tcp:?} {http:?} {response:?}").contains(secret));
+        // Sanitizing Debug must not change serialization on the wire.
+        assert!(serde_json::to_string(&tcp).unwrap().contains(secret));
+    }
 
     #[tokio::test]
     async fn headers_and_body_roundtrip() {
