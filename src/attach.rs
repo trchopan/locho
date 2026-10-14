@@ -2,7 +2,6 @@ use crate::{attach_config, auth, http_utils, protocol::*, relay};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_core::Stream;
-use futures_util::StreamExt;
 use http::{Response, StatusCode};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -12,13 +11,15 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
-use iroh::{endpoint::Connection, Endpoint, EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId};
+pub(crate) use locho_core::session::format_transport_paths;
+use locho_core::session::{ConnectionLease, PeerSession, SessionError, SessionState};
 use std::net::SocketAddr;
 use std::{convert::Infallible, fmt, io::Write, pin::Pin};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -27,26 +28,7 @@ const MAX_TOTAL_CONNECTIONS: usize = 512;
 type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
 type HttpResponse = Response<StreamBody<HttpStream>>;
 
-#[derive(Clone)]
-struct ActiveConnection {
-    generation: u64,
-    connection: Connection,
-}
-
-type ConnectionReceiver = watch::Receiver<Option<ActiveConnection>>;
-
-#[derive(Clone)]
-struct ConnectionState {
-    receiver: ConnectionReceiver,
-    sender: watch::Sender<Option<ActiveConnection>>,
-}
-
-#[derive(Clone)]
-struct ConnectionLease {
-    connection: Connection,
-    generation: u64,
-    sender: watch::Sender<Option<ActiveConnection>>,
-}
+type ConnectionState = PeerSession;
 
 struct HttpBodyLeaseGuard {
     lease: Option<ConnectionLease>,
@@ -89,51 +71,12 @@ impl std::error::Error for TransportFailure {
     }
 }
 
-#[derive(Debug)]
-struct ServiceRejected {
-    status: u16,
-}
-
-impl fmt::Display for ServiceRejected {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "TCP attachment rejected with status {}",
-            self.status
-        )
-    }
-}
-
-impl std::error::Error for ServiceRejected {}
-
-#[derive(Debug)]
-enum TransportMonitorExit {
-    PathLost,
-    Ended,
-}
-
 fn transport_failure(error: anyhow::Error) -> anyhow::Error {
     anyhow::Error::new(TransportFailure(error))
 }
 
 fn is_transport_failure(error: &anyhow::Error) -> bool {
     error.downcast_ref::<TransportFailure>().is_some()
-}
-
-impl ConnectionLease {
-    fn invalidate(&self) {
-        let _ = self.sender.send_if_modified(|current| {
-            if current
-                .as_ref()
-                .is_some_and(|connection| connection.generation == self.generation)
-            {
-                *current = None;
-                true
-            } else {
-                false
-            }
-        });
-    }
 }
 
 impl HttpBodyLeaseGuard {
@@ -209,7 +152,6 @@ async fn run_attachments(
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
-    let host_id = node_id.fmt_short().to_string();
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {
         Some(address) => Some(address),
@@ -261,21 +203,31 @@ async fn run_attachments(
         info!(service = %capability.service, %listen, "local listener ready");
     }
     std::io::stdout().flush()?;
-    let (connection_sender, connection_receiver) = watch::channel(None);
-    let connection_state = ConnectionState {
-        receiver: connection_receiver,
-        sender: connection_sender.clone(),
-    };
-    let supervisor_receiver = connection_state.receiver.clone();
+    let (connection_state, driver) = PeerSession::start(endpoint, endpoint_addr);
     let shutdown = CancellationToken::new();
-    let supervisor = tokio::spawn(connection_supervisor(
-        endpoint.clone(),
-        endpoint_addr,
-        host_id,
-        connection_sender,
-        supervisor_receiver,
-        shutdown.clone(),
-    ));
+    let mut supervisor = tokio::spawn(driver.run());
+    let mut status = connection_state.subscribe();
+    let reporter = tokio::spawn(async move {
+        let mut last_path = "none".to_owned();
+        let mut last_error = None;
+        loop {
+            let snapshot = status.borrow_and_update().clone();
+            if snapshot.last_error != last_error {
+                if let Some(error) = snapshot.last_error {
+                    warn!(%error, "tunnel connection recovering");
+                }
+                last_error = snapshot.last_error;
+            }
+            if snapshot.path_description != last_path {
+                info!(transport_path = %snapshot.path_description, "transport path changed");
+                println!("transport path: {}", snapshot.path_description);
+                last_path = snapshot.path_description;
+            }
+            if snapshot.state == SessionState::Closed || status.changed().await.is_err() {
+                break;
+            }
+        }
+    });
     let total_connections = std::sync::Arc::new(Semaphore::new(MAX_TOTAL_CONNECTIONS));
     let mut listener_tasks = JoinSet::new();
     for (listener, capability, _listen, http_timeout) in listeners {
@@ -312,8 +264,16 @@ async fn run_attachments(
             });
         }
     }
+    let mut supervisor_finished = false;
     let result = loop {
         tokio::select! {
+            completed = &mut supervisor => {
+                supervisor_finished = true;
+                break match completed {
+                    Ok(()) => Err(anyhow!("peer session driver stopped unexpectedly")),
+                    Err(error) => Err(error.into()),
+                };
+            }
             signal = tokio::signal::ctrl_c() => {
                 if signal.is_ok() {
                     warn!("shutdown requested");
@@ -335,6 +295,7 @@ async fn run_attachments(
         }
     };
     shutdown.cancel();
+    let close_result = connection_state.close().await;
     if timeout(SHUTDOWN_TIMEOUT, async {
         while listener_tasks.join_next().await.is_some() {}
     })
@@ -345,235 +306,11 @@ async fn run_attachments(
         listener_tasks.abort_all();
         while listener_tasks.join_next().await.is_some() {}
     }
-    let _ = supervisor.await;
-    endpoint.close().await;
-    result
-}
-
-async fn connection_supervisor(
-    endpoint: Endpoint,
-    endpoint_addr: EndpointAddr,
-    host_id: String,
-    sender: watch::Sender<Option<ActiveConnection>>,
-    mut receiver: ConnectionReceiver,
-    shutdown: CancellationToken,
-) {
-    let mut backoff = RECONNECT_INITIAL_BACKOFF;
-    let mut recovering_after_connection_loss = false;
-    let mut generation = 0;
-    'supervisor: loop {
-        let connection = tokio::select! {
-            _ = shutdown.cancelled() => break,
-            result = timeout(HANDSHAKE_TIMEOUT, endpoint.connect(endpoint_addr.clone(), ALPN)) => {
-                match result {
-                    Ok(Ok(connection)) => connection,
-                    Ok(Err(error)) => {
-                        warn!(host_id = %host_id, %error, "tunnel connection failed; retrying");
-                        let delay = reconnect_delay(recovering_after_connection_loss, backoff);
-                        retry_delay(&shutdown, delay).await;
-                        if !recovering_after_connection_loss {
-                            backoff = next_backoff(backoff);
-                        }
-                        continue;
-                    }
-                    Err(_) => {
-                        warn!(host_id = %host_id, "tunnel connection timed out; retrying");
-                        let delay = reconnect_delay(recovering_after_connection_loss, backoff);
-                        retry_delay(&shutdown, delay).await;
-                        if !recovering_after_connection_loss {
-                            backoff = next_backoff(backoff);
-                        }
-                        continue;
-                    }
-                }
-            }
-        };
-
-        generation += 1;
-        let _ = sender.send(Some(ActiveConnection {
-            generation,
-            connection: connection.clone(),
-        }));
-        receiver.borrow_and_update();
-        let mut monitor = spawn_transport_monitor(&connection, generation, host_id.clone());
-        let monitor_finished = async {
-            if let Some(monitor) = monitor.as_mut() {
-                monitor.await.unwrap_or(TransportMonitorExit::Ended)
-            } else {
-                std::future::pending::<TransportMonitorExit>().await
-            }
-        };
-        tokio::pin!(monitor_finished);
-        let stable = sleep(RECONNECT_STABLE_DURATION);
-        tokio::pin!(stable);
-        let mut connection_stable = false;
-        loop {
-            tokio::select! {
-                _ = &mut stable, if !connection_stable => {
-                    backoff = RECONNECT_INITIAL_BACKOFF;
-                    connection_stable = true;
-                }
-                _ = connection.closed() => {
-                    info!(host_id = %host_id, "tunnel connection closed; reconnecting");
-                    let _ = sender.send(None);
-                    recovering_after_connection_loss = true;
-                    break;
-                }
-                monitor_exit = &mut monitor_finished => {
-                    info!(host_id = %host_id, ?monitor_exit, "tunnel transport monitor ended; reconnecting");
-                    let _ = sender.send(None);
-                    recovering_after_connection_loss = true;
-                    connection.close(0u32.into(), b"transport monitor ended");
-                    break;
-                }
-                changed = receiver.changed() => {
-                    if changed.is_ok() && receiver.borrow().is_none() {
-                        info!(host_id = %host_id, "tunnel connection invalidated; reconnecting");
-                        recovering_after_connection_loss = true;
-                        connection.close(0u32.into(), b"tunnel connection invalidated");
-                        break;
-                    }
-                }
-                _ = shutdown.cancelled() => {
-                    connection.close(0u32.into(), b"locho shutdown");
-                    if let Some(monitor) = monitor {
-                        monitor.abort();
-                        let _ = monitor.await;
-                    }
-                    break 'supervisor;
-                }
-            }
-        }
-        if let Some(monitor) = monitor {
-            if !monitor.is_finished() {
-                monitor.abort();
-                let _ = monitor.await;
-            }
-        }
-        let delay = reconnect_delay(recovering_after_connection_loss, backoff);
-        retry_delay(&shutdown, delay).await;
-        if !recovering_after_connection_loss {
-            backoff = next_backoff(backoff);
-        }
+    if !supervisor_finished {
+        let _ = supervisor.await;
     }
-    let _ = sender.send(None);
-}
-
-async fn retry_delay(shutdown: &CancellationToken, delay: std::time::Duration) {
-    tokio::select! {
-        _ = sleep(delay) => {}
-        _ = shutdown.cancelled() => {}
-    }
-}
-
-fn next_backoff(current: std::time::Duration) -> std::time::Duration {
-    current
-        .checked_mul(2)
-        .unwrap_or(RECONNECT_MAX_BACKOFF)
-        .min(RECONNECT_MAX_BACKOFF)
-}
-
-fn reconnect_delay(
-    recovering_after_connection_loss: bool,
-    backoff: std::time::Duration,
-) -> std::time::Duration {
-    if recovering_after_connection_loss {
-        RECONNECT_INITIAL_BACKOFF
-    } else {
-        backoff
-    }
-}
-
-fn spawn_transport_monitor(
-    connection: &Connection,
-    generation: u64,
-    host_id: String,
-) -> Option<tokio::task::JoinHandle<TransportMonitorExit>> {
-    let initial_path = transport_path(connection);
-    if initial_path == "none" {
-        warn!(host_id = %host_id, "connected to host but transport path is not yet available");
-    } else {
-        info!(host_id = %host_id, generation, transport_path = %initial_path, "transport path established");
-        println!("transport path: {initial_path}");
-    }
-    let connection = connection.clone();
-    Some(tokio::spawn(async move {
-        let mut paths = connection.paths_stream();
-        let mut last_path = initial_path;
-        while let Some(path_list) = paths.next().await {
-            let connection_type = format_transport_paths(path_list.iter().map(|path| {
-                (
-                    path.remote_addr().to_string(),
-                    path.is_ip(),
-                    path.is_relay(),
-                    path.is_selected(),
-                )
-            }));
-            if !transport_path_changed(&last_path, &connection_type) {
-                continue;
-            }
-            info!(host_id = %host_id, generation, transport_path = %connection_type, "transport path changed");
-            println!("transport path: {connection_type}");
-            if connection_type == "none" {
-                return TransportMonitorExit::PathLost;
-            }
-            last_path = connection_type;
-        }
-        TransportMonitorExit::Ended
-    }))
-}
-
-fn transport_path(connection: &Connection) -> String {
-    format_transport_paths(connection.paths().iter().map(|path| {
-        (
-            path.remote_addr().to_string(),
-            path.is_ip(),
-            path.is_relay(),
-            path.is_selected(),
-        )
-    }))
-}
-
-pub(crate) fn format_transport_paths<I>(paths: I) -> String
-where
-    I: IntoIterator<Item = (String, bool, bool, bool)>,
-{
-    let mut direct = Vec::new();
-    let mut relay = Vec::new();
-    let mut selected = None;
-    for (address, is_direct, is_relay, is_selected) in paths {
-        let address = strip_transport_prefix(&address).to_owned();
-        if is_direct {
-            direct.push(address.clone());
-        }
-        if is_relay {
-            relay.push(address.clone());
-        }
-        if is_selected {
-            selected = Some(address);
-        }
-    }
-    match (direct.is_empty(), relay.is_empty()) {
-        (false, true) => format!("direct({})", selected.unwrap_or_else(|| direct.join(", "))),
-        (true, false) => format!("relay({})", selected.unwrap_or_else(|| relay.join(", "))),
-        (false, false) => format!(
-            "mixed(direct: {}, relay: {})",
-            direct.join(", "),
-            relay.join(", ")
-        ),
-        (true, true) => "none".into(),
-    }
-}
-
-fn strip_transport_prefix(address: &str) -> &str {
-    address
-        .strip_prefix("ip:")
-        .or_else(|| address.strip_prefix("relay:"))
-        .unwrap_or(address)
-}
-
-fn transport_path_changed(previous: &str, current: &str) -> bool {
-    previous != current
+    let _ = reporter.await;
+    result.and(close_result.map_err(anyhow::Error::from))
 }
 
 async fn run_http_listener(
@@ -725,32 +462,10 @@ async fn run_tcp_listener(
 }
 
 async fn acquire_connection(state: ConnectionState) -> Result<ConnectionLease> {
-    let active = match timeout(
-        ATTACH_RECONNECT_TIMEOUT,
-        wait_for_connection(state.receiver),
-    )
-    .await
-    {
-        Ok(active) => active?,
-        Err(_) => return Err(anyhow::Error::new(TunnelUnavailable)),
-    };
-    Ok(ConnectionLease {
-        connection: active.connection,
-        generation: active.generation,
-        sender: state.sender,
-    })
-}
-
-async fn wait_for_connection(mut receiver: ConnectionReceiver) -> Result<ActiveConnection> {
-    loop {
-        if let Some(connection) = receiver.borrow().clone() {
-            return Ok(connection);
-        }
-        receiver
-            .changed()
-            .await
-            .context("connection supervisor stopped")?;
-    }
+    state
+        .acquire(ATTACH_RECONNECT_TIMEOUT)
+        .await
+        .map_err(|_| anyhow::Error::new(TunnelUnavailable))
 }
 
 async fn handle_tcp_connection(
@@ -785,35 +500,18 @@ async fn handle_tcp_connection_on_lease(
     service: String,
     secret: String,
 ) -> Result<()> {
-    let (mut writer, mut reader) = lease
-        .connection
-        .open_bi()
+    let capability = crate::capability::Capability {
+        service,
+        service_type: crate::config::ServiceType::Tcp,
+        secret,
+    };
+    let remote = lease
+        .open_tcp(&capability, HANDSHAKE_TIMEOUT, &CancellationToken::new())
         .await
-        .map_err(|error| transport_failure(error.into()))?;
-    write_json_head(
-        &mut writer,
-        &StreamRequestHead::Tcp(TcpRequestHead {
-            version: PROTOCOL_VERSION,
-            service,
-            secret_proof: auth::secret_proof(&secret),
-        }),
-    )
-    .await
-    .map_err(transport_failure)?;
-    let response: LochoResponseHead =
-        timeout(HANDSHAKE_TIMEOUT, read_json_head(&mut reader, MAX_HEAD_LEN))
-            .await
-            .context("TCP attachment handshake timed out")?
-            .map_err(transport_failure)?;
-    if response.status != 200 {
-        return Err(anyhow::Error::new(ServiceRejected {
-            status: response.status,
-        }));
-    }
-    read_body_with_limit(&mut reader, response.body_len, MAX_BODY_LEN)
-        .await
-        .map_err(transport_failure)?;
-    let remote = tokio::io::join(reader, writer);
+        .map_err(|error| match error {
+            SessionError::Transport(_) => transport_failure(error.into()),
+            _ => anyhow::Error::new(error),
+        })?;
     let result = relay_with_idle_timeout(local, remote).await;
     if result.as_ref().is_err_and(|error| !is_idle_timeout(error)) {
         return result.map_err(transport_failure);
@@ -935,7 +633,7 @@ async fn tunnel_request_on_lease(
     let service_name = service.clone();
     let method_name = method.to_string();
     let path_name = path.clone();
-    let (mut writer, mut reader) = timeout(HANDSHAKE_TIMEOUT, lease.connection.open_bi())
+    let (mut writer, mut reader) = timeout(HANDSHAKE_TIMEOUT, lease.connection().open_bi())
         .await
         .context("HTTP tunnel stream open timed out")?
         .map_err(|error| transport_failure(error.into()))?;
@@ -1082,6 +780,7 @@ fn error_response(status: StatusCode) -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use locho_core::session::{next_backoff, reconnect_delay};
 
     #[test]
     fn transport_path_labels() {
@@ -1101,8 +800,6 @@ mod tests {
             "mixed(direct: 127.0.0.1:1, relay: relay.example)"
         );
         assert_eq!(format_transport_paths(std::iter::empty()), "none");
-        assert!(!transport_path_changed("direct", "direct"));
-        assert!(transport_path_changed("direct", "relay"));
     }
 
     #[test]
@@ -1125,18 +822,6 @@ mod tests {
             reconnect_delay(false, RECONNECT_MAX_BACKOFF),
             RECONNECT_MAX_BACKOFF
         );
-    }
-
-    #[tokio::test]
-    async fn reconnect_backoff_can_be_cancelled() {
-        let shutdown = CancellationToken::new();
-        shutdown.cancel();
-        tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            retry_delay(&shutdown, RECONNECT_MAX_BACKOFF),
-        )
-        .await
-        .expect("cancelled retry should not wait for the full backoff");
     }
 
     #[test]
