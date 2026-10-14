@@ -6,6 +6,11 @@ library and `locho-client-native` 0.1.0 native attachment adapter. See
 startup/status/shutdown and HTTP integration. Flutter/browser packages remain
 subsequent deliverables.
 
+The Android-first [Flutter feasibility package](../packages/locho_flutter/README.md)
+now wraps the native adapter with pinned FRB/source-build integration. Physical
+Android debug/release attach/GET/close evidence is recorded there. iOS build CI and
+remaining platform/network/distribution gates are separate from that evidence.
+
 ## Implemented Boundary
 
 `crates/locho-core` owns:
