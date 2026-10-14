@@ -9,7 +9,7 @@ description = "Owned native loopback TCP attachments for Locho"
 publish = false
 
 [dependencies]
-locho-core = { path = "../locho-core", version = "0.1.0", features = ["transport"] }
+locho-core = { path = "../locho-core", version = "0.1.0", features = ["native-transport"] }
 iroh = "=1.2.0"
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
 tokio-util = "0.7"

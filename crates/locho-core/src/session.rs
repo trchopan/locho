@@ -4,9 +4,9 @@
 use crate::{auth, capability::Capability, protocol::*, service::ServiceType};
 use futures_util::StreamExt;
 use iroh::{endpoint::Connection, Endpoint, EndpointAddr};
+use n0_future::time::{sleep, timeout};
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
-use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

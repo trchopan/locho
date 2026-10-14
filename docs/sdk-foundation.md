@@ -11,6 +11,13 @@ now wraps the native adapter with pinned FRB/source-build integration. Physical
 Android debug/release attach/GET/close evidence is recorded there. iOS build CI and
 remaining platform/network/distribution gates are separate from that evidence.
 
+The browser feasibility scaffold is `crates/locho-web` plus `packages/locho-web`.
+It reuses the shared peer session and authorization path and currently exposes only
+a raw `/health` proof. This development Mac cannot compile ring's C code for
+wasm32 because its Apple Clang lacks a WebAssembly target; controlled Linux CI owns
+the first WASM evidence. No browser API or ticket compatibility claim is made until
+the WASM build and relay proof pass.
+
 ## Implemented Boundary
 
 `crates/locho-core` owns:

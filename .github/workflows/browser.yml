@@ -1,0 +1,43 @@
+name: Browser connectivity feasibility
+on:
+  pull_request:
+    paths:
+      - 'crates/locho-core/**'
+      - 'crates/locho-web/**'
+      - 'packages/locho-web/**'
+      - '.github/workflows/browser.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/locho-core/**'
+      - 'crates/locho-web/**'
+      - 'packages/locho-web/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  wasm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - run: sudo apt-get update && sudo apt-get install -y clang lld
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.18.0'
+          cache: npm
+          cache-dependency-path: packages/locho-web/package-lock.json
+      - run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - run: cargo build --locked --release -p locho-web --target wasm32-unknown-unknown
+      - run: npm install
+        working-directory: packages/locho-web
+      - run: npm run build:wasm
+        working-directory: packages/locho-web
+      - run: npm run build
+        working-directory: packages/locho-web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locho-web-wasm-proof
+          path: packages/locho-web/src/generated

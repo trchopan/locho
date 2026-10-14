@@ -1,0 +1,16 @@
+{
+  "name": "@locho/web",
+  "version": "0.1.0-dev.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "dev": "vite examples/minimal",
+    "preview": "vite preview examples/minimal"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.3.7"
+  }
+}
