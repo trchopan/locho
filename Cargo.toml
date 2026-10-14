@@ -10,14 +10,15 @@ repository = "https://github.com/trchopan/locho"
 readme = "README.md"
 
 [workspace]
-members = ["crates/locho-core"]
-default-members = [".", "crates/locho-core"]
+members = ["crates/locho-core", "crates/locho-client-native"]
+default-members = [".", "crates/locho-core", "crates/locho-client-native"]
 resolver = "2"
 
 [features]
 integration-test = []
 
 [dependencies]
+locho-client-native = { path = "crates/locho-client-native", version = "0.1.0" }
 locho-core = { path = "crates/locho-core", version = "0.1.0", features = ["transport"] }
 anyhow = "1"
 async-stream = "0.3"

@@ -1769,6 +1769,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "iroh",
+ "locho-client-native",
  "locho-core",
  "rand",
  "rcgen",
@@ -1784,6 +1785,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "locho-client-native"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "locho-core",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
