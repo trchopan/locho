@@ -1808,6 +1808,8 @@ dependencies = [
  "hex",
  "http",
  "iroh",
+ "n0-future",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
@@ -1815,6 +1817,22 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "locho-web"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "locho-core",
+ "n0-future",
+ "ring",
+ "tokio",
+ "tokio-util",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

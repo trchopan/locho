@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
+use n0_future::time::{sleep, Instant};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::{sleep, Instant};
 
 pub const ALPN: &[u8] = b"locho/3";
 pub const PROTOCOL_VERSION: u8 = 3;
