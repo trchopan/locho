@@ -475,6 +475,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, complete
 quality gate, integration tests, and release verification commands. Maintainers
 preparing a release should follow [RELEASE.md](RELEASE.md).
 
+The workspace's shared protocol/validation library is the first step toward
+Flutter and browser SDKs. See [SDK foundation](docs/sdk-foundation.md) for the
+implemented boundary and remaining integration gates.
+
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE).
