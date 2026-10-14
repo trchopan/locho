@@ -1,0 +1,25 @@
+[package]
+name = "locho_flutter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+locho-client-native = { path = "../../../crates/locho-client-native" }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+iroh = "=1.2.0"
+jni = "0.21"
+jni_new = { package = "jni", version = "0.22" }
+rustls-platform-verifier = "=0.7.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
