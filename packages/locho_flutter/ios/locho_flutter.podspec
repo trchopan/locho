@@ -21,7 +21,7 @@ Foreground Locho native TCP attachments using Flutter Rust Bridge.
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.frameworks = 'Network'
+  s.frameworks = 'Network', 'SystemConfiguration'
   s.platform = :ios, '13.0'
 
   # Flutter.framework does not contain a i386 slice.
