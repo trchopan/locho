@@ -1769,21 +1769,37 @@ dependencies = [
  "hyper",
  "hyper-util",
  "iroh",
+ "locho-core",
  "rand",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
  "serde",
  "serde_json",
- "sha2",
  "socket2",
- "subtle",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "locho-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "hex",
+ "http",
+ "iroh",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
  "url",
 ]
 

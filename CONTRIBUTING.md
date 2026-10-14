@@ -19,8 +19,9 @@ by CI:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features -- --test-threads=1
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features -- --test-threads=1
+cargo test -p locho-core --no-default-features
 cargo build --release
 cargo build --release --features integration-test --target-dir target/integration-release
 LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test -- --test-threads=1
@@ -34,6 +35,12 @@ The integration tests cover HTTP and TCP forwarding, concurrency, restart,
 capability rotation, malformed requests, timeouts, and graceful shutdown. The
 release smoke tests exercise the ordinary release binary without the test-only
 feature.
+
+The Cargo workspace contains the CLI and `crates/locho-core`. The default members
+include both, so `cargo test` also exercises shared protocol tests. Use explicit
+`--workspace` lint/test gates to cover every member. The separate no-default-feature
+core test checks the lightweight protocol/validation boundary without iroh transport.
+See [docs/sdk-foundation.md](docs/sdk-foundation.md) for current SDK extraction status.
 
 Custom relay verification is environment-dependent and is not part of the
 deterministic CI gate. Follow the [manual relay verification](README.md#manual-relay-verification)
