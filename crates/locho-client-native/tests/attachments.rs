@@ -277,10 +277,23 @@ async fn client_close_races_start_and_dropped_owners_stop_listeners() {
     let client = Client::new();
     let attachment = client.attach_tcp(host.options(), DEADLINE).await.unwrap();
     let addr = attachment.local_addr();
-    let status = attachment.subscribe();
+    let mut status = attachment.subscribe();
     drop(attachment);
     released(addr).await;
+    // Listener release precedes peer/task cleanup. Wait on the lifecycle signal
+    // independently rather than assuming a free port means cleanup has completed.
+    timeout(Duration::from_secs(13), async {
+        loop {
+            if status.borrow_and_update().state == SessionState::Closed {
+                break;
+            }
+            status.changed().await.expect("status ended before closure");
+        }
+    })
+    .await
+    .expect("dropped attachment did not finish cleanup");
     assert_eq!(status.borrow().state, SessionState::Closed);
+    assert_eq!(status.borrow().terminal_error, None);
     let attachment = client.attach_tcp(host.options(), DEADLINE).await.unwrap();
     let addr = attachment.local_addr();
     drop(client);
