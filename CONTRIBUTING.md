@@ -36,8 +36,9 @@ capability rotation, malformed requests, timeouts, and graceful shutdown. The
 release smoke tests exercise the ordinary release binary without the test-only
 feature.
 
-The Cargo workspace contains the CLI and `crates/locho-core`. The default members
-include both, so `cargo test` also exercises shared protocol tests. Use explicit
+The Cargo workspace contains the CLI, `crates/locho-core` and
+`crates/locho-client-native`. Default members include all three, so `cargo test`
+also exercises shared protocol and native attachment tests. Use explicit
 `--workspace` lint/test gates to cover every member. The separate no-default-feature
 core test checks the lightweight protocol/validation boundary without iroh transport.
 See [docs/sdk-foundation.md](docs/sdk-foundation.md) for current SDK extraction status.

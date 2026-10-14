@@ -1,0 +1,16 @@
+[package]
+name = "locho-client-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/trchopan/locho"
+description = "Owned native loopback TCP attachments for Locho"
+publish = false
+
+[dependencies]
+locho-core = { path = "../locho-core", version = "0.1.0", features = ["transport"] }
+iroh = "=1.2.0"
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+tokio-util = "0.7"
+tracing = "0.1"
