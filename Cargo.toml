@@ -13,6 +13,7 @@ readme = "README.md"
 members = ["crates/locho-core", "crates/locho-client-native"]
 default-members = [".", "crates/locho-core", "crates/locho-client-native"]
 resolver = "2"
+exclude = ["packages/locho_flutter/rust"]
 
 [features]
 integration-test = []
