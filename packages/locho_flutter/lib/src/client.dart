@@ -265,6 +265,6 @@ class LochoAttachment {
       closeError ??= error;
     }
     _onClosed?.call();
-    if (closeError != null) throw closeError!;
+    if (closeError case final error?) throw error;
   }
 }
