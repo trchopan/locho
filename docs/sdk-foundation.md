@@ -38,6 +38,11 @@ startup and page-destruction cleanup bounds.
 
 ## Implemented Boundary
 
+The browser now also exposes a [buffered HTTP subset](browser-http.md), backed by
+bounded Rust framing and binary WASM responses. Local production integration passes
+48 browser cases including the pinned reference API health/login/notes/logout
+journey. Hosted Linux verification and external package delivery are separate gates.
+
 `crates/locho-core` owns:
 
 - Existing `locho/3` protocol constants, request/response serialization, bounded

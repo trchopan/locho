@@ -48,8 +48,10 @@ to iroh without a dialing-order guarantee. See [ticket v1](../../docs/tickets.md
 
 Local production WASM ticket verification passes 39 tests across Chromium, Firefox
 and WebKit, including shared vectors and a real CLI-generated ticket over N0.
-The public API remains a health proof; general HTTP and standalone distribution
-remain the next milestones.
+The ticket-backed buffered `client.fetch` API now supports JSON/text/byte requests.
+See [the exact HTTP subset](../../docs/browser-http.md) for headers, framing, limits,
+synthetic Response metadata and unsupported features. Standalone distribution and
+status subscriptions remain follow-up milestones.
 
 ### Cancellation and close
 

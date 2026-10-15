@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const BODY = 'locho-n0-browser-health\n';
@@ -106,9 +107,35 @@ export default async function globalSetup() {
 
   const stateDir = await mkdtemp(join(tmpdir(), 'locho-web-n0-'));
   let host;
+  let notesApp;
   const pending = new Map();
   const requests = new Map();
   const upstream = createServer((request, response) => {
+    if (request.url === '/echo') {
+      const chunks = [];
+      request.on('data', (chunk) => chunks.push(chunk));
+      request.on('end', () => {
+        const body = Buffer.concat(chunks);
+        response.writeHead(200, { 'Content-Length': body.length, 'X-Method': request.method, 'X-Authority': request.headers.host });
+        response.end(body);
+      });
+      return;
+    }
+    if (request.url === '/chunked') {
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'X-Test': ['one', 'two'] });
+      response.write(Buffer.from([0, 255]));
+      response.end(Buffer.from([1, 128]));
+      return;
+    }
+    if (request.url === '/redirect') {
+      response.writeHead(302, { Location: 'https://example.invalid/', 'Content-Length': 0 }); response.end(); return;
+    }
+    if (request.url === '/empty') {
+      response.writeHead(204); response.end(); return;
+    }
+    if (request.url === '/stall') {
+      response.on('close', () => {}); return;
+    }
     if (request.method === 'GET' && request.url === '/health') {
       const authority = request.headers.host;
       requests.set(authority, (requests.get(authority) ?? 0) + 1);
@@ -145,6 +172,7 @@ export default async function globalSetup() {
       await new Promise((resolve) => upstream.close(resolve));
       control.closeAllConnections();
       await new Promise((resolve) => control.close(resolve));
+      await notesApp?.close();
       await rm(fixtureFile, { force: true });
       await rm(stateDir, { recursive: true, force: true });
     }
@@ -152,10 +180,19 @@ export default async function globalSetup() {
   try {
     const upstreamPort = await listen(upstream);
     const controlPort = await listen(control);
+    let notesConfig = '';
+    if (process.env.LOCHO_REFERENCE_API) {
+      const { createApp, addUser } = await import(pathToFileURL(join(process.env.LOCHO_REFERENCE_API, 'apps/api/dist/src/app.js')).href);
+      const notes = await createApp();
+      notesApp = notes.app;
+      await addUser(notes.db, 'browser@example.test', 'synthetic-browser-password');
+      const address = await notesApp.listen({ host: '127.0.0.1', port: 0 });
+      notesConfig = `\n[[services]]\nname = "notes"\ntype = "tcp"\nendpoint = "127.0.0.1:${new URL(address).port}"\n`;
+    }
     const configPath = join(stateDir, 'locho.toml');
     await writeFile(
       configPath,
-      `[[services]]\nname = "${SERVICE}"\ntype = "tcp"\nendpoint = "127.0.0.1:${upstreamPort}"\n\n[[services]]\nname = "unavailable"\ntype = "tcp"\nendpoint = "127.0.0.1:1"\n`,
+      `[[services]]\nname = "${SERVICE}"\ntype = "tcp"\nendpoint = "127.0.0.1:${upstreamPort}"\n\n[[services]]\nname = "unavailable"\ntype = "tcp"\nendpoint = "127.0.0.1:1"\n${notesConfig}`,
     );
 
     const env = { ...process.env, LOCHO_STATE_DIR: stateDir };
@@ -174,6 +211,7 @@ export default async function globalSetup() {
     }
     const peerRelayUrl = await waitForRelay(binary, hostId, env);
     const ticket = await runCommand(binary, ['share', SERVICE, '--config', configPath, '--ticket', '--peer-relay-url', peerRelayUrl], env);
+    const notesTicket = notesApp ? (await runCommand(binary, ['share', 'notes', '--config', configPath, '--ticket', '--peer-relay-url', peerRelayUrl], env)).stdout.trim() : undefined;
     const unavailable = await runCommand(binary, ['secret', 'unavailable', '--config', configPath], env);
 
     await writeFile(
@@ -181,6 +219,7 @@ export default async function globalSetup() {
       JSON.stringify({
         capability: match[2],
         ticket: ticket.stdout.trim(),
+        notesTicket,
         expectedBody: BODY.trim(),
         expectedPath: 'relay',
         hostId,
