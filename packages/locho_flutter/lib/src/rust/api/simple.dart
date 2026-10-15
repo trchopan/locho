@@ -8,6 +8,9 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `error`, `runtime`, `status`
 
+Future<NativeTicket> parseTicket({required String value}) =>
+    RustLib.instance.api.crateApiSimpleParseTicket(value: value);
+
 Future<NativeClient> createClient() =>
     RustLib.instance.api.crateApiSimpleCreateClient();
 
@@ -32,7 +35,15 @@ abstract class NativeClient implements RustOpaqueInterface {
     required String capability,
     required int localPort,
     String? directAddress,
+    String? ticket,
   });
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeTicket>>
+abstract class NativeTicket implements RustOpaqueInterface {
+  Future<String> export_();
+
+  Future<TicketMetadata> metadata();
 }
 
 class NativeStatus {
@@ -72,4 +83,35 @@ class NativeStatus {
           localPort == other.localPort &&
           errorCode == other.errorCode &&
           connectionErrorCode == other.connectionErrorCode;
+}
+
+class TicketMetadata {
+  final String hostId;
+  final String service;
+  final String serviceType;
+  final List<String> peerRelayUrls;
+
+  const TicketMetadata({
+    required this.hostId,
+    required this.service,
+    required this.serviceType,
+    required this.peerRelayUrls,
+  });
+
+  @override
+  int get hashCode =>
+      hostId.hashCode ^
+      service.hashCode ^
+      serviceType.hashCode ^
+      peerRelayUrls.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TicketMetadata &&
+          runtimeType == other.runtimeType &&
+          hostId == other.hostId &&
+          service == other.service &&
+          serviceType == other.serviceType &&
+          peerRelayUrls == other.peerRelayUrls;
 }

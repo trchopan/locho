@@ -1831,6 +1831,7 @@ dependencies = [
  "locho-core",
  "n0-future",
  "ring",
+ "serde_json",
  "tokio",
  "tokio-util",
  "url",

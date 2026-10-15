@@ -173,12 +173,14 @@ export default async function globalSetup() {
       throw new Error('unexpected share output for N0 fixture');
     }
     const peerRelayUrl = await waitForRelay(binary, hostId, env);
+    const ticket = await runCommand(binary, ['share', SERVICE, '--config', configPath, '--ticket', '--peer-relay-url', peerRelayUrl], env);
     const unavailable = await runCommand(binary, ['secret', 'unavailable', '--config', configPath], env);
 
     await writeFile(
       fixtureFile,
       JSON.stringify({
         capability: match[2],
+        ticket: ticket.stdout.trim(),
         expectedBody: BODY.trim(),
         expectedPath: 'relay',
         hostId,

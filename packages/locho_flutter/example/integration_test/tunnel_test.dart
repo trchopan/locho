@@ -9,15 +9,20 @@ void main() {
   const hostId = String.fromEnvironment('LOCHO_HOST_ID');
   const capability = String.fromEnvironment('LOCHO_CAPABILITY');
   const direct = String.fromEnvironment('LOCHO_DIRECT_ADDRESS');
+  const ticketText = String.fromEnvironment('LOCHO_TICKET');
   testWidgets('native attach, health, lifecycle and cleanup', (_) async {
     expect(hostId, isNotEmpty, reason: 'Provide LOCHO_HOST_ID');
     expect(capability, isNotEmpty, reason: 'Provide LOCHO_CAPABILITY');
     final client = await LochoClient.create();
+    final ticket = ticketText.isEmpty
+        ? null
+        : await LochoTicket.parse(ticketText);
     final httpClient = http.Client();
     try {
       final first = await client.attach(
-        hostId: hostId,
-        capability: capability,
+        ticket: ticket,
+        hostId: ticket == null ? hostId : null,
+        capability: ticket == null ? capability : null,
         directAddress: direct.isEmpty ? null : direct,
       );
       expect(first.currentStatus.state, LochoState.connected);

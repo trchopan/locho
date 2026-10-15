@@ -28,6 +28,7 @@ pub struct TcpOptions {
     pub capability: String,
     pub local_port: u16,
     pub direct_address: Option<SocketAddr>,
+    pub peer_relay_urls: Vec<String>,
     pub relay_settings: Option<RelaySettings>,
 }
 impl TcpOptions {
@@ -37,8 +38,22 @@ impl TcpOptions {
             capability,
             local_port: 0,
             direct_address: None,
+            peer_relay_urls: Vec::new(),
             relay_settings: None,
         }
+    }
+
+    pub fn from_ticket(ticket: &locho_core::ticket::Ticket) -> Result<Self, ClientError> {
+        let cap = ticket.capability();
+        if cap.service_type != ServiceType::Tcp {
+            return Err(ClientError::UnsupportedService);
+        }
+        let mut options = Self::new(
+            ticket.host_id().into(),
+            capability::format(&cap.service, &cap.service_type, &cap.secret),
+        );
+        options.peer_relay_urls = ticket.peer_relay_urls().to_vec();
+        Ok(options)
     }
 }
 impl fmt::Debug for TcpOptions {
@@ -371,6 +386,13 @@ async fn run_attachment(
         {
             return Err(ClientError::InvalidDirectAddress);
         }
+        let relays = options
+            .peer_relay_urls
+            .iter()
+            .map(|value| {
+                locho_core::relay::parse_relay_url(value).map_err(|_| ClientError::InvalidPeerRelay)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, options.local_port))
             .await
             .map_err(|_| ClientError::ListenerBind)?;
@@ -385,10 +407,13 @@ async fn run_attachment(
             .bind()
             .await
             .map_err(|_| ClientError::EndpointBind)?;
-        let target = options
+        let mut target = options
             .direct_address
             .map(|a| EndpointAddr::new(host).with_ip_addr(a))
             .unwrap_or_else(|| EndpointAddr::new(host));
+        for relay in relays {
+            target = target.with_relay_url(relay);
+        }
         Ok((listener, addr, endpoint, target, capability))
     };
     let started = tokio::time::Instant::now();

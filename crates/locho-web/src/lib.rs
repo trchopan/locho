@@ -41,6 +41,62 @@ pub struct WebClient {
     shutdown: CancellationToken,
 }
 
+#[wasm_bindgen]
+pub struct WebTicket {
+    inner: locho_core::ticket::Ticket,
+}
+
+#[wasm_bindgen]
+pub fn parse_ticket(value: String) -> Result<WebTicket, JsValue> {
+    locho_core::ticket::parse(&value)
+        .map(|inner| WebTicket { inner })
+        .map_err(|_| JsValue::from_str("invalidTicket"))
+}
+
+#[wasm_bindgen]
+impl WebTicket {
+    pub fn metadata(&self) -> String {
+        serde_json::json!({
+            "hostId": self.inner.host_id(),
+            "service": self.inner.capability().service,
+            "serviceType": self.inner.capability().service_type.as_str(),
+            "peerRelayUrls": self.inner.peer_relay_urls(),
+        })
+        .to_string()
+    }
+    pub fn export(&self) -> Result<String, JsValue> {
+        self.inner
+            .encode()
+            .map_err(|_| JsValue::from_str("invalidTicket"))
+    }
+    pub async fn connect(&self, cancellation: &WebCancellation) -> Result<WebClient, JsValue> {
+        if self.inner.capability().service_type != locho_core::service::ServiceType::Tcp {
+            return Err(JsValue::from_str("unsupportedService"));
+        }
+        connect_inner(
+            self.inner.host_id().into(),
+            self.inner.peer_relay_urls().to_vec(),
+            cancellation,
+        )
+        .await
+    }
+    pub async fn health(
+        &self,
+        client: &WebClient,
+        authority: String,
+        cancellation: &WebCancellation,
+    ) -> Result<String, JsValue> {
+        let cap = self.inner.capability();
+        client
+            .health(
+                capability::format(&cap.service, &cap.service_type, &cap.secret),
+                authority,
+                cancellation,
+            )
+            .await
+    }
+}
+
 fn map_error(error: SessionError) -> JsValue {
     JsValue::from_str(match error {
         SessionError::Closed => "closed",
@@ -63,20 +119,29 @@ pub async fn connect(
     peer_relay_url: Option<String>,
     cancellation: &WebCancellation,
 ) -> Result<WebClient, JsValue> {
+    connect_inner(host_id, peer_relay_url.into_iter().collect(), cancellation).await
+}
+
+async fn connect_inner(
+    host_id: String,
+    peer_relay_urls: Vec<String>,
+    cancellation: &WebCancellation,
+) -> Result<WebClient, JsValue> {
     if cancellation.token.is_cancelled() {
         return Err(JsValue::from_str("cancelled"));
     }
     let id: EndpointId = host_id
         .parse()
         .map_err(|_| JsValue::from_str("invalidHostId"))?;
-    let peer_relay = peer_relay_url
+    let peer_relays = peer_relay_urls
+        .into_iter()
         .map(|relay| {
             relay
                 .parse::<RelayUrl>()
                 .map(addressing::relay_url)
                 .map_err(|_| JsValue::from_str("invalidPeerRelay"))
         })
-        .transpose()?;
+        .collect::<Result<Vec<_>, _>>()?;
     let builder = Endpoint::builder(presets::N0)
         .clear_address_lookup()
         .address_lookup(PkarrPublisher::n0_dns())
@@ -90,7 +155,7 @@ pub async fn connect(
         }
     };
     let mut target = EndpointAddr::new(id);
-    if let Some(relay) = peer_relay {
+    for relay in peer_relays {
         target = target.with_relay_url(relay);
     }
     let (session, driver) = PeerSession::start(endpoint, target);

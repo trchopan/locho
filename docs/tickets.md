@@ -69,6 +69,40 @@ Do not put ticket strings in browser URLs, logs or diagnostic reports. Base64 is
 reversible. Shared interoperability vectors with synthetic credentials live in
 `crates/locho-core/tests/vectors/tickets-v1.json`.
 
-This PR establishes the v1 codec and CLI output. Browser and native/Flutter ticket
-consumption will call this shared parser through their Rust bindings in a follow-up;
-the current SDK adapters still take separate host/capability options.
+## SDK consumption
+
+Both SDKs parse through the shared Rust codec and expose redacted ticket objects,
+non-secret host/service metadata, and explicit canonical export. HTTP tickets are
+valid documents, but initial TCP attachment APIs reject them with `unsupportedService`.
+Mixed ticket and explicit identity/capability input is rejected with `conflictingOptions`.
+Malformed ticket input reports `invalidTicket` without echoing the supplied value.
+Neither SDK trims input: UI applications may trim outer clipboard whitespace explicitly.
+
+Browser:
+```ts
+const ticket = await LochoTicket.parse(text);
+const client = await LochoClient.connect({ ticket, signal });
+try {
+  const response = await client.health(); // capability retained by the ticket
+} finally { await client.close(); }
+```
+
+Flutter:
+```dart
+final ticket = await LochoTicket.parse(text);
+final client = await LochoClient.create();
+try {
+  final attachment = await client.attach(ticket: ticket);
+  // Ordinary HTTP clients use attachment.httpBaseUri.
+} finally { await client.close(); }
+```
+
+Native Rust uses `TcpOptions::from_ticket(&ticket)`. Native/Flutter may additionally
+set a direct address for development; this adds a transport candidate alongside
+ticket relay hints. Client relay policy remains independent. Browser ticket input
+cannot be mixed with the existing explicit `peerRelayUrl` option. All ticket hints
+are forwarded to iroh; transport address sets do not guarantee array dialing order.
+
+These are prerelease source APIs. Standalone package distribution, general browser
+HTTP requests, physical-device ticket acceptance and authenticated-relay validation
+remain separate delivery gates.

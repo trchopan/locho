@@ -154,7 +154,9 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
    the implemented native loopback attachment adapter.
 3. The [single-service ticket v1 contract](tickets.md) now has a shared core codec,
    interoperability vectors and explicit `locho share --ticket` output. SDK ticket
-   consumption through the shared Rust parser is the next integration step.
+   consumption now uses the shared Rust parser through WASM and FRB, with redacted
+   objects, metadata/export and peer hints. Local production browser and real FRB
+   vector tests pass; physical-device ticket acceptance and standalone packages remain open.
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
    against one versioned health/login/notes backend.
 

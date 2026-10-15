@@ -37,6 +37,20 @@ console.log(response.status, await response.text());
 await client.close();
 ```
 
+Alternatively, import `LochoTicket` and use
+`const ticket = await LochoTicket.parse(text); const client = await ticket.connect(signal);`
+then `await client.health()` without a capability argument. The ticket keeps the
+selected capability in Rust; metadata exposes only host/service/type/relay hints.
+`ticket.export()` explicitly returns the credential; string/JSON formatting is
+redacted. Mixed ticket and host/hint/capability inputs report `conflictingOptions`.
+Valid HTTP tickets report `unsupportedService` on connect. All peer hints are passed
+to iroh without a dialing-order guarantee. See [ticket v1](../../docs/tickets.md).
+
+Local production WASM ticket verification passes 39 tests across Chromium, Firefox
+and WebKit, including shared vectors and a real CLI-generated ticket over N0.
+The public API remains a health proof; general HTTP and standalone distribution
+remain the next milestones.
+
 ### Cancellation and close
 
 `connect({ hostId, signal })` and `health(capability, authority, signal)` accept

@@ -26,6 +26,7 @@ fn error(error: ClientError) -> String {
         ClientError::InvalidCapability(_) => "invalidCapability",
         ClientError::UnsupportedService => "unsupportedService",
         ClientError::InvalidDirectAddress => "invalidDirectAddress",
+        ClientError::InvalidPeerRelay => "invalidPeerRelay",
         ClientError::InvalidTimeout => "invalidTimeout",
         ClientError::StartupTimeout => "startupTimeout",
         ClientError::ListenerBind => "listenerBind",
@@ -44,6 +45,38 @@ pub struct NativeClient {
 #[frb(opaque)]
 pub struct NativeAttachment {
     inner: Arc<Attachment>,
+}
+
+#[frb(opaque)]
+pub struct NativeTicket {
+    inner: locho_client_native::Ticket,
+}
+
+pub struct TicketMetadata {
+    pub host_id: String,
+    pub service: String,
+    pub service_type: String,
+    pub peer_relay_urls: Vec<String>,
+}
+
+pub fn parse_ticket(value: String) -> Result<NativeTicket, String> {
+    locho_client_native::parse_ticket(&value)
+        .map(|inner| NativeTicket { inner })
+        .map_err(|_| "invalidTicket".into())
+}
+
+impl NativeTicket {
+    pub fn metadata(&self) -> TicketMetadata {
+        TicketMetadata {
+            host_id: self.inner.host_id().into(),
+            service: self.inner.capability().service.clone(),
+            service_type: self.inner.capability().service_type.as_str().into(),
+            peer_relay_urls: self.inner.peer_relay_urls().to_vec(),
+        }
+    }
+    pub fn export(&self) -> Result<String, String> {
+        self.inner.encode().map_err(|_| "invalidTicket".into())
+    }
 }
 
 pub struct NativeStatus {
@@ -86,8 +119,18 @@ impl NativeClient {
         capability: String,
         local_port: u16,
         direct_address: Option<String>,
+        ticket: Option<String>,
     ) -> Result<NativeAttachment, String> {
-        let mut options = TcpOptions::new(host_id, capability);
+        let mut options = if let Some(ticket) = ticket {
+            if !host_id.is_empty() || !capability.is_empty() {
+                return Err("conflictingOptions".into());
+            }
+            let parsed = locho_client_native::parse_ticket(&ticket)
+                .map_err(|_| "invalidTicket".to_owned())?;
+            TcpOptions::from_ticket(&parsed).map_err(error)?
+        } else {
+            TcpOptions::new(host_id, capability)
+        };
         options.local_port = local_port;
         options.direct_address = direct_address
             .map(|value| value.parse().map_err(|_| "invalidDirectAddress".to_owned()))
@@ -153,13 +196,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ticket_vectors_and_unsupported_services() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../crates/locho-core/tests/vectors/tickets-v1.json"
+        ))
+        .unwrap();
+        for vector in vectors["valid"].as_array().unwrap() {
+            let ticket = parse_ticket(vector["ticket"].as_str().unwrap().into()).unwrap();
+            assert_eq!(
+                ticket.export().unwrap(),
+                vector["canonical"].as_str().unwrap()
+            );
+            assert_eq!(
+                ticket.metadata().host_id,
+                vector["host_id"].as_str().unwrap()
+            );
+            if ticket.metadata().service_type == "http" {
+                assert_eq!(
+                    TcpOptions::from_ticket(&ticket.inner).unwrap_err(),
+                    ClientError::UnsupportedService
+                );
+            }
+        }
+        for vector in vectors["invalid"].as_array().unwrap() {
+            assert!(
+                matches!(parse_ticket(vector.as_str().unwrap().into()), Err(code) if code == "invalidTicket")
+            );
+        }
+    }
+
+    #[test]
     fn calls_share_persistent_runtime_and_errors_are_sanitized() {
         let first = runtime().unwrap() as *const _;
         assert_eq!(first, runtime().unwrap() as *const _);
         assert_eq!(error(ClientError::InvalidHostId), "invalidHostId");
         assert_eq!(runtime().unwrap().block_on(async {
             let client = create_client().await.unwrap();
-            assert!(matches!(client.start("bad-host-secret".into(), "bad-capability-secret".into(), 0, None).await, Err(code) if code == "invalidHostId"));
+            assert!(matches!(client.start("bad-host-secret".into(), "bad-capability-secret".into(), 0, None, None).await, Err(code) if code == "invalidHostId"));
             client.close().await
         }), Ok(()));
     }

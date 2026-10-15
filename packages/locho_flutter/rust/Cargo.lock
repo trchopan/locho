@@ -1699,6 +1699,7 @@ dependencies = [
  "jni 0.22.4",
  "locho-client-native",
  "rustls-platform-verifier",
+ "serde_json",
  "tokio",
 ]
 

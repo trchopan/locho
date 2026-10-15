@@ -14,6 +14,7 @@ class TunnelScreen extends StatefulWidget {
 class _TunnelScreenState extends State<TunnelScreen>
     with WidgetsBindingObserver {
   final host = TextEditingController();
+  final ticket = TextEditingController();
   final capability = TextEditingController();
   final direct = TextEditingController();
   LochoClient? client;
@@ -80,8 +81,11 @@ class _TunnelScreenState extends State<TunnelScreen>
       }
       client = created;
       final attachment = await created.attach(
-        hostId: host.text.trim(),
-        capability: capability.text.trim(),
+        ticket: ticket.text.isEmpty
+            ? null
+            : await LochoTicket.parse(ticket.text),
+        hostId: ticket.text.isEmpty ? host.text.trim() : null,
+        capability: ticket.text.isEmpty ? capability.text.trim() : null,
         directAddress: direct.text.trim().isEmpty ? null : direct.text.trim(),
       );
       if (!mounted || token != generation) {
@@ -184,6 +188,7 @@ class _TunnelScreenState extends State<TunnelScreen>
     unawaited(disconnect());
     host.dispose();
     capability.dispose();
+    ticket.dispose();
     direct.dispose();
     super.dispose();
   }
@@ -194,6 +199,15 @@ class _TunnelScreenState extends State<TunnelScreen>
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        TextField(
+          controller: ticket,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(
+            labelText: 'Ticket (or use development fields below)',
+          ),
+        ),
         TextField(
           controller: host,
           decoration: const InputDecoration(labelText: 'Host ID'),

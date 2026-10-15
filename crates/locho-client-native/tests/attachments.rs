@@ -141,7 +141,15 @@ async fn released(address: SocketAddr) {
 async fn get_post_concurrent_requests_and_independent_close() {
     let host = Host::start(SecretKey::generate(), None).await;
     let client = Client::new();
-    let first = client.attach_tcp(host.options(), DEADLINE).await.unwrap();
+    let ticket = locho_client_native::Ticket::new(
+        &host.endpoint.id().to_string(),
+        "api:tcp:private-secret",
+        vec!["https://127.0.0.1:1/".into()],
+    )
+    .unwrap();
+    let mut options = TcpOptions::from_ticket(&ticket).unwrap();
+    options.direct_address = Some(host.address);
+    let first = client.attach_tcp(options, DEADLINE).await.unwrap();
     let second = client.attach_tcp(host.options(), DEADLINE).await.unwrap();
     assert_eq!(first.local_addr().ip(), Ipv4Addr::LOCALHOST);
     assert_ne!(first.local_addr().port(), 0);
