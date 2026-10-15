@@ -705,6 +705,48 @@ fn host_closes_stalled_response_after_headers() {
 
 #[cfg(feature = "integration-test")]
 #[test]
+fn share_ticket_matches_existing_capability_and_normalizes_hints() {
+    let state_dir = TestDir::new();
+    let config_path = state_dir.path().join("locho.toml");
+    fs::write(
+        &config_path,
+        "[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"127.0.0.1:5432\"\n",
+    )
+    .unwrap();
+    let address = format!("127.0.0.1:{}", free_udp_port());
+    let host = start_host(state_dir.path(), &config_path, &address);
+    let command = host.wait_for_attach(state_dir.path(), &config_path, "database");
+    let (host_id, service, secret) = parse_attach_command(&command);
+    let output = Command::new(locho_binary())
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["share", "database", "--config"])
+        .arg(&config_path)
+        .args([
+            "--ticket",
+            "--peer-relay-url",
+            "https://RELAY.example.org./",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    let ticket = locho_core::ticket::parse(text.trim()).unwrap();
+    assert_eq!(ticket.host_id(), host_id);
+    assert_eq!(ticket.capability().service, service);
+    assert_eq!(ticket.capability().secret, secret);
+    assert_eq!(ticket.peer_relay_urls(), &["https://relay.example.org/"]);
+    let rejected = Command::new(locho_binary())
+        .args(["share", "database", "--config"])
+        .arg(&config_path)
+        .args(["--ticket", "--direct-address", &address])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
 fn diagnose_reports_configuration_without_capabilities() {
     let state_dir = TestDir::new();
     let config_path = state_dir.path().join("locho.toml");

@@ -257,6 +257,16 @@ For scripts that need only the token, use `locho secret`:
 locho secret api --config locho.toml
 ```
 
+Export a versioned single-service bearer ticket explicitly:
+
+```sh
+locho share api --config locho.toml --ticket
+```
+
+See [portable tickets v1](docs/tickets.md) for optional peer relay hints, encoding,
+and credential handling. SDK ticket consumption is a follow-up; current clients
+still use separate host/capability options.
+
 Check local state and configuration without printing capabilities:
 
 ```sh

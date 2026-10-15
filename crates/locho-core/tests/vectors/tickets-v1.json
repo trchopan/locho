@@ -1,0 +1,23 @@
+{
+  "valid": [
+    {
+      "host_id": "abababababababababababababababababababababababababababababababab",
+      "ticket": "locho1:eyJob3N0X2lkIjoiQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQkFCQUJBQiIsImNhcGFiaWxpdHkiOiJub3RlczpodHRwOnN5bnRoZXRpYy1zZWNyZXQiLCJwZWVyX3JlbGF5X3VybHMiOlsiaHR0cHM6Ly9SRUxBWS5leGFtcGxlLm9yZy46NDQzLyIsImh0dHBzOi8vWzo6MV06NDQ0LyJdfQ",
+      "canonical": "locho1:eyJob3N0X2lkIjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsImNhcGFiaWxpdHkiOiJub3RlczpodHRwOnN5bnRoZXRpYy1zZWNyZXQiLCJwZWVyX3JlbGF5X3VybHMiOlsiaHR0cHM6Ly9yZWxheS5leGFtcGxlLm9yZy8iLCJodHRwczovL1s6OjFdOjQ0NC8iXX0"
+    },
+    {
+      "host_id": "0101010101010101010101010101010101010101010101010101010101010101",
+      "ticket": "locho1:eyJob3N0X2lkIjoiMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMSIsImNhcGFiaWxpdHkiOiJhcGk6dGNwOnRlc3Qtc2VjcmV0IiwicGVlcl9yZWxheV91cmxzIjpbXX0",
+      "canonical": "locho1:eyJob3N0X2lkIjoiMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMSIsImNhcGFiaWxpdHkiOiJhcGk6dGNwOnRlc3Qtc2VjcmV0IiwicGVlcl9yZWxheV91cmxzIjpbXX0"
+    }
+  ],
+  "invalid": [
+    "",
+    "locho2:abc",
+    "locho1:***",
+    "locho1:eyJob3N0X2lkIjoiMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMSIsImNhcGFiaWxpdHkiOiJhcGk6dGNwOnRlc3Qtc2VjcmV0IiwicGVlcl9yZWxheV91cmxzIjpbXSwiZXh0cmEiOnRydWV9",
+    "locho1:eyJob3N0X2lkIjoiaW52YWxpZCIsImNhcGFiaWxpdHkiOiJhcGk6dGNwOnRlc3Qtc2VjcmV0IiwicGVlcl9yZWxheV91cmxzIjpbXX0",
+    "locho1:eyJob3N0X2lkIjoiMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMSIsImNhcGFiaWxpdHkiOiJhcGk6dWRwOnRlc3Qtc2VjcmV0IiwicGVlcl9yZWxheV91cmxzIjpbXX0",
+    "locho1:eyJob3N0X2lkIjoiMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMTAxMDEwMSIsImNhcGFiaWxpdHkiOiJhcGk6dGNwOnRlc3Qtc2VjcmV0IiwicGVlcl9yZWxheV91cmxzIjpbImh0dHBzOi8vcmVsYXkuZXhhbXBsZS5vcmcvP3Rva2VuPXNlY3JldCJdfQ"
+  ]
+}
