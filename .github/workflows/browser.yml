@@ -47,6 +47,7 @@ jobs:
         env:
           LOCHO_N0_INTEGRATION: '1'
           LOCHO_HOST_BINARY: ${{ github.workspace }}/target/release/locho
+          LOCHO_N0_FIXTURE_FILE: ${{ runner.temp }}/locho-web-n0-fixture.json
       - uses: actions/upload-artifact@v4
         with:
           name: locho-web-wasm-proof

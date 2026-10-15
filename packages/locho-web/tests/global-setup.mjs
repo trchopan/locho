@@ -97,6 +97,8 @@ export default async function globalSetup() {
 
   const binary = process.env.LOCHO_HOST_BINARY;
   if (!binary) throw new Error('LOCHO_HOST_BINARY is required for N0 integration');
+  const fixtureFile = process.env.LOCHO_N0_FIXTURE_FILE;
+  if (!fixtureFile) throw new Error('LOCHO_N0_FIXTURE_FILE is required for N0 integration');
 
   const stateDir = await mkdtemp(join(tmpdir(), 'locho-web-n0-'));
   const upstream = createServer((request, response) => {
@@ -133,19 +135,27 @@ export default async function globalSetup() {
     }
     await waitForRelay(binary, hostId, env);
 
-    process.env.LOCHO_HOST_ID = hostId;
-    process.env.LOCHO_CAPABILITY = match[2];
-    process.env.LOCHO_EXPECTED_BODY = BODY.trim();
-    process.env.LOCHO_EXPECTED_PATH = 'relay';
+    await writeFile(
+      fixtureFile,
+      JSON.stringify({
+        capability: match[2],
+        expectedBody: BODY.trim(),
+        expectedPath: 'relay',
+        hostId,
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
 
     return async () => {
       await stopHost(host);
       await new Promise((resolve) => upstream.close(resolve));
+      await rm(fixtureFile, { force: true });
       await rm(stateDir, { recursive: true, force: true });
     };
   } catch (error) {
     await stopHost(host);
     await new Promise((resolve) => upstream.close(resolve));
+    await rm(fixtureFile, { force: true });
     await rm(stateDir, { recursive: true, force: true });
     throw error;
   }
