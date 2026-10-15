@@ -64,7 +64,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 56298244;
+  int get rustContentHash => -1714332747;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -102,9 +102,18 @@ abstract class RustLibApi extends BaseApi {
     required String capability,
     required int localPort,
     String? directAddress,
+    String? ticket,
+  });
+
+  Future<String> crateApiSimpleNativeTicketExport({required NativeTicket that});
+
+  Future<TicketMetadata> crateApiSimpleNativeTicketMetadata({
+    required NativeTicket that,
   });
 
   Future<NativeClient> crateApiSimpleCreateClient();
+
+  Future<NativeTicket> crateApiSimpleParseTicket({required String value});
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_NativeAttachment;
@@ -122,6 +131,14 @@ abstract class RustLibApi extends BaseApi {
   get rust_arc_decrement_strong_count_NativeClient;
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_NativeClientPtr;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_NativeTicket;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_NativeTicket;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_NativeTicketPtr;
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -318,6 +335,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String capability,
     required int localPort,
     String? directAddress,
+    String? ticket,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -331,6 +349,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(capability, serializer);
           sse_encode_u_16(localPort, serializer);
           sse_encode_opt_String(directAddress, serializer);
+          sse_encode_opt_String(ticket, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -344,7 +363,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiSimpleNativeClientStartConstMeta,
-        argValues: [that, hostId, capability, localPort, directAddress],
+        argValues: [that, hostId, capability, localPort, directAddress, ticket],
         apiImpl: this,
       ),
     );
@@ -359,7 +378,77 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "capability",
           "localPort",
           "directAddress",
+          "ticket",
         ],
+      );
+
+  @override
+  Future<String> crateApiSimpleNativeTicketExport({
+    required NativeTicket that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleNativeTicketExportConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleNativeTicketExportConstMeta =>
+      const TaskConstMeta(debugName: "NativeTicket_export", argNames: ["that"]);
+
+  @override
+  Future<TicketMetadata> crateApiSimpleNativeTicketMetadata({
+    required NativeTicket that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_ticket_metadata,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSimpleNativeTicketMetadataConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleNativeTicketMetadataConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeTicket_metadata",
+        argNames: ["that"],
       );
 
   @override
@@ -371,7 +460,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -390,6 +479,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSimpleCreateClientConstMeta =>
       const TaskConstMeta(debugName: "create_client", argNames: []);
 
+  @override
+  Future<NativeTicket> crateApiSimpleParseTicket({required String value}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(value, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleParseTicketConstMeta,
+        argValues: [value],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleParseTicketConstMeta =>
+      const TaskConstMeta(debugName: "parse_ticket", argNames: ["value"]);
+
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_NativeAttachment => wire
       .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeAttachment;
@@ -405,6 +523,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RustArcDecrementStrongCountFnType
   get rust_arc_decrement_strong_count_NativeClient => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeClient;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_NativeTicket => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_NativeTicket => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket;
 
   @protected
   NativeAttachment
@@ -422,6 +548,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return NativeClientImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  NativeTicket
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return NativeTicketImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -443,6 +578,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  NativeTicket
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return NativeTicketImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   NativeAttachment
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeAttachment(
     dynamic raw,
@@ -461,9 +605,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  NativeTicket
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return NativeTicketImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   String dco_decode_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as String;
+  }
+
+  @protected
+  List<String> dco_decode_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_String).toList();
   }
 
   @protected
@@ -492,6 +651,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  TicketMetadata dco_decode_ticket_metadata(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return TicketMetadata(
+      hostId: dco_decode_String(arr[0]),
+      service: dco_decode_String(arr[1]),
+      serviceType: dco_decode_String(arr[2]),
+      peerRelayUrls: dco_decode_list_String(arr[3]),
+    );
   }
 
   @protected
@@ -555,6 +728,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  NativeTicket
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return NativeTicketImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   NativeAttachment
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeAttachment(
     SseDeserializer deserializer,
@@ -573,6 +758,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return NativeClientImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  NativeTicket
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return NativeTicketImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -603,10 +800,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  NativeTicket
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return NativeTicketImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_prim_u_8_strict(deserializer);
     return utf8.decoder.convert(inner);
+  }
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <String>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
   }
 
   @protected
@@ -644,6 +865,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  TicketMetadata sse_decode_ticket_metadata(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_hostId = sse_decode_String(deserializer);
+    var var_service = sse_decode_String(deserializer);
+    var var_serviceType = sse_decode_String(deserializer);
+    var var_peerRelayUrls = sse_decode_list_String(deserializer);
+    return TicketMetadata(
+      hostId: var_hostId,
+      service: var_service,
+      serviceType: var_serviceType,
+      peerRelayUrls: var_peerRelayUrls,
+    );
   }
 
   @protected
@@ -721,6 +957,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    NativeTicket self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as NativeTicketImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeAttachment(
     NativeAttachment self,
     SseSerializer serializer,
@@ -741,6 +990,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as NativeClientImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    NativeTicket self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as NativeTicketImpl).frbInternalSseEncode(move: false),
       serializer,
     );
   }
@@ -772,9 +1034,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeTicket(
+    NativeTicket self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as NativeTicketImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
+  }
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_String(item, serializer);
+    }
   }
 
   @protected
@@ -806,6 +1090,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_String(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_ticket_metadata(
+    TicketMetadata self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.hostId, serializer);
+    sse_encode_String(self.service, serializer);
+    sse_encode_String(self.serviceType, serializer);
+    sse_encode_list_String(self.peerRelayUrls, serializer);
   }
 
   @protected
@@ -925,11 +1221,39 @@ class NativeClientImpl extends RustOpaque implements NativeClient {
     required String capability,
     required int localPort,
     String? directAddress,
+    String? ticket,
   }) => RustLib.instance.api.crateApiSimpleNativeClientStart(
     that: this,
     hostId: hostId,
     capability: capability,
     localPort: localPort,
     directAddress: directAddress,
+    ticket: ticket,
   );
+}
+
+@sealed
+class NativeTicketImpl extends RustOpaque implements NativeTicket {
+  // Not to be used by end users
+  NativeTicketImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  NativeTicketImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
+    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_NativeTicket,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_NativeTicket,
+    rustArcDecrementStrongCountPtr:
+        RustLib.instance.api.rust_arc_decrement_strong_count_NativeTicketPtr,
+  );
+
+  Future<String> export_() =>
+      RustLib.instance.api.crateApiSimpleNativeTicketExport(that: this);
+
+  Future<TicketMetadata> metadata() =>
+      RustLib.instance.api.crateApiSimpleNativeTicketMetadata(that: this);
 }

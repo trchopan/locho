@@ -8,3 +8,4 @@ pub mod forward;
 pub use client::{Attachment, AttachmentStatus, Client, TcpOptions};
 pub use error::ClientError;
 pub use locho_core::session::{SessionState, TransportPath};
+pub use locho_core::ticket::{parse as parse_ticket, Ticket, TicketError};

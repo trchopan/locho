@@ -8,6 +8,7 @@ pub enum ClientError {
     RuntimeRequired,
     InvalidHostId,
     InvalidDirectAddress,
+    InvalidPeerRelay,
     InvalidCapability(CapabilityError),
     UnsupportedService,
     InvalidTimeout,
@@ -33,6 +34,7 @@ impl fmt::Display for ClientError {
                 Self::InvalidDirectAddress => {
                     "direct address requires a specific IP and nonzero port"
                 }
+                Self::InvalidPeerRelay => "invalid peer relay hint",
                 Self::UnsupportedService => "native attachment requires a TCP capability",
                 Self::InvalidTimeout => "startup timeout must be nonzero and at most 300 seconds",
                 Self::ListenerBind => "could not bind local TCP listener",

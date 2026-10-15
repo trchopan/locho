@@ -75,8 +75,10 @@ with tempfile.TemporaryDirectory(prefix="flutter-smoke-", dir=ROOT / "target") a
         share = subprocess.check_output([str(binary), "share", "sample-api", "--config", str(config)],
                                         env=environment, text=True).split()
         defines = directory / "defines.json"
+        ticket = subprocess.check_output([str(binary), "share", "sample-api", "--config", str(config), "--ticket"], env=environment, text=True).strip()
         defines.touch(mode=0o600)
         defines.write_text(json.dumps({"LOCHO_HOST_ID": share[2], "LOCHO_CAPABILITY": share[3],
+                                     "LOCHO_TICKET": ticket,
                                      "LOCHO_DIRECT_ADDRESS": "" if "--discovery" in sys.argv else direct}))
         command = ["flutter", "test", "integration_test/tunnel_test.dart", "-d", DEVICE,
                    "--dart-define-from-file=" + str(defines)]

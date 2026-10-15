@@ -33,6 +33,9 @@ Future<T> _call<T>(Future<T> Function() operation) async {
       'cancelled',
       'invalidHostId',
       'invalidCapability',
+      'invalidTicket',
+      'conflictingOptions',
+      'invalidPeerRelay',
       'unsupportedService',
       'invalidDirectAddress',
       'invalidTimeout',
@@ -76,6 +79,29 @@ class LochoStatus {
   );
 }
 
+class LochoTicket {
+  final native.NativeTicket _native;
+  final String hostId;
+  final String service;
+  final String serviceType;
+  final List<String> peerRelayUrls;
+  LochoTicket._(this._native, native.TicketMetadata metadata)
+    : hostId = metadata.hostId,
+      service = metadata.service,
+      serviceType = metadata.serviceType,
+      peerRelayUrls = List.unmodifiable(metadata.peerRelayUrls);
+
+  static Future<LochoTicket> parse(String value) async {
+    await LochoClient.initialize();
+    final handle = await _call(() => native.parseTicket(value: value));
+    return LochoTicket._(handle, await _call(handle.metadata));
+  }
+
+  Future<String> export() => _call(_native.export_);
+  @override
+  String toString() => 'LochoTicket([REDACTED])';
+}
+
 class LochoClient {
   static Future<void>? _initializing;
   final native.NativeClient _native;
@@ -84,28 +110,42 @@ class LochoClient {
   Future<void>? _closing;
   LochoClient._(this._native);
 
+  static Future<void> initialize() async {
+    if (RustLib.instance.initialized) return;
+    await (_initializing ??= RustLib.init());
+  }
+
   static Future<LochoClient> create() async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       throw const LochoException('unsupportedPlatform');
     }
-    await (_initializing ??= RustLib.init());
+    await initialize();
     return LochoClient._(await _call(native.createClient));
   }
 
   Future<LochoAttachment> start({
-    required String hostId,
-    required String capability,
+    String? hostId,
+    String? capability,
+    LochoTicket? ticket,
     int localPort = 0,
     String? directAddress,
   }) async {
     if (_closed) throw const LochoException('closed');
+    if (ticket != null && (hostId != null || capability != null)) {
+      throw const LochoException('conflictingOptions');
+    }
+    if (ticket == null && (hostId == null || capability == null)) {
+      throw const LochoException('conflictingOptions');
+    }
     if (localPort < 0 || localPort > 65535) {
       throw const LochoException('invalidPort');
     }
+    final encodedTicket = ticket == null ? null : await ticket.export();
     final handle = await _call(
       () => _native.start(
-        hostId: hostId,
-        capability: capability,
+        hostId: hostId ?? '',
+        capability: capability ?? '',
+        ticket: encodedTicket,
         localPort: localPort,
         directAddress: directAddress,
       ),
@@ -133,8 +173,9 @@ class LochoClient {
   /// Covers setup and connection. Timeout cleans up even a late native start.
   /// Dart futures are not cancellable: retain the future to close its late result.
   Future<LochoAttachment> attach({
-    required String hostId,
-    required String capability,
+    String? hostId,
+    String? capability,
+    LochoTicket? ticket,
     int localPort = 0,
     String? directAddress,
     Duration connectTimeout = const Duration(seconds: 15),
@@ -147,6 +188,7 @@ class LochoClient {
     final starting = start(
       hostId: hostId,
       capability: capability,
+      ticket: ticket,
       localPort: localPort,
       directAddress: directAddress,
     );

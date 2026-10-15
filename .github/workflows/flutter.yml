@@ -39,6 +39,10 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed lib test example/lib example/integration_test
       - run: flutter analyze
       - run: flutter test
+      - run: cargo build --locked --manifest-path rust/Cargo.toml
+      - run: flutter test test/ticket_test.dart
+        env:
+          LOCHO_TEST_LIBRARY: ${{ github.workspace }}/packages/locho_flutter/rust/target/debug/liblocho_flutter.so
       - run: cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path rust/Cargo.toml
       - run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked

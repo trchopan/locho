@@ -57,8 +57,7 @@ import 'package:locho_flutter/locho_flutter.dart';
 
 final client = await LochoClient.create();
 final tunnel = await client.attach(
-  hostId: hostId,
-  capability: capability, // sample-api:tcp:<secret>
+  ticket: await LochoTicket.parse(ticketText),
   connectTimeout: const Duration(seconds: 15),
 );
 try {
@@ -76,8 +75,11 @@ try {
   or late results before reporting failure, and accepts up to 300 seconds. Native
   setup is itself bounded to 15 seconds; late-start cleanup can extend return time.
 - Optional `localPort` defaults zero; optional `directAddress` is development input.
-  Always IPv4 loopback, never arbitrary bind addresses. Tickets/custom relay wrapper
-  options are deferred; native Rust relay settings exist but are not exposed here.
+  Always IPv4 loopback, never arbitrary bind addresses. `LochoTicket.parse` uses the
+  Rust codec; metadata provides host/service/type/relay hints, `export()` explicitly
+  returns the credential, and `toString()` redacts it. Supply either a ticket or
+  explicit `hostId`/`capability`, never both. HTTP tickets fail with
+  `unsupportedService`. Native Rust relay settings exist but are not exposed in Dart.
 - `currentStatus` contains revision/state/path/port, terminal `errorCode` and latest
   sanitized `connectionErrorCode`; `snapshot()` refreshes it. `statuses` starts with
   the current snapshot, then coalesces watch updates. Each subscriber has one native
@@ -146,7 +148,7 @@ signing key for development, not store distribution.
 | Same device — malformed host, wrong-secret HTTP failure, timeout cleanup/port release | Passed in debug integration |
 | Same device — release attach/health/close twice | Passed |
 | Native 16 KiB ELF alignment | Checked by scripts/check-android-pages.py; physical 16 KiB OS pending |
-| iOS simulator/device compilation | CI workflow added; not locally verified (no Xcode) |
+| iOS simulator/device compilation | Passed hosted simulator/debug and unsigned-device/release CI through PR #91 |
 | Physical iOS, emulator execution, Wi-Fi/cellular and authenticated custom relay | Pending |
 | Full UI pause/resume/lock/unlock/manual network matrix | Pending; generation-based policy implemented in example |
 | External source-build consumer / standalone distribution | Pending |
@@ -154,3 +156,10 @@ signing key for development, not store distribution.
 This completes the Android attach/GET/close feasibility path, not the full platform
 G1 matrix. Tiny example is memory-only; full notes/login/remembered-session apps
 belong in `locho_sdk_examples`, sharing its API. No capability/ticket is saved.
+
+Ticket consumption follow-up: shared vectors pass through the real FRB library on
+macOS. CI builds a Linux native library and runs the same Dart conformance test with
+`LOCHO_TEST_LIBRARY`. The device harness now supplies a CLI-generated ticket for
+its first attachment; this new physical-device ticket path remains unverified until
+a device is available. Ticket hints and optional direct addresses are separate from
+client relay configuration. iroh does not guarantee ticket-array dialing order.
