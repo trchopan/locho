@@ -1,6 +1,7 @@
 mod addressing;
+mod http;
 
-use http::uri::Authority;
+use ::http::uri::Authority;
 use iroh::{
     address_lookup::PkarrPublisher, endpoint::presets, Endpoint, EndpointAddr, EndpointId, RelayUrl,
 };
@@ -39,6 +40,22 @@ impl WebCancellation {
 pub struct WebClient {
     session: Arc<PeerSession>,
     shutdown: CancellationToken,
+    requests: Arc<tokio::sync::Semaphore>,
+}
+
+#[wasm_bindgen]
+pub struct WebResponse {
+    metadata: String,
+    body: Vec<u8>,
+}
+#[wasm_bindgen]
+impl WebResponse {
+    pub fn metadata(&self) -> String {
+        self.metadata.clone()
+    }
+    pub fn body(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.body)
+    }
 }
 
 #[wasm_bindgen]
@@ -55,6 +72,26 @@ pub fn parse_ticket(value: String) -> Result<WebTicket, JsValue> {
 
 #[wasm_bindgen]
 impl WebTicket {
+    pub async fn request(
+        &self,
+        client: &WebClient,
+        options: String,
+        body: Vec<u8>,
+        cancellation: &WebCancellation,
+    ) -> Result<WebResponse, JsValue> {
+        if self.inner.capability().service_type != locho_core::service::ServiceType::Tcp {
+            return Err(JsValue::from_str("unsupportedService"));
+        }
+        let cap = self.inner.capability();
+        client
+            .request(
+                capability::format(&cap.service, &cap.service_type, &cap.secret),
+                options,
+                body,
+                cancellation,
+            )
+            .await
+    }
     pub fn metadata(&self) -> String {
         serde_json::json!({
             "hostId": self.inner.host_id(),
@@ -179,11 +216,66 @@ async fn connect_inner(
     Ok(WebClient {
         session,
         shutdown: CancellationToken::new(),
+        requests: Arc::new(tokio::sync::Semaphore::new(16)),
     })
 }
 
 #[wasm_bindgen]
 impl WebClient {
+    pub async fn request(
+        &self,
+        capability: String,
+        options: String,
+        body: Vec<u8>,
+        cancellation: &WebCancellation,
+    ) -> Result<WebResponse, JsValue> {
+        if self.shutdown.is_cancelled() {
+            return Err(JsValue::from_str("closed"));
+        }
+        if cancellation.token.is_cancelled() {
+            return Err(JsValue::from_str("cancelled"));
+        }
+        if options.len() > 128 * 1024 {
+            return Err(JsValue::from_str("requestLimit"));
+        }
+        let request: http::Request =
+            serde_json::from_str(&options).map_err(|_| JsValue::from_str("invalidRequest"))?;
+        let bytes = http::encode(&request, &body).map_err(JsValue::from_str)?;
+        let cap =
+            capability::parse(&capability).map_err(|_| JsValue::from_str("invalidCapability"))?;
+        let _permit = self
+            .requests
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| JsValue::from_str("resourceLimit"))?;
+        let duration = Duration::from_millis(request.timeout_ms.into());
+        let operation = timeout(duration, async {
+            let mut stream = self
+                .session
+                .open_tcp(&cap, duration, &cancellation.token)
+                .await
+                .map_err(map_error)?;
+            stream
+                .write_all(&bytes)
+                .await
+                .map_err(|_| JsValue::from_str("transport"))?;
+            let response = http::read(&mut stream, &request.method)
+                .await
+                .map_err(JsValue::from_str)?;
+            let metadata =
+                serde_json::to_string(&response).map_err(|_| JsValue::from_str("internal"))?;
+            Ok(WebResponse {
+                metadata,
+                body: response.body,
+            })
+        });
+        tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => Err(JsValue::from_str("closed")),
+            _ = cancellation.token.cancelled() => Err(JsValue::from_str("cancelled")),
+            result = operation => result.map_err(|_| JsValue::from_str("timeout"))?,
+        }
+    }
     pub fn status(&self) -> String {
         let status = self.session.snapshot();
         format!(

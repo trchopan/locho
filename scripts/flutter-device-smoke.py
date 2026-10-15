@@ -93,15 +93,18 @@ with tempfile.TemporaryDirectory(prefix="flutter-smoke-", dir=ROOT / "target") a
             android("install", "-r", str(ROOT / "packages/locho_flutter/example/build/app/outputs/flutter-apk/app-release.apk"))
             package = "dev.chop.locho.locho_flutter_example"
             android("shell", "am", "force-stop", package)
+            android("logcat", "-c")
             android("shell", "am", "start", "-n", package + "/.MainActivity")
             for _ in range(90):
                 time.sleep(1)
                 pid = android("shell", "pidof", package).strip()
+                if not pid:
+                    raise RuntimeError("Release smoke app exited before reporting its result")
                 output = android("logcat", "-d", "--pid=" + pid, "-s", "flutter:I")
                 if "LOCHO_RELEASE_SMOKE_FAIL" in output:
                     raise RuntimeError("Release device smoke failed")
                 if "LOCHO_RELEASE_SMOKE_PASS" in output:
-                    print("Physical Android release attach/health/close smoke passed.")
+                    print(f"Android release attach/health/close smoke passed on {DEVICE}.")
                     break
             else:
                 raise RuntimeError("Release device smoke timeout")

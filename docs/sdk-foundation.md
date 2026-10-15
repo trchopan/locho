@@ -38,6 +38,11 @@ startup and page-destruction cleanup bounds.
 
 ## Implemented Boundary
 
+The browser now also exposes a [buffered HTTP subset](browser-http.md), backed by
+bounded Rust framing and binary WASM responses. Local production integration passes
+48 browser cases including the pinned reference API health/login/notes/logout
+journey. Hosted Linux verification and external package delivery are separate gates.
+
 `crates/locho-core` owns:
 
 - Existing `locho/3` protocol constants, request/response serialization, bounded
@@ -156,7 +161,9 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
    interoperability vectors and explicit `locho share --ticket` output. SDK ticket
    consumption now uses the shared Rust parser through WASM and FRB, with redacted
    objects, metadata/export and peer hints. Local production browser and real FRB
-   vector tests pass; physical-device ticket acceptance and standalone packages remain open.
+   vector tests pass. Android 17/API 37 ARM64 emulator ticket debug/release runtime
+   checks pass on 16 KiB pages; physical-device ticket acceptance and standalone
+   packages remain open.
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
    against one versioned health/login/notes backend.
 

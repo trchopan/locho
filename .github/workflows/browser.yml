@@ -40,6 +40,14 @@ jobs:
         working-directory: packages/locho-web
       - run: npm run build:production
         working-directory: packages/locho-web
+      - uses: actions/checkout@v7
+        with:
+          repository: trchopan/locho_sdk_examples
+          ref: 310d6cf756c1b1d8ccd584c576c94f97e9c72a94
+          path: target/reference-api
+          persist-credentials: false
+      - run: npm ci && npm run build
+        working-directory: target/reference-api
       - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: packages/locho-web
       - run: npm run test:browser
@@ -48,6 +56,7 @@ jobs:
           LOCHO_N0_INTEGRATION: '1'
           LOCHO_HOST_BINARY: ${{ github.workspace }}/target/release/locho
           LOCHO_N0_FIXTURE_FILE: ${{ runner.temp }}/locho-web-n0-fixture.json
+          LOCHO_REFERENCE_API: ${{ github.workspace }}/target/reference-api
       - uses: actions/upload-artifact@v4
         with:
           name: locho-web-wasm-proof

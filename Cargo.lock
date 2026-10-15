@@ -1827,10 +1827,12 @@ name = "locho-web"
 version = "0.1.0"
 dependencies = [
  "http",
+ "httparse",
  "iroh",
  "locho-core",
  "n0-future",
  "ring",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",

@@ -136,7 +136,7 @@ The release harness builds autonomous `lib/release_smoke.dart`, installs it via 
 and waits for a fixed pass marker without logging inputs. Release APK uses a debug
 signing key for development, not store distribution.
 
-## Evidence — 2026-10-14
+## Evidence — 2026-10-14 and 2026-10-15
 
 | Check | Result |
 | --- | --- |
@@ -148,8 +148,11 @@ signing key for development, not store distribution.
 | Same device — malformed host, wrong-secret HTTP failure, timeout cleanup/port release | Passed in debug integration |
 | Same device — release attach/health/close twice | Passed |
 | Native 16 KiB ELF alignment | Checked by scripts/check-android-pages.py; physical 16 KiB OS pending |
+| emulator-5554, Android 17/API 37, arm64-v8a, 16384-byte pages — CLI-ticket debug integration | Passed 2026-10-15: ticket attach/health, close/reconnect, client recreation, invalid host, wrong secret and timeout/port cleanup |
+| Same 16 KiB emulator — CLI-ticket ARM64 release smoke | Passed 2026-10-15: build/install and two ticket attach/health/close cycles |
+| Release APK ELF/ZIP alignment | Four native libraries passed ELF LOAD alignment; zipalign -c -P 16 passed |
 | iOS simulator/device compilation | Passed hosted simulator/debug and unsigned-device/release CI through PR #91 |
-| Physical iOS, emulator execution, Wi-Fi/cellular and authenticated custom relay | Pending |
+| Physical iOS, physical-device ticket acceptance, Wi-Fi/cellular and authenticated custom relay | Pending |
 | Full UI pause/resume/lock/unlock/manual network matrix | Pending; generation-based policy implemented in example |
 | External source-build consumer / standalone distribution | Pending |
 
@@ -159,7 +162,13 @@ belong in `locho_sdk_examples`, sharing its API. No capability/ticket is saved.
 
 Ticket consumption follow-up: shared vectors pass through the real FRB library on
 macOS. CI builds a Linux native library and runs the same Dart conformance test with
-`LOCHO_TEST_LIBRARY`. The device harness now supplies a CLI-generated ticket for
-its first attachment; this new physical-device ticket path remains unverified until
-a device is available. Ticket hints and optional direct addresses are separate from
+`LOCHO_TEST_LIBRARY`. The device harness supplies a CLI-generated ticket for
+its first debug attachment and both release cycles. This path passes on the 16 KiB
+ARM64 emulator; physical-device ticket acceptance remains unverified. These runs use
+a direct-address candidate and do not establish a relay path. Ticket hints and optional direct addresses are separate from
 client relay configuration. iroh does not guarantee ticket-array dialing order.
+
+Reproduce from the root after building the release CLI and reference API:
+`python3 scripts/flutter-device-smoke.py emulator-5554` and the same command with
+`--release`. Confirm the target with `adb shell getprop ro.product.cpu.abi` and
+`adb shell getconf PAGE_SIZE`. Release uses development signing, not store signing.
