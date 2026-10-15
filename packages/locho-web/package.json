@@ -8,7 +8,7 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:production": "vite build examples/minimal --outDir dist/browser --emptyOutDir",
     "dev": "vite examples/minimal",
-    "preview": "vite preview dist/browser",
+    "preview": "vite preview --outDir dist/browser",
     "test:browser": "playwright test"
   },
   "devDependencies": {
