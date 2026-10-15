@@ -8,6 +8,19 @@ export class LochoError extends Error {
   constructor(readonly code: string) { super(`Locho error: ${code}`); }
 }
 
+function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined, onAbort: () => void): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    onAbort();
+    return Promise.reject(new LochoError('cancelled'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => { onAbort(); reject(new LochoError('cancelled')); };
+    signal.addEventListener('abort', abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 type RawClient = {
   status(): string;
   health(capability: string, authority: string): Promise<string>;
@@ -29,14 +42,18 @@ export class LochoClient {
     await initWasm();
     if (options.signal?.aborted) throw new LochoError('cancelled');
     try {
-      const raw = await connectWasm(options.hostId, options.peerRelayUrl) as unknown as RawClient;
+      const operation = connectWasm(options.hostId, options.peerRelayUrl) as Promise<RawClient>;
+      const raw = await abortable(operation, options.signal, () => {
+        void operation.then((late) => late.close()).catch(() => undefined);
+      });
       return new LochoClient(raw);
     } catch (value) { throw error(value); }
   }
   get status(): LochoStatus { return status(this.raw); }
-  async health(capability: string, authority = 'sample-api'): Promise<Response> {
+  async health(capability: string, authority = 'sample-api', signal?: AbortSignal): Promise<Response> {
+    const operation = this.healthRaw(capability, authority);
     try {
-      const bytes = await this.raw.health(capability, authority);
+      const bytes = await abortable(operation, signal, () => { void this.close(); });
       const separator = bytes.indexOf('\r\n\r\n');
       const head = separator < 0 ? bytes : bytes.slice(0, separator);
       const body = separator < 0 ? '' : bytes.slice(separator + 4);
@@ -45,6 +62,9 @@ export class LochoClient {
       if (!Number.isInteger(statusCode)) throw new LochoError('invalidResponse');
       return new Response(body, { status: statusCode });
     } catch (value) { throw error(value); }
+  }
+  private async healthRaw(capability: string, authority: string): Promise<string> {
+    return this.raw.health(capability, authority);
   }
   close(): Promise<void> { return this.raw.close().catch((value) => { throw error(value); }); }
 }

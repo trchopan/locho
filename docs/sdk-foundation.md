@@ -18,6 +18,11 @@ wasm32 because its Apple Clang lacks a WebAssembly target; controlled Linux CI o
 the first WASM evidence. No browser API or ticket compatibility claim is made until
 the WASM build and relay proof pass.
 
+The follow-up proof adds bounded response framing, authority validation, startup and
+request cancellation hooks, late-connect cleanup, and production Playwright asset
+loading tests for Chromium/Firefox/WebKit. Real host/relay credentials remain an
+opt-in integration fixture; default CI does not claim a real relay path.
+
 ## Implemented Boundary
 
 `crates/locho-core` owns:
