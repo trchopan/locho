@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 locho-core = { path = "../locho-core", version = "0.1.0", features = ["web-transport"] }
 http = "1"
+url = "2"
 iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"] }
 ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 n0-future = "0.3"

@@ -1,5 +1,9 @@
+mod addressing;
+
 use http::uri::Authority;
-use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, RelayUrl};
+use iroh::{
+    address_lookup::PkarrPublisher, endpoint::presets, Endpoint, EndpointAddr, EndpointId, RelayUrl,
+};
 use locho_core::{
     capability,
     session::{PeerSession, SessionError},
@@ -46,10 +50,14 @@ pub async fn connect(
         .map(|relay| {
             relay
                 .parse::<RelayUrl>()
+                .map(addressing::relay_url)
                 .map_err(|_| JsValue::from_str("invalidPeerRelay"))
         })
         .transpose()?;
     let endpoint = Endpoint::builder(presets::N0)
+        .clear_address_lookup()
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(addressing::BrowserLookup)
         .bind()
         .await
         .map_err(|_| JsValue::from_str("endpointBind"))?;
