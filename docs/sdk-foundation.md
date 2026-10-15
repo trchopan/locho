@@ -20,8 +20,11 @@ the WASM build and relay proof pass.
 
 The follow-up proof adds bounded response framing, authority validation, startup and
 request cancellation hooks, late-connect cleanup, and production Playwright asset
-loading tests for Chromium/Firefox/WebKit. Real host/relay credentials remain an
-opt-in integration fixture; default CI does not claim a real relay path.
+loading tests for Chromium/Firefox/WebKit. Controlled CI now starts a real Locho
+host and TCP health backend and exercises the browser through the official N0 relay
+using an explicit peer relay hint derived from N0 diagnostics. Browser-side
+host-ID-only discovery, custom authenticated relay and stale-hint behavior remain
+separate evidence.
 
 ## Implemented Boundary
 
@@ -135,7 +138,8 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
 ## Remaining Integration Gates
 
 1. Browser `wasm32-unknown-unknown` crypto/runtime/discovery/relay proof against a
-   real host; record custom relay authentication and stale peer-hint behavior.
+   real host is covered through the official N0 relay; record custom relay
+   authentication and stale peer-hint behavior separately.
 2. FRB runtime/native packaging and physical iOS/Android attach/GET/close proof on
    the implemented native loopback attachment adapter.
 3. Freeze ticket addressing schema after the connectivity proof; implement parser,

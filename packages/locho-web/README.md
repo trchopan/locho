@@ -30,7 +30,7 @@ build result, generated artifact versions and integration evidence.
 ## Proof API
 
 ```ts
-const client = await LochoClient.connect({ hostId });
+const client = await LochoClient.connect({ hostId, peerRelayUrl });
 const response = await client.health(capability, 'sample-api');
 console.log(response.status, await response.text());
 await client.close();
@@ -47,15 +47,20 @@ discard stale results after restoration, and keep credentials out of logs/URLs.
 The minimal page is intentionally not a production authentication UI.
 
 Playwright's default matrix verifies production asset loading in Chromium, Firefox
-and WebKit. The real-host test is skipped unless `LOCHO_HOST_ID` and
-`LOCHO_CAPABILITY` are supplied. A controlled relay/host harness must set those
-values and `LOCHO_BROWSER_URL`; public-relay smoke remains separate evidence.
+and WebKit. The controlled CI job additionally starts a real Locho host and local
+TCP health backend, then uses the official N0 relay/discovery configuration for
+the fixture. The browser request uses the host ID and an explicit peer relay hint
+derived from N0 diagnostics, so browser-side host-ID-only discovery remains a
+separate gate. It sets `LOCHO_N0_INTEGRATION=1` and
+`LOCHO_HOST_BINARY`; the global setup derives temporary credentials and cleans
+up the host/backend processes. This is public-network evidence and can fail when
+N0 discovery or relay service is unavailable.
 
 ## Feasibility evidence
 
 Required before freezing browser tickets/API:
 
-- Controlled browser relay/TLS connection to an existing Locho host.
+- Controlled browser relay/TLS connection to a real Locho host through the official N0 relay.
 - Host-ID discovery, explicit peer hint, stale-hint fallback behavior.
 - Chromium, Firefox, WebKit and mobile-browser smoke.
 - Wrong capability, stopped upstream, interruption, cancellation and close cleanup.
