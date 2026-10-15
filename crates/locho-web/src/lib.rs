@@ -1,7 +1,7 @@
+use http::uri::Authority;
 use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, RelayUrl};
 use locho_core::{
     capability,
-    protocol::MAX_BODY_LEN,
     session::{PeerSession, SessionError},
 };
 use n0_future::time::{timeout, Duration};
@@ -9,6 +9,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::prelude::*;
+
+const MAX_HEALTH_RESPONSE: usize = 8 * 1024 * 1024;
+const MAX_HEALTH_HEADERS: usize = 64 * 1024;
 
 #[wasm_bindgen]
 pub struct WebClient {
@@ -36,18 +39,22 @@ pub async fn connect(
     host_id: String,
     peer_relay_url: Option<String>,
 ) -> Result<WebClient, JsValue> {
+    let id: EndpointId = host_id
+        .parse()
+        .map_err(|_| JsValue::from_str("invalidHostId"))?;
+    let peer_relay = peer_relay_url
+        .map(|relay| {
+            relay
+                .parse::<RelayUrl>()
+                .map_err(|_| JsValue::from_str("invalidPeerRelay"))
+        })
+        .transpose()?;
     let endpoint = Endpoint::builder(presets::N0)
         .bind()
         .await
         .map_err(|_| JsValue::from_str("endpointBind"))?;
-    let id: EndpointId = host_id
-        .parse()
-        .map_err(|_| JsValue::from_str("invalidHostId"))?;
     let mut target = EndpointAddr::new(id);
-    if let Some(relay) = peer_relay_url {
-        let relay: RelayUrl = relay
-            .parse()
-            .map_err(|_| JsValue::from_str("invalidPeerRelay"))?;
+    if let Some(relay) = peer_relay {
         target = target.with_relay_url(relay);
     }
     let (session, driver) = PeerSession::start(endpoint, target);
@@ -85,17 +92,23 @@ impl WebClient {
     /// Proof request only: returns raw HTTP/1.1 response bytes as UTF-8 text.
     /// The complete Fetch-like API and streaming bodies are later milestones.
     pub async fn health(&self, capability: String, authority: String) -> Result<String, JsValue> {
+        let authority: Authority = authority
+            .parse()
+            .map_err(|_| JsValue::from_str("invalidAuthority"))?;
+        if authority.as_str().contains(['\r', '\n']) {
+            return Err(JsValue::from_str("invalidAuthority"));
+        }
         let capability =
             capability::parse(&capability).map_err(|_| JsValue::from_str("invalidCapability"))?;
         let cancel = CancellationToken::new();
-        let mut stream = self
-            .session
-            .open_tcp(&capability, Duration::from_secs(15), &cancel)
-            .await
-            .map_err(map_error)?;
-        let request =
-            format!("GET /health HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
         timeout(Duration::from_secs(15), async {
+            let mut stream = self
+                .session
+                .open_tcp(&capability, Duration::from_secs(15), &cancel)
+                .await
+                .map_err(map_error)?;
+            let request =
+                format!("GET /health HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
             stream
                 .write_all(request.as_bytes())
                 .await
@@ -110,11 +123,12 @@ impl WebClient {
                 if count == 0 {
                     break;
                 }
-                if response.len() + count > MAX_BODY_LEN {
+                if response.len() + count > MAX_HEALTH_RESPONSE {
                     return Err(JsValue::from_str("responseLimit"));
                 }
                 response.extend_from_slice(&buffer[..count]);
             }
+            validate_health_response(&response).map_err(JsValue::from_str)?;
             String::from_utf8(response).map_err(|_| JsValue::from_str("invalidResponse"))
         })
         .await
@@ -123,5 +137,86 @@ impl WebClient {
 
     pub async fn close(&self) -> Result<(), JsValue> {
         self.session.close().await.map_err(map_error)
+    }
+}
+
+fn validate_health_response(response: &[u8]) -> Result<(), &'static str> {
+    let separator = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or("invalidResponse")?;
+    if separator > MAX_HEALTH_HEADERS {
+        return Err("responseLimit");
+    }
+    let head = std::str::from_utf8(&response[..separator]).map_err(|_| "invalidResponse")?;
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().ok_or("invalidResponse")?;
+    let mut status = status_line.split(' ');
+    if status.next() != Some("HTTP/1.1")
+        || !status
+            .next()
+            .and_then(|value| value.parse::<u16>().ok())
+            .is_some_and(|value| (100..=599).contains(&value))
+    {
+        return Err("invalidResponse");
+    }
+    let mut content_length = None;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err("invalidResponse");
+        };
+        if name.is_empty() || value.contains(['\r', '\n']) {
+            return Err("invalidResponse");
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("unsupportedFraming");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            let value = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "invalidResponse")?;
+            if content_length.is_some_and(|previous| previous != value) {
+                return Err("invalidResponse");
+            }
+            content_length = Some(value);
+        }
+    }
+    let body = &response[separator + 4..];
+    if content_length.is_some_and(|length| length != body.len()) {
+        return Err("truncatedResponse");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_bounded_content_length_health_response() {
+        validate_health_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_truncated_health_framing() {
+        for response in [
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nok".as_slice(),
+        ] {
+            assert!(validate_health_response(response).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_headers() {
+        let mut response = b"HTTP/1.1 200 OK\r\nX-Header: ".to_vec();
+        response.resize(MAX_HEALTH_HEADERS + 1, b'a');
+        response.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(
+            validate_health_response(&response).unwrap_err(),
+            "responseLimit"
+        );
     }
 }

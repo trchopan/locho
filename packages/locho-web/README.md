@@ -16,6 +16,9 @@ cargo install wasm-bindgen-cli --version 0.2.126 --locked
 npm install
 npm run build:wasm
 npm run build
+npm run build:production
+npx playwright install chromium firefox webkit
+npm run test:browser
 npm run dev
 ```
 
@@ -42,6 +45,11 @@ mean capability/upstream/API readiness.
 The API does not automatically retry or replay. Close on page lifecycle changes,
 discard stale results after restoration, and keep credentials out of logs/URLs.
 The minimal page is intentionally not a production authentication UI.
+
+Playwright's default matrix verifies production asset loading in Chromium, Firefox
+and WebKit. The real-host test is skipped unless `LOCHO_HOST_ID` and
+`LOCHO_CAPABILITY` are supplied. A controlled relay/host harness must set those
+values and `LOCHO_BROWSER_URL`; public-relay smoke remains separate evidence.
 
 ## Feasibility evidence
 

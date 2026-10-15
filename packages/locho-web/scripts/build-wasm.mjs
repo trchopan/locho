@@ -13,5 +13,5 @@ function run(command, args, cwd) {
     child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`${command} exited ${code}`)));
   });
 }
-await run('cargo', ['build', '--release', '-p', 'locho-web', '--target', 'wasm32-unknown-unknown'], root);
+await run('cargo', ['build', '--locked', '--release', '-p', 'locho-web', '--target', 'wasm32-unknown-unknown'], root);
 await run('wasm-bindgen', [resolve(root, 'target/wasm32-unknown-unknown/release/locho_web.wasm'), '--target', 'web', '--out-dir', out], root);
