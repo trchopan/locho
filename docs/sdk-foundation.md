@@ -13,18 +13,20 @@ remaining platform/network/distribution gates are separate from that evidence.
 
 The browser feasibility scaffold is `crates/locho-web` plus `packages/locho-web`.
 It reuses the shared peer session and authorization path and currently exposes only
-a raw `/health` proof. This development Mac cannot compile ring's C code for
-wasm32 because its Apple Clang lacks a WebAssembly target; controlled Linux CI owns
-the first WASM evidence. No browser API or ticket compatibility claim is made until
-the WASM build and relay proof pass.
+a raw `/health` proof. Controlled Linux CI builds WASM and exercises the official
+N0 relay. Local macOS builds also work with a WebAssembly-capable LLVM compiler
+instead of Apple Clang. The proof is not a final browser API or ticket contract.
 
 The follow-up proof adds bounded response framing, authority validation, startup and
 request cancellation hooks, late-connect cleanup, and production Playwright asset
 loading tests for Chromium/Firefox/WebKit. Controlled CI now starts a real Locho
 host and TCP health backend and exercises the browser through the official N0 relay
-using an explicit peer relay hint derived from N0 diagnostics. Browser-side
-host-ID-only discovery, custom authenticated relay and stale-hint behavior remain
-separate evidence.
+using a peer relay hint derived from N0 diagnostics. The follow-up addressing matrix
+adds host-ID-only discovery, dotted hints and unreachable-hint recovery in fresh
+browser contexts. The browser adapter normalizes DNS root dots in hints and verified
+Pkarr results while retaining N0 publishing. Local macOS production WASM passed all
+18 cases on 2026-10-15; hosted Linux results remain a separate gate. Custom
+authenticated relays and live relay migration remain separate evidence.
 
 ## Implemented Boundary
 

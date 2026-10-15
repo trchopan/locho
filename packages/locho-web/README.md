@@ -22,8 +22,9 @@ npm run test:browser
 npm run dev
 ```
 
-The current development machine's Apple Clang lacks a wasm C target for ring;
-use the controlled Linux CI runner or a WebAssembly-capable LLVM installation.
+Apple Clang lacks a wasm C target for ring; use the controlled Linux CI runner
+or a WebAssembly-capable LLVM installation. For Homebrew LLVM, build with
+`CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang npm run build:wasm`.
 Do not claim browser feasibility from native builds. CI records the actual browser
 build result, generated artifact versions and integration evidence.
 
@@ -49,12 +50,25 @@ The minimal page is intentionally not a production authentication UI.
 Playwright's default matrix verifies production asset loading in Chromium, Firefox
 and WebKit. The controlled CI job additionally starts a real Locho host and local
 TCP health backend, then uses the official N0 relay/discovery configuration for
-the fixture. The browser request uses the host ID and an explicit peer relay hint
-derived from N0 diagnostics, so browser-side host-ID-only discovery remains a
-separate gate. It sets `LOCHO_N0_INTEGRATION=1` and
-`LOCHO_HOST_BINARY`; the global setup derives temporary credentials and cleans
+the fixture. The addressing matrix uses fresh browser contexts for a correct
+explicit hint, host-ID-only discovery, a dotted DNS hostname, and an unreachable
+hint (`https://127.0.0.1:1/`). Every case asserts the relay path and exact health
+response. It sets `LOCHO_N0_INTEGRATION=1`, `LOCHO_N0_FIXTURE_FILE` (a private
+temporary path) and `LOCHO_HOST_BINARY`; setup derives credentials and cleans
 up the host/backend processes. This is public-network evidence and can fail when
 N0 discovery or relay service is unavailable.
+
+The browser adapter normalizes a trailing DNS root dot in explicit hints and
+verified N0 Pkarr lookup results before handing addresses to the transport. The
+N0 publisher, signed-record verification, identity verification and startup deadline
+are retained. iroh performs discovery alongside address hints; the adapter does not
+retry or replay HTTP requests. WebSocket/error counts are attached as sanitized
+test diagnostics without retaining URLs, headers or frames.
+
+Local macOS production WASM verification on 2026-10-15 passed all 18 cases in
+Chromium, Firefox and WebKit. This includes recovery from an unreachable hint;
+it does not simulate migration between two live relays or an authenticated relay.
+Hosted Linux verification remains separate evidence for this change.
 
 ## Feasibility evidence
 

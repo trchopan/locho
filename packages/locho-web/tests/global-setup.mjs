@@ -25,7 +25,7 @@ function waitForHost(child) {
   return new Promise((resolve, reject) => {
     let output = '';
     const timer = setTimeout(() => {
-      reject(new Error(`timed out waiting for locho host; output: ${output}`));
+      finish(new Error(`timed out waiting for locho host; output: ${output}`));
     }, 30_000);
     const finish = (error, hostId) => {
       clearTimeout(timer);
@@ -37,7 +37,7 @@ function waitForHost(child) {
       else resolve(hostId);
     };
     const onOutput = (chunk) => {
-      output += chunk.toString();
+      output = (output + chunk.toString()).slice(-16 * 1024);
       const match = output.match(/host id:\s*([^\s]+)/i);
       if (match) finish(undefined, match[1]);
     };
@@ -82,17 +82,17 @@ async function waitForRelay(binary, hostId, env) {
 }
 
 async function stopHost(child) {
+  if (!child.pid) return;
   if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill('SIGTERM');
   await new Promise((resolve) => {
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      resolve();
     }, 10_000);
     child.once('exit', () => {
       clearTimeout(timer);
       resolve();
     });
+    child.kill('SIGTERM');
   });
 }
 
@@ -105,6 +105,7 @@ export default async function globalSetup() {
   if (!fixtureFile) throw new Error('LOCHO_N0_FIXTURE_FILE is required for N0 integration');
 
   const stateDir = await mkdtemp(join(tmpdir(), 'locho-web-n0-'));
+  let host;
   const upstream = createServer((request, response) => {
     if (request.method === 'GET' && request.url === '/health') {
       response.writeHead(200, {
@@ -118,20 +119,33 @@ export default async function globalSetup() {
     response.writeHead(404, { Connection: 'close' });
     response.end();
   });
-  const upstreamPort = await listen(upstream);
-  const configPath = join(stateDir, 'locho.toml');
-  await writeFile(
-    configPath,
-    `[[services]]\nname = "${SERVICE}"\ntype = "tcp"\nendpoint = "127.0.0.1:${upstreamPort}"\n`,
-  );
-
-  const env = { ...process.env, LOCHO_STATE_DIR: stateDir };
-  const host = spawn(binary, ['host', '--config', configPath], {
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const cleanup = async () => {
+    try {
+      if (host) await stopHost(host);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise((resolve) => upstream.close(resolve));
+      await rm(fixtureFile, { force: true });
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  };
   try {
+    const upstreamPort = await listen(upstream);
+    const configPath = join(stateDir, 'locho.toml');
+    await writeFile(
+      configPath,
+      `[[services]]\nname = "${SERVICE}"\ntype = "tcp"\nendpoint = "127.0.0.1:${upstreamPort}"\n`,
+    );
+
+    const env = { ...process.env, LOCHO_STATE_DIR: stateDir };
+    host = spawn(binary, ['host', '--config', configPath], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const hostId = await waitForHost(host);
+    // Continue draining output after readiness so a full pipe cannot stall the host.
+    host.stdout.resume();
+    host.stderr.resume();
     const share = await runCommand(binary, ['share', SERVICE, '--config', configPath], env);
     const match = share.stdout.match(new RegExp(`locho attach (\\S+) (${SERVICE}:tcp:\\S+)`));
     if (!match || match[1] !== hostId) {
@@ -151,17 +165,9 @@ export default async function globalSetup() {
       { encoding: 'utf8', mode: 0o600 },
     );
 
-    return async () => {
-      await stopHost(host);
-      await new Promise((resolve) => upstream.close(resolve));
-      await rm(fixtureFile, { force: true });
-      await rm(stateDir, { recursive: true, force: true });
-    };
+    return cleanup;
   } catch (error) {
-    await stopHost(host);
-    await new Promise((resolve) => upstream.close(resolve));
-    await rm(fixtureFile, { force: true });
-    await rm(stateDir, { recursive: true, force: true });
+    await cleanup();
     throw error;
   }
 }
