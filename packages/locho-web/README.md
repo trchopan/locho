@@ -49,7 +49,9 @@ The minimal page is intentionally not a production authentication UI.
 Playwright's default matrix verifies production asset loading in Chromium, Firefox
 and WebKit. The controlled CI job additionally starts a real Locho host and local
 TCP health backend, then uses the official N0 relay/discovery configuration for
-the browser request. It sets `LOCHO_N0_INTEGRATION=1` and
+the fixture. The browser request uses the host ID and an explicit peer relay hint
+derived from N0 diagnostics, so browser-side host-ID-only discovery remains a
+separate gate. It sets `LOCHO_N0_INTEGRATION=1` and
 `LOCHO_HOST_BINARY`; the global setup derives temporary credentials and cleans
 up the host/backend processes. This is public-network evidence and can fail when
 N0 discovery or relay service is unavailable.

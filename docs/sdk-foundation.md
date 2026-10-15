@@ -22,7 +22,8 @@ The follow-up proof adds bounded response framing, authority validation, startup
 request cancellation hooks, late-connect cleanup, and production Playwright asset
 loading tests for Chromium/Firefox/WebKit. Controlled CI now starts a real Locho
 host and TCP health backend and exercises the browser through the official N0 relay
-and discovery path. Custom authenticated relay and stale-hint behavior remain
+using an explicit peer relay hint derived from N0 diagnostics. Browser-side
+host-ID-only discovery, custom authenticated relay and stale-hint behavior remain
 separate evidence.
 
 ## Implemented Boundary
