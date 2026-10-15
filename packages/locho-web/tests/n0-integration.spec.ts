@@ -16,6 +16,7 @@ test.describe('official N0 relay integration', () => {
     const values = fixture();
     await page.goto('/');
     await page.locator('#host').fill(values.hostId);
+    await page.locator('#peerRelay').fill(values.peerRelayUrl);
     await page.locator('#capability').fill(values.capability);
     await page.getByRole('button', { name: 'Connect and GET /health' }).click();
     await expect(page.locator('#output')).toContainText(
@@ -30,6 +31,7 @@ test.describe('official N0 relay integration', () => {
     const values = fixture();
     await page.goto('/');
     await page.locator('#host').fill(values.hostId);
+    await page.locator('#peerRelay').fill(values.peerRelayUrl);
     await page.locator('#capability').fill(values.capability.replace(/[^:]+$/, 'wrong-secret'));
     await page.getByRole('button', { name: 'Connect and GET /health' }).click();
     await expect(page.locator('#output')).toContainText('serviceRejected', { timeout: 30_000 });

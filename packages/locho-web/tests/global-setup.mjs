@@ -68,7 +68,9 @@ async function waitForRelay(binary, hostId, env) {
       const result = await runCommand(binary, ['diagnose', '--host-id', hostId], env);
       lastOutput = `${result.stdout}\n${result.stderr}`;
       console.log(`[N0 fixture] ${lastOutput.trim()}`);
-      return;
+      const match = lastOutput.match(/relay:\s+(https:\/\/[^)\s]+)/);
+      if (!match) throw new Error('N0 diagnostics did not report a relay URL');
+      return new URL(match[1]).toString();
     } catch (error) {
       lastOutput = `${error.stdout ?? ''}\n${error.stderr ?? ''}`;
       await sleep(5_000);
@@ -133,7 +135,7 @@ export default async function globalSetup() {
     if (!match || match[1] !== hostId) {
       throw new Error('unexpected share output for N0 fixture');
     }
-    await waitForRelay(binary, hostId, env);
+    const peerRelayUrl = await waitForRelay(binary, hostId, env);
 
     await writeFile(
       fixtureFile,
@@ -142,6 +144,7 @@ export default async function globalSetup() {
         expectedBody: BODY.trim(),
         expectedPath: 'relay',
         hostId,
+        peerRelayUrl,
       }),
       { encoding: 'utf8', mode: 0o600 },
     );

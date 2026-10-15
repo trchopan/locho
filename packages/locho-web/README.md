@@ -30,7 +30,7 @@ build result, generated artifact versions and integration evidence.
 ## Proof API
 
 ```ts
-const client = await LochoClient.connect({ hostId });
+const client = await LochoClient.connect({ hostId, peerRelayUrl });
 const response = await client.health(capability, 'sample-api');
 console.log(response.status, await response.text());
 await client.close();
