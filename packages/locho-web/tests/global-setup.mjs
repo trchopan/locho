@@ -70,7 +70,9 @@ async function waitForRelay(binary, hostId, env) {
       console.log(`[N0 fixture] ${lastOutput.trim()}`);
       const match = lastOutput.match(/relay:\s+(https:\/\/[^)\s]+)/);
       if (!match) throw new Error('N0 diagnostics did not report a relay URL');
-      return new URL(match[1]).toString();
+      const relay = new URL(match[1]);
+      relay.hostname = relay.hostname.replace(/\.$/, '');
+      return relay.toString();
     } catch (error) {
       lastOutput = `${error.stdout ?? ''}\n${error.stderr ?? ''}`;
       await sleep(5_000);
