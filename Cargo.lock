@@ -1832,6 +1832,7 @@ dependencies = [
  "ring",
  "tokio",
  "tokio-util",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

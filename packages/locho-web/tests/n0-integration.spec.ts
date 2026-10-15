@@ -1,8 +1,25 @@
-import { test, expect } from '@playwright/test';
+import { test as base, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const enabled = process.env.LOCHO_N0_INTEGRATION === '1';
 const fixtureFile = process.env.LOCHO_N0_FIXTURE_FILE;
+
+const test = base.extend<{ transportDiagnostics: void }>({
+  transportDiagnostics: [async ({ page }, use, testInfo) => {
+    // Counts only: never retain URLs, headers, frames, or capabilities in diagnostics.
+    const counts = { websockets: 0, socketErrors: 0, closedSockets: 0, pageErrors: 0 };
+    page.on('websocket', (socket) => {
+      counts.websockets += 1;
+      socket.on('socketerror', () => { counts.socketErrors += 1; });
+      socket.on('close', () => { counts.closedSockets += 1; });
+    });
+    page.on('pageerror', () => { counts.pageErrors += 1; });
+    await use();
+    await testInfo.attach('browser-transport-counts', {
+      body: JSON.stringify(counts), contentType: 'application/json',
+    });
+  }, { auto: true }],
+});
 
 function fixture() {
   if (!fixtureFile) throw new Error('LOCHO_N0_FIXTURE_FILE is required for N0 integration');
@@ -12,20 +29,25 @@ function fixture() {
 test.describe('official N0 relay integration', () => {
   test.skip(!enabled, 'N0 integration is enabled only by the controlled CI fixture');
 
-  test('reaches the real host and returns the health body through a relay', async ({ page }) => {
-    const values = fixture();
-    await page.goto('/');
-    await page.locator('#host').fill(values.hostId);
-    await page.locator('#peerRelay').fill(values.peerRelayUrl);
-    await page.locator('#capability').fill(values.capability);
-    await page.getByRole('button', { name: 'Connect and GET /health' }).click();
-    await expect(page.locator('#output')).toContainText(
-      `peer=connected/${values.expectedPath}`,
-      { timeout: 30_000 },
-    );
-    await expect(page.locator('#output')).toContainText('api=200');
-    await expect(page.locator('#output')).toContainText(values.expectedBody);
-  });
+  for (const addressing of ['explicit', 'discovery', 'dotted', 'stale'] as const) {
+    test(`reaches the real host through a relay with ${addressing} addressing`, async ({ page }) => {
+      const values = fixture();
+      const relay = new URL(values.peerRelayUrl);
+      if (addressing === 'dotted') relay.hostname += '.';
+      const hint = addressing === 'discovery' ? ''
+        : addressing === 'stale' ? 'https://127.0.0.1:1/' : relay.toString();
+      await page.goto('/');
+      await page.locator('#host').fill(values.hostId);
+      await page.locator('#peerRelay').fill(hint);
+      await page.locator('#capability').fill(values.capability);
+      await page.getByRole('button', { name: 'Connect and GET /health' }).click();
+      // Fail immediately on a terminal adapter error; never retry an HTTP request.
+      await expect(page.locator('#output')).not.toHaveText('connecting', { timeout: 27_000 });
+      await expect(page.locator('#output')).toHaveText(
+        `peer=connected/${values.expectedPath}\napi=200\n${values.expectedBody}\n`,
+      );
+    });
+  }
 
   test('rejects a wrong capability', async ({ page }) => {
     const values = fixture();
