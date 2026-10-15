@@ -1,5 +1,22 @@
 import initWasm, { connect as connectWasm, parse_ticket, WebTicket, WebClient, WebCancellation } from './generated/locho_web.js';
 
+export type LochoWasmInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+let initialization: Promise<void> | undefined;
+/** Optional explicit asset location. Configure before parsing tickets or connecting. */
+export function initializeLocho(input?: LochoWasmInput): Promise<void> {
+  if (!initialization) {
+    initialization = initWasm(input === undefined ? undefined : { module_or_path: input }).then(() => undefined);
+    initialization.catch(() => { initialization = undefined; });
+  }
+  return initialization;
+}
+const tickets = new WeakMap<LochoTicket, WebTicket>();
+function rawTicket(ticket: LochoTicket): WebTicket {
+  const raw = tickets.get(ticket);
+  if (!raw) throw new LochoError('invalidTicket');
+  return raw;
+}
+
 export type LochoState = 'starting' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closing' | 'closed';
 export type LochoPath = 'unknown' | 'direct' | 'relay' | 'mixed';
 
@@ -19,27 +36,17 @@ export interface LochoRequestOptions {
   timeoutMs?: number;
 }
 export class LochoTicket {
-  private constructor(private readonly raw: WebTicket) {}
+  private constructor(raw: WebTicket) { tickets.set(this, raw); }
   static async parse(value: string): Promise<LochoTicket> {
-    try { await initWasm(); return new LochoTicket(parse_ticket(value)); }
+    try { await initializeLocho(); return new LochoTicket(parse_ticket(value)); }
     catch (value) { throw error(value); }
   }
-  get metadata(): TicketMetadata { return JSON.parse(this.raw.metadata()); }
-  export(): string { return this.raw.export(); }
+  get metadata(): TicketMetadata { return JSON.parse(rawTicket(this).metadata()); }
+  export(): string { return rawTicket(this).export(); }
   toString(): string { return 'LochoTicket([REDACTED])'; }
   toJSON(): string { return this.toString(); }
   async connect(signal?: AbortSignal): Promise<LochoClient> {
     return LochoClient.connect({ ticket: this, signal });
-  }
-  /** @internal */
-  connectRaw(cancel: WebCancellation): Promise<RawClient> { return this.raw.connect(cancel); }
-  /** @internal */
-  healthRaw(client: RawClient, authority: string, cancel: WebCancellation): Promise<string> {
-    return this.raw.health(client, authority, cancel);
-  }
-  /** @internal */
-  requestRaw(client: RawClient, options: string, body: Uint8Array, cancel: WebCancellation) {
-    return this.raw.request(client, options, body, cancel);
   }
 }
 
@@ -74,9 +81,9 @@ export class LochoClient {
     }
     if (options.signal?.aborted) throw new LochoError('cancelled');
     try {
-      await initWasm();
+      await initializeLocho();
       return await cancellable(options.signal, async (cancel) => {
-        const raw = options.ticket ? await options.ticket.connectRaw(cancel)
+        const raw = options.ticket ? await rawTicket(options.ticket).connect(cancel)
           : await connectWasm(options.hostId!, options.peerRelayUrl, cancel) as RawClient;
         // Abort may race the completion of the WASM promise.
         if (options.signal?.aborted) {
@@ -119,7 +126,7 @@ export class LochoClient {
     catch { throw new LochoError('invalidHeader'); }
     const timeoutMs = options.timeoutMs ?? 15000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) throw new LochoError('invalidTimeout');
-    const raw = await cancellable(options.signal, (cancel) => this.ticket!.requestRaw(this.raw,
+    const raw = await cancellable(options.signal, (cancel) => rawTicket(this.ticket!).request(this.raw,
       JSON.stringify({ method, path, authority: this.authority, headers, timeout_ms: timeoutMs }), body, cancel));
     try {
       if (options.signal?.aborted) throw new LochoError('cancelled');
@@ -134,7 +141,7 @@ export class LochoClient {
     if (this.closing) throw new LochoError('closed');
     if (this.ticket ? capability !== undefined : capability === undefined) throw new LochoError('conflictingOptions');
     const bytes = await cancellable(signal, (cancel) => this.ticket
-      ? this.ticket.healthRaw(this.raw, authority, cancel) : this.raw.health(capability!, authority, cancel));
+      ? rawTicket(this.ticket).health(this.raw, authority, cancel) : this.raw.health(capability!, authority, cancel));
     if (signal?.aborted) throw new LochoError('cancelled');
     try {
       const separator = bytes.indexOf('\r\n\r\n');

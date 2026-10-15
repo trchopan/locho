@@ -167,5 +167,11 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
    against one versioned health/login/notes backend.
 
+Browser package delivery now builds an allowlisted ESM/types/WASM tarball with
+source/version metadata. A temporary external Vite consumer installs only that
+tarball, builds below `/sdk/`, and runs the N0/notes integration matrix. Public
+declarations contain no raw WASM handles. Hosted package evidence is pending;
+Flutter standalone source-build packaging remains the next delivery slice.
+
 The core API is an internal prerelease boundary and may evolve during these gates.
 No wire version change or new host configuration is introduced by this extraction.

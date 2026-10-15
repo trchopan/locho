@@ -7,9 +7,9 @@ export default defineConfig({
   use: { baseURL: process.env.LOCHO_BROWSER_URL ?? 'http://127.0.0.1:4173' },
   webServer: {
     command: 'python3 -m http.server 4173 --bind 127.0.0.1',
-    cwd: 'dist/browser',
-    url: 'http://127.0.0.1:4173',
-    reuseExistingServer: true,
+    cwd: process.env.LOCHO_BROWSER_DIST ?? 'dist/browser',
+    url: process.env.LOCHO_BROWSER_URL ?? 'http://127.0.0.1:4173',
+    reuseExistingServer: !process.env.LOCHO_BROWSER_DIST && !process.env.CI,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

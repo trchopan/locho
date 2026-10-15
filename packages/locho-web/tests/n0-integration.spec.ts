@@ -36,7 +36,7 @@ test.describe('official N0 relay integration', () => {
       if (addressing === 'dotted') relay.hostname += '.';
       const hint = addressing === 'discovery' ? ''
         : addressing === 'stale' ? 'https://127.0.0.1:1/' : relay.toString();
-      await page.goto('/');
+      await page.goto('./');
       await page.locator('#host').fill(values.hostId);
       await page.locator('#peerRelay').fill(hint);
       await page.locator('#capability').fill(values.capability);
@@ -51,7 +51,7 @@ test.describe('official N0 relay integration', () => {
 
   test('rejects a wrong capability', async ({ page }) => {
     const values = fixture();
-    await page.goto('/');
+    await page.goto('./');
     await page.locator('#host').fill(values.hostId);
     await page.locator('#peerRelay').fill(values.peerRelayUrl);
     await page.locator('#capability').fill(values.capability.replace(/[^:]+$/, 'wrong-secret'));

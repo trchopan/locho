@@ -38,6 +38,8 @@ jobs:
         working-directory: packages/locho-web
       - run: npm run build
         working-directory: packages/locho-web
+      - run: npm run build:package
+        working-directory: packages/locho-web
       - run: npm run build:production
         working-directory: packages/locho-web
       - uses: actions/checkout@v7
@@ -57,6 +59,17 @@ jobs:
           LOCHO_HOST_BINARY: ${{ github.workspace }}/target/release/locho
           LOCHO_N0_FIXTURE_FILE: ${{ runner.temp }}/locho-web-n0-fixture.json
           LOCHO_REFERENCE_API: ${{ github.workspace }}/target/reference-api
+      - run: npm run test:external
+        working-directory: packages/locho-web
+        env:
+          LOCHO_N0_INTEGRATION: '1'
+          LOCHO_HOST_BINARY: ${{ github.workspace }}/target/release/locho
+          LOCHO_N0_FIXTURE_FILE: ${{ runner.temp }}/locho-web-external-fixture.json
+          LOCHO_REFERENCE_API: ${{ github.workspace }}/target/reference-api
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locho-web-npm-package
+          path: packages/locho-web/dist/artifacts
       - uses: actions/upload-artifact@v4
         with:
           name: locho-web-wasm-proof

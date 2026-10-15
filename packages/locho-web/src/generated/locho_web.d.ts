@@ -1,4 +1,5 @@
-export default function init(input?: RequestInfo | URL | Response | BufferSource | WebAssembly.Module): Promise<void>;
+type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+export default function init(input?: InitInput | { module_or_path: InitInput }): Promise<unknown>;
 export class WebCancellation {
   constructor();
   cancel(): void;
