@@ -37,6 +37,28 @@ console.log(response.status, await response.text());
 await client.close();
 ```
 
+### Cancellation and close
+
+`connect({ hostId, signal })` and `health(capability, authority, signal)` accept
+an `AbortSignal`. Already-aborted calls reject with `LochoError.code === 'cancelled'`
+before endpoint/request work begins. Startup cancellation reaches Rust and waits
+for session cleanup before rejecting. WASM module initialization itself is not
+abortable. Endpoint binding and peer connection each have a 15-second deadline;
+session cleanup follows the shared core bounds.
+
+Health cancellation drops only the operation's authorized stream. Concurrent
+requests and the peer session remain usable. An active health operation interrupted
+by `close()` rejects with `closed`. Calls after close starts also reject with
+`closed`; repeated/concurrent close calls share the same completion promise.
+Close retains the shared core's bounded cleanup and final status. Abort/close races
+may resolve as `closed` when client shutdown wins. No application requests are
+automatically replayed.
+
+The interactive example aborts superseded operations and requests cleanup on
+`pagehide`, and ignores stale results. Browsers do not guarantee asynchronous
+cleanup finishes during page destruction; applications should explicitly await
+close when their own navigation lifecycle allows it.
+
 The optional peer relay URL is a host address hint, separate from client relay
 policy. The proof requests `/health` with a TCP service handshake and returns a
 standard `Response` assembled from the raw response. Application authority is
@@ -68,7 +90,14 @@ test diagnostics without retaining URLs, headers or frames.
 Local macOS production WASM verification on 2026-10-15 passed all 18 cases in
 Chromium, Firefox and WebKit. This includes recovery from an unreachable hint;
 it does not simulate migration between two live relays or an authenticated relay.
-Hosted Linux verification remains separate evidence for this change.
+PR #89 also passed hosted Linux verification for the addressing matrix.
+
+The lifecycle follow-up adds a production test entry point and controllable upstream
+fixture. Local macOS production WASM verification passed 33 tests across all three
+browsers: startup/pre-abort cancellation, independent concurrent traffic, stalled
+stream cancellation, active close, upstream interruption/unavailability and repeated
+close cycles. Tests observe upstream connection release and request counts; these
+are not heap-leak measurements. Hosted Linux lifecycle verification is pending.
 
 ## Feasibility evidence
 

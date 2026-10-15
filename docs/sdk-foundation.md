@@ -25,8 +25,16 @@ using a peer relay hint derived from N0 diagnostics. The follow-up addressing ma
 adds host-ID-only discovery, dotted hints and unreachable-hint recovery in fresh
 browser contexts. The browser adapter normalizes DNS root dots in hints and verified
 Pkarr results while retaining N0 publishing. Local macOS production WASM passed all
-18 cases on 2026-10-15; hosted Linux results remain a separate gate. Custom
+18 cases on 2026-10-15; PR #89 also passed hosted Linux verification. Custom
 authenticated relays and live relay migration remain separate evidence.
+
+Browser lifecycle hardening propagates operation-scoped cancellation into Rust,
+preserves typed errors, and shares close completion across repeated callers.
+Health abort drops its stream without closing independent traffic. The local
+production WASM matrix now passes 33 cases, including upstream-observed stream
+release, active close, interruption/unavailability and repeated cycles. Hosted
+Linux lifecycle evidence remains pending; see the browser package README for
+startup and page-destruction cleanup bounds.
 
 ## Implemented Boundary
 

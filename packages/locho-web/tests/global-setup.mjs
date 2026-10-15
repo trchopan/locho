@@ -106,8 +106,17 @@ export default async function globalSetup() {
 
   const stateDir = await mkdtemp(join(tmpdir(), 'locho-web-n0-'));
   let host;
+  const pending = new Map();
+  const requests = new Map();
   const upstream = createServer((request, response) => {
     if (request.method === 'GET' && request.url === '/health') {
+      const authority = request.headers.host;
+      requests.set(authority, (requests.get(authority) ?? 0) + 1);
+      if (authority?.startsWith('stall-')) {
+        pending.set(authority, response);
+        response.on('close', () => pending.delete(authority));
+        return;
+      }
       response.writeHead(200, {
         Connection: 'close',
         'Content-Length': Buffer.byteLength(BODY),
@@ -119,22 +128,34 @@ export default async function globalSetup() {
     response.writeHead(404, { Connection: 'close' });
     response.end();
   });
+  const control = createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    const authority = url.searchParams.get('authority');
+    if (request.method === 'POST' && url.pathname === '/interrupt') {
+      pending.get(authority)?.destroy();
+    }
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ active: pending.has(authority), requests: requests.get(authority) ?? 0 }));
+  });
   const cleanup = async () => {
     try {
       if (host) await stopHost(host);
     } finally {
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));
+      control.closeAllConnections();
+      await new Promise((resolve) => control.close(resolve));
       await rm(fixtureFile, { force: true });
       await rm(stateDir, { recursive: true, force: true });
     }
   };
   try {
     const upstreamPort = await listen(upstream);
+    const controlPort = await listen(control);
     const configPath = join(stateDir, 'locho.toml');
     await writeFile(
       configPath,
-      `[[services]]\nname = "${SERVICE}"\ntype = "tcp"\nendpoint = "127.0.0.1:${upstreamPort}"\n`,
+      `[[services]]\nname = "${SERVICE}"\ntype = "tcp"\nendpoint = "127.0.0.1:${upstreamPort}"\n\n[[services]]\nname = "unavailable"\ntype = "tcp"\nendpoint = "127.0.0.1:1"\n`,
     );
 
     const env = { ...process.env, LOCHO_STATE_DIR: stateDir };
@@ -152,6 +173,7 @@ export default async function globalSetup() {
       throw new Error('unexpected share output for N0 fixture');
     }
     const peerRelayUrl = await waitForRelay(binary, hostId, env);
+    const unavailable = await runCommand(binary, ['secret', 'unavailable', '--config', configPath], env);
 
     await writeFile(
       fixtureFile,
@@ -161,6 +183,8 @@ export default async function globalSetup() {
         expectedPath: 'relay',
         hostId,
         peerRelayUrl,
+        controlUrl: `http://127.0.0.1:${controlPort}`,
+        unavailableCapability: unavailable.stdout.trim(),
       }),
       { encoding: 'utf8', mode: 0o600 },
     );
