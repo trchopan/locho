@@ -3,8 +3,21 @@
   "version": "0.1.0-dev.1",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "description": "Browser Locho TCP tickets and buffered HTTP over WASM",
+  "repository": { "type": "git", "url": "https://github.com/trchopan/locho.git", "directory": "packages/locho-web" },
+  "main": "./dist/package/index.js",
+  "types": "./dist/package/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/package/index.d.ts", "import": "./dist/package/index.js" },
+    "./wasm": "./dist/package/generated/locho_web_bg.wasm"
+  },
+  "files": ["dist/package/", "LICENSE", "README.md"],
   "scripts": {
     "build": "tsc --noEmit",
+    "build:package": "node scripts/build-package.mjs",
+    "prepack": "npm run build:package",
+    "test:external": "node scripts/test-external.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:production": "vite build examples/minimal --config vite.config.ts --outDir ../../dist/browser --emptyOutDir",
     "dev": "vite examples/minimal",
