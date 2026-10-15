@@ -264,8 +264,8 @@ locho share api --config locho.toml --ticket
 ```
 
 See [portable tickets v1](docs/tickets.md) for optional peer relay hints, encoding,
-and credential handling. SDK ticket consumption is a follow-up; current clients
-still use separate host/capability options.
+and credential handling. Prerelease Flutter and browser wrappers accept the same
+ticket through the shared Rust parser; standalone package delivery remains pending.
 
 Check local state and configuration without printing capabilities:
 
