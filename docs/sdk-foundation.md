@@ -152,8 +152,9 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
    authentication and stale peer-hint behavior separately.
 2. FRB runtime/native packaging and physical iOS/Android attach/GET/close proof on
    the implemented native loopback attachment adapter.
-3. Freeze ticket addressing schema after the connectivity proof; implement parser,
-   shared vectors and explicit CLI ticket output.
+3. The [single-service ticket v1 contract](tickets.md) now has a shared core codec,
+   interoperability vectors and explicit `locho share --ticket` output. SDK ticket
+   consumption through the shared Rust parser is the next integration step.
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
    against one versioned health/login/notes backend.
 

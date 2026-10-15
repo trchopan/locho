@@ -68,6 +68,12 @@ enum Command {
         service: String,
         #[arg(long)]
         config: PathBuf,
+        /// Print a portable single-service ticket instead of an attachment command.
+        #[arg(long, conflicts_with_all = ["relay_config", "direct_address"])]
+        ticket: bool,
+        /// Optional host address hint included in the ticket, not client relay policy.
+        #[arg(long, requires = "ticket")]
+        peer_relay_url: Vec<String>,
         #[arg(long)]
         relay_config: Option<PathBuf>,
         #[arg(long)]
@@ -150,12 +156,23 @@ async fn main() -> Result<()> {
         Command::Share {
             service,
             config,
+            ticket,
+            peer_relay_url,
             relay_config,
             direct_address,
         } => {
             let service_type = service_type(&config, &service)?;
             let secret = state::read_service_secret(&service)?;
             let host_id = state::read_host_endpoint_id()?;
+            if ticket {
+                let value = locho_core::ticket::Ticket::new(
+                    &host_id.to_string(),
+                    &capability::format(&service, &service_type, &secret),
+                    peer_relay_url,
+                )?;
+                println!("{}", value.encode()?);
+                return Ok(());
+            }
             let attach_options = format_attach_options(direct_address, relay_config.as_deref());
             println!(
                 "locho attach {} {}{}",
