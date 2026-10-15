@@ -161,7 +161,9 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
    interoperability vectors and explicit `locho share --ticket` output. SDK ticket
    consumption now uses the shared Rust parser through WASM and FRB, with redacted
    objects, metadata/export and peer hints. Local production browser and real FRB
-   vector tests pass; physical-device ticket acceptance and standalone packages remain open.
+   vector tests pass. Android 17/API 37 ARM64 emulator ticket debug/release runtime
+   checks pass on 16 KiB pages; physical-device ticket acceptance and standalone
+   packages remain open.
 4. Deliver distributable Dart/npm packages and exercise external consuming apps
    against one versioned health/login/notes backend.
 

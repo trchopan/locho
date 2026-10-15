@@ -19,11 +19,20 @@ Future<void> smoke() async {
   final api = http.Client();
   try {
     client = await LochoClient.create();
+    const ticketText = String.fromEnvironment('LOCHO_TICKET');
+    final ticket = ticketText.isEmpty
+        ? null
+        : await LochoTicket.parse(ticketText);
     for (var attempt = 0; attempt < 2; attempt++) {
       const direct = String.fromEnvironment('LOCHO_DIRECT_ADDRESS');
       final attachment = await client.attach(
-        hostId: const String.fromEnvironment('LOCHO_HOST_ID'),
-        capability: const String.fromEnvironment('LOCHO_CAPABILITY'),
+        ticket: ticket,
+        hostId: ticket == null
+            ? const String.fromEnvironment('LOCHO_HOST_ID')
+            : null,
+        capability: ticket == null
+            ? const String.fromEnvironment('LOCHO_CAPABILITY')
+            : null,
         directAddress: direct.isEmpty ? null : direct,
       );
       final response = await api
@@ -39,7 +48,7 @@ Future<void> smoke() async {
       }
     }
     await client.close();
-    // Fixed marker consumed by the physical-device harness.
+    // Fixed marker consumed by the Android device/emulator harness.
     debugPrint('LOCHO_RELEASE_SMOKE_PASS');
   } catch (_) {
     debugPrint('LOCHO_RELEASE_SMOKE_FAIL');
