@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "build:wasm": "node scripts/build-wasm.mjs",
-    "build:production": "vite build examples/minimal --outDir ../../dist/browser --emptyOutDir",
+    "build:production": "vite build examples/minimal --config vite.config.ts --outDir ../../dist/browser --emptyOutDir",
     "dev": "vite examples/minimal",
     "preview": "vite preview --outDir dist/browser",
     "test:browser": "playwright test"

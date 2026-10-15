@@ -18,8 +18,27 @@ const MAX_HEALTH_RESPONSE: usize = 8 * 1024 * 1024;
 const MAX_HEALTH_HEADERS: usize = 64 * 1024;
 
 #[wasm_bindgen]
+#[derive(Default)]
+pub struct WebCancellation {
+    token: CancellationToken,
+}
+
+#[wasm_bindgen]
+impl WebCancellation {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.token.cancel();
+    }
+}
+
+#[wasm_bindgen]
 pub struct WebClient {
     session: Arc<PeerSession>,
+    shutdown: CancellationToken,
 }
 
 fn map_error(error: SessionError) -> JsValue {
@@ -42,7 +61,11 @@ fn map_error(error: SessionError) -> JsValue {
 pub async fn connect(
     host_id: String,
     peer_relay_url: Option<String>,
+    cancellation: &WebCancellation,
 ) -> Result<WebClient, JsValue> {
+    if cancellation.token.is_cancelled() {
+        return Err(JsValue::from_str("cancelled"));
+    }
     let id: EndpointId = host_id
         .parse()
         .map_err(|_| JsValue::from_str("invalidHostId"))?;
@@ -54,13 +77,18 @@ pub async fn connect(
                 .map_err(|_| JsValue::from_str("invalidPeerRelay"))
         })
         .transpose()?;
-    let endpoint = Endpoint::builder(presets::N0)
+    let builder = Endpoint::builder(presets::N0)
         .clear_address_lookup()
         .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(addressing::BrowserLookup)
-        .bind()
-        .await
-        .map_err(|_| JsValue::from_str("endpointBind"))?;
+        .address_lookup(addressing::BrowserLookup);
+    let endpoint = tokio::select! {
+        biased;
+        _ = cancellation.token.cancelled() => return Err(JsValue::from_str("cancelled")),
+        result = timeout(Duration::from_secs(15), builder.bind()) => {
+            result.map_err(|_| JsValue::from_str("startupTimeout"))?
+                .map_err(|_| JsValue::from_str("endpointBind"))?
+        }
+    };
     let mut target = EndpointAddr::new(id);
     if let Some(relay) = peer_relay {
         target = target.with_relay_url(relay);
@@ -68,22 +96,25 @@ pub async fn connect(
     let (session, driver) = PeerSession::start(endpoint, target);
     let session = Arc::new(session);
     wasm_bindgen_futures::spawn_local(driver.run());
-    match timeout(
+    let connected = tokio::select! {
+        biased;
+        _ = cancellation.token.cancelled() => Err(JsValue::from_str("cancelled")),
+        result = timeout(
         Duration::from_secs(15),
         session.wait_connected(Duration::from_secs(15)),
-    )
-    .await
-    {
-        Ok(Ok(())) => Ok(WebClient { session }),
-        Ok(Err(error)) => {
-            let _ = session.close().await;
-            Err(map_error(error))
-        }
-        Err(_) => {
-            let _ = session.close().await;
-            Err(JsValue::from_str("startupTimeout"))
-        }
+        ) => match result {
+            Ok(result) => result.map_err(map_error),
+            Err(_) => Err(JsValue::from_str("startupTimeout")),
+        },
+    };
+    if let Err(error) = connected {
+        let _ = session.close().await;
+        return Err(error);
     }
+    Ok(WebClient {
+        session,
+        shutdown: CancellationToken::new(),
+    })
 }
 
 #[wasm_bindgen]
@@ -99,7 +130,18 @@ impl WebClient {
 
     /// Proof request only: returns raw HTTP/1.1 response bytes as UTF-8 text.
     /// The complete Fetch-like API and streaming bodies are later milestones.
-    pub async fn health(&self, capability: String, authority: String) -> Result<String, JsValue> {
+    pub async fn health(
+        &self,
+        capability: String,
+        authority: String,
+        cancellation: &WebCancellation,
+    ) -> Result<String, JsValue> {
+        if self.shutdown.is_cancelled() {
+            return Err(JsValue::from_str("closed"));
+        }
+        if cancellation.token.is_cancelled() {
+            return Err(JsValue::from_str("cancelled"));
+        }
         let authority: Authority = authority
             .parse()
             .map_err(|_| JsValue::from_str("invalidAuthority"))?;
@@ -108,11 +150,10 @@ impl WebClient {
         }
         let capability =
             capability::parse(&capability).map_err(|_| JsValue::from_str("invalidCapability"))?;
-        let cancel = CancellationToken::new();
-        timeout(Duration::from_secs(15), async {
+        let operation = timeout(Duration::from_secs(15), async {
             let mut stream = self
                 .session
-                .open_tcp(&capability, Duration::from_secs(15), &cancel)
+                .open_tcp(&capability, Duration::from_secs(15), &cancellation.token)
                 .await
                 .map_err(map_error)?;
             let request =
@@ -138,12 +179,17 @@ impl WebClient {
             }
             validate_health_response(&response).map_err(JsValue::from_str)?;
             String::from_utf8(response).map_err(|_| JsValue::from_str("invalidResponse"))
-        })
-        .await
-        .map_err(|_| JsValue::from_str("timeout"))?
+        });
+        tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => Err(JsValue::from_str("closed")),
+            _ = cancellation.token.cancelled() => Err(JsValue::from_str("cancelled")),
+            result = operation => result.map_err(|_| JsValue::from_str("timeout"))?,
+        }
     }
 
     pub async fn close(&self) -> Result<(), JsValue> {
+        self.shutdown.cancel();
         self.session.close().await.map_err(map_error)
     }
 }

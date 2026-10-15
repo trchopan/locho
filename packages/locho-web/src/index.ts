@@ -1,4 +1,4 @@
-import initWasm, { connect as connectWasm } from './generated/locho_web.js';
+import initWasm, { connect as connectWasm, WebCancellation } from './generated/locho_web.js';
 
 export type LochoState = 'starting' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closing' | 'closed';
 export type LochoPath = 'unknown' | 'direct' | 'relay' | 'mixed';
@@ -8,63 +8,68 @@ export class LochoError extends Error {
   constructor(readonly code: string) { super(`Locho error: ${code}`); }
 }
 
-function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined, onAbort: () => void): Promise<T> {
-  if (!signal) return operation;
-  if (signal.aborted) {
-    onAbort();
-    return Promise.reject(new LochoError('cancelled'));
-  }
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => { onAbort(); reject(new LochoError('cancelled')); };
-    signal.addEventListener('abort', abort, { once: true });
-    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-  });
-}
-
 type RawClient = {
   status(): string;
-  health(capability: string, authority: string): Promise<string>;
+  health(capability: string, authority: string, cancellation: WebCancellation): Promise<string>;
   close(): Promise<void>;
 };
 
-function status(raw: RawClient): LochoStatus {
-  try { return JSON.parse(raw.status()) as LochoStatus; }
-  catch { throw new LochoError('invalidStatus'); }
-}
 function error(value: unknown): LochoError {
+  if (value instanceof LochoError) return value;
   return new LochoError(typeof value === 'string' ? value : 'internal');
 }
 
+async function cancellable<T>(signal: AbortSignal | undefined, run: (cancel: WebCancellation) => Promise<T>): Promise<T> {
+  if (signal?.aborted) throw new LochoError('cancelled');
+  const cancellation = new WebCancellation();
+  const abort = () => cancellation.cancel();
+  signal?.addEventListener('abort', abort, { once: true });
+  try { return await run(cancellation); }
+  catch (value) { throw error(value); }
+  finally {
+    signal?.removeEventListener('abort', abort);
+    cancellation.free();
+  }
+}
+
 export class LochoClient {
+  private closing?: Promise<void>;
   private constructor(private readonly raw: RawClient) {}
 
   static async connect(options: { hostId: string; peerRelayUrl?: string; signal?: AbortSignal }): Promise<LochoClient> {
-    await initWasm();
     if (options.signal?.aborted) throw new LochoError('cancelled');
     try {
-      const operation = connectWasm(options.hostId, options.peerRelayUrl) as Promise<RawClient>;
-      const raw = await abortable(operation, options.signal, () => {
-        void operation.then((late) => late.close()).catch(() => undefined);
+      await initWasm();
+      return await cancellable(options.signal, async (cancel) => {
+        const raw = await connectWasm(options.hostId, options.peerRelayUrl, cancel) as RawClient;
+        // Abort may race the completion of the WASM promise.
+        if (options.signal?.aborted) {
+          await raw.close();
+          throw new LochoError('cancelled');
+        }
+        return new LochoClient(raw);
       });
-      return new LochoClient(raw);
     } catch (value) { throw error(value); }
   }
-  get status(): LochoStatus { return status(this.raw); }
+  get status(): LochoStatus {
+    try { return JSON.parse(this.raw.status()) as LochoStatus; }
+    catch { throw new LochoError('invalidStatus'); }
+  }
   async health(capability: string, authority = 'sample-api', signal?: AbortSignal): Promise<Response> {
-    const operation = this.healthRaw(capability, authority);
+    if (this.closing) throw new LochoError('closed');
+    const bytes = await cancellable(signal, (cancel) => this.raw.health(capability, authority, cancel));
+    if (signal?.aborted) throw new LochoError('cancelled');
     try {
-      const bytes = await abortable(operation, signal, () => { void this.close(); });
       const separator = bytes.indexOf('\r\n\r\n');
       const head = separator < 0 ? bytes : bytes.slice(0, separator);
       const body = separator < 0 ? '' : bytes.slice(separator + 4);
-      const line = head.split('\r\n')[0] ?? '';
-      const statusCode = Number(line.split(' ')[1]);
+      const statusCode = Number(head.split('\r\n')[0]?.split(' ')[1]);
       if (!Number.isInteger(statusCode)) throw new LochoError('invalidResponse');
       return new Response(body, { status: statusCode });
     } catch (value) { throw error(value); }
   }
-  private async healthRaw(capability: string, authority: string): Promise<string> {
-    return this.raw.health(capability, authority);
+  close(): Promise<void> {
+    this.closing ??= this.raw.close().catch((value) => { throw error(value); });
+    return this.closing;
   }
-  close(): Promise<void> { return this.raw.close().catch((value) => { throw error(value); }); }
 }
