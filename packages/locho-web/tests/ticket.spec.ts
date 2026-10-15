@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const vectors = JSON.parse(readFileSync(new URL('../../../crates/locho-core/tests/vectors/tickets-v1.json', import.meta.url), 'utf8'));
 
 test('shared ticket vectors through production WASM', async ({ page }) => {
-  await page.goto('/lifecycle.html');
+  await page.goto('./lifecycle.html');
   await page.waitForFunction(() => Boolean((window as any).lochoProof));
   const results = await page.evaluate(async (vectors) => {
     const { LochoTicket, LochoClient } = (window as any).lochoProof;
@@ -31,7 +31,7 @@ test('shared ticket vectors through production WASM', async ({ page }) => {
 test('CLI ticket connects to N0 host and owns its capability', async ({ page }) => {
   test.skip(process.env.LOCHO_N0_INTEGRATION !== '1', 'N0 fixture disabled');
   const values = JSON.parse(readFileSync(process.env.LOCHO_N0_FIXTURE_FILE!, 'utf8'));
-  await page.goto('/lifecycle.html');
+  await page.goto('./lifecycle.html');
   await page.waitForFunction(() => Boolean((window as any).lochoProof));
   const result = await page.evaluate(async (values) => {
     const { LochoTicket } = (window as any).lochoProof;

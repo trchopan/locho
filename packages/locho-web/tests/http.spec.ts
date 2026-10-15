@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 test.describe('buffered HTTP over N0', () => {
   test.skip(process.env.LOCHO_N0_INTEGRATION !== '1', 'N0 fixture disabled');
   test.beforeEach(async ({ page }) => {
-    await page.goto('/lifecycle.html');
+    await page.goto('./lifecycle.html');
     await page.waitForFunction(() => Boolean((window as any).lochoProof));
   });
 
