@@ -111,6 +111,18 @@ export default async function globalSetup() {
   const pending = new Map();
   const requests = new Map();
   const upstream = createServer((request, response) => {
+    if (request.url === '/stream' || request.url === '/stream-idle') {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write(': connected\n\n');
+      const timer = request.url === '/stream' ? setInterval(() => response.write(': heartbeat\n\n'), 100) : undefined;
+      pending.set(request.headers.host, response);
+      response.on('close', () => { clearInterval(timer); pending.delete(request.headers.host); });
+      return;
+    }
+    if (request.url === '/truncated') {
+      response.writeHead(200, { 'Content-Length': 100 }); response.write('partial');
+      setTimeout(() => response.destroy(), 100); return;
+    }
     if (request.url === '/echo') {
       const chunks = [];
       request.on('data', (chunk) => chunks.push(chunk));

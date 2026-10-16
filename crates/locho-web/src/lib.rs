@@ -11,6 +11,7 @@ use locho_core::{
 };
 use n0_future::time::{timeout, Duration};
 use std::sync::Arc;
+use std::{cell::Cell, rc::Rc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::prelude::*;
@@ -124,6 +125,59 @@ impl WebResponse {
     }
 }
 
+type BodyResult = Result<Option<Vec<u8>>, &'static str>;
+// A pull channel keeps the authorized stream/permit inside a cancellation-aware
+// owner task. Shutdown therefore drops paused/unread bodies without requiring JS
+// to call next(), while no network body reads occur without a consumer pull.
+#[wasm_bindgen]
+pub struct WebStreamingResponse {
+    metadata: String,
+    pulls: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<BodyResult>>,
+    cancellation: CancellationToken,
+    done: Rc<Cell<bool>>,
+    error: Rc<Cell<Option<&'static str>>>,
+    finished: tokio::sync::watch::Receiver<bool>,
+}
+
+impl Drop for WebStreamingResponse {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+
+#[wasm_bindgen]
+impl WebStreamingResponse {
+    pub async fn finish(&self) {
+        self.cancellation.cancel();
+        let mut finished = self.finished.clone();
+        while !*finished.borrow_and_update() {
+            if finished.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+    pub fn metadata(&self) -> String {
+        self.metadata.clone()
+    }
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+    pub async fn next(&self) -> Result<Option<Vec<u8>>, JsValue> {
+        if !self.done.get() {
+            let (send, receive) = tokio::sync::oneshot::channel();
+            if self.pulls.send(send).await.is_ok() {
+                if let Ok(result) = receive.await {
+                    return result.map_err(JsValue::from_str);
+                }
+            }
+        }
+        match self.error.get() {
+            Some(code) => Err(JsValue::from_str(code)),
+            None => Ok(None),
+        }
+    }
+}
+
 #[wasm_bindgen]
 pub struct WebTicket {
     inner: locho_core::ticket::Ticket,
@@ -138,6 +192,28 @@ pub fn parse_ticket(value: String) -> Result<WebTicket, JsValue> {
 
 #[wasm_bindgen]
 impl WebTicket {
+    pub async fn request_stream(
+        &self,
+        client: &WebClient,
+        options: String,
+        body: Vec<u8>,
+        idle_timeout_ms: u32,
+        cancellation: &WebCancellation,
+    ) -> Result<WebStreamingResponse, JsValue> {
+        if self.inner.capability().service_type != locho_core::service::ServiceType::Tcp {
+            return Err(JsValue::from_str("unsupportedService"));
+        }
+        let cap = self.inner.capability();
+        client
+            .request_stream(
+                capability::format(&cap.service, &cap.service_type, &cap.secret),
+                options,
+                body,
+                idle_timeout_ms,
+                cancellation,
+            )
+            .await
+    }
     pub async fn request(
         &self,
         client: &WebClient,
@@ -289,6 +365,108 @@ async fn connect_inner(
 
 #[wasm_bindgen]
 impl WebClient {
+    pub async fn request_stream(
+        &self,
+        capability: String,
+        options: String,
+        body: Vec<u8>,
+        idle_timeout_ms: u32,
+        cancellation: &WebCancellation,
+    ) -> Result<WebStreamingResponse, JsValue> {
+        if self.shutdown.is_cancelled() {
+            return Err(JsValue::from_str("closed"));
+        }
+        if cancellation.token.is_cancelled() {
+            return Err(JsValue::from_str("cancelled"));
+        }
+        if !(1..=300_000).contains(&idle_timeout_ms) {
+            return Err(JsValue::from_str("invalidTimeout"));
+        }
+        if options.len() > 128 * 1024 {
+            return Err(JsValue::from_str("requestLimit"));
+        }
+        let request: http::Request =
+            serde_json::from_str(&options).map_err(|_| JsValue::from_str("invalidRequest"))?;
+        let bytes = http::encode(&request, &body).map_err(JsValue::from_str)?;
+        let cap =
+            capability::parse(&capability).map_err(|_| JsValue::from_str("invalidCapability"))?;
+        let permit = self
+            .requests
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| JsValue::from_str("resourceLimit"))?;
+        let duration = Duration::from_millis(request.timeout_ms.into());
+        let operation = timeout(duration, async {
+            let mut stream = self
+                .session
+                .open_tcp(&cap, duration, &cancellation.token)
+                .await
+                .map_err(map_error)?;
+            stream
+                .write_all(&bytes)
+                .await
+                .map_err(|_| JsValue::from_str("transport"))?;
+            http::head(stream, &request.method)
+                .await
+                .map_err(JsValue::from_str)
+        });
+        let (response, mut body) = tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => return Err(JsValue::from_str("closed")),
+            _ = cancellation.token.cancelled() => return Err(JsValue::from_str("cancelled")),
+            result = operation => result.map_err(|_| JsValue::from_str("setupTimeout"))??,
+        };
+        let metadata =
+            serde_json::to_string(&response).map_err(|_| JsValue::from_str("internal"))?;
+        let (pulls, mut requests) =
+            tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<BodyResult>>(1);
+        let cancel = cancellation.token.clone();
+        let shutdown = self.shutdown.clone();
+        let done = Rc::new(Cell::new(false));
+        let error = Rc::new(Cell::new(None));
+        let (finished, receiver) = tokio::sync::watch::channel(false);
+        let result = WebStreamingResponse {
+            metadata,
+            pulls,
+            cancellation: cancel.clone(),
+            done: done.clone(),
+            error: error.clone(),
+            finished: receiver,
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            let _permit = permit;
+            let run = async {
+                while !body.empty() {
+                    let Some(reply) = requests.recv().await else {
+                        return Ok(());
+                    };
+                    let next = body.next(Some(idle_timeout_ms), false).await;
+                    let finished = !matches!(next, Ok(Some(_)));
+                    let failure = next.as_ref().err().copied();
+                    let _ = reply.send(next);
+                    if let Some(code) = failure {
+                        return Err(code);
+                    }
+                    if finished {
+                        break;
+                    }
+                }
+                Ok(())
+            };
+            let outcome = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => Err("closed"),
+                _ = cancel.cancelled() => Err("cancelled"),
+                result = run => result,
+            };
+            error.set(outcome.err());
+            done.set(true);
+            drop(body);
+            drop(_permit);
+            let _ = finished.send(true);
+        });
+        Ok(result)
+    }
     pub fn observe_status(&self) -> Result<WebStatusObserver, JsValue> {
         let permit = self
             .observers

@@ -40,10 +40,13 @@ try {
     const source = await readFile(join(root, 'examples/minimal', name), 'utf8');
     await writeFile(join(consumer, name), source.replaceAll("'../../src/index'", "'@locho/web'"));
   }
-  await writeFile(join(consumer, 'types.ts'), `import { LochoClient, LochoTicket, initializeLocho, type LochoRequestOptions } from '@locho/web';
+  await writeFile(join(consumer, 'types.ts'), `import { LochoClient, LochoTicket, initializeLocho, type LochoRequestOptions, type LochoStreamRequestOptions } from '@locho/web';
 const options: LochoRequestOptions = { method: 'POST', body: new Uint8Array([1]) };
+const streamOptions: LochoStreamRequestOptions = { setupTimeoutMs: 15000, idleTimeoutMs: 75000 };
+async function stream(client: LochoClient) { const response: Response = await client.fetchStream('/api/events', streamOptions); await response.body?.cancel(); }
 async function consume(text: string) { await initializeLocho(); const ticket = await LochoTicket.parse(text); const client = await LochoClient.connect({ ticket }); try { return await client.fetch('/api/notes', options); } finally { await client.close(); } }
 void consume;
+void stream;
 `);
   await writeFile(join(consumer, 'initialize.html'), '<!doctype html><p id="result">initializing</p><script type="module" src="./initialize.ts"></script>');
   await writeFile(join(consumer, 'initialize.ts'), `import { initializeLocho, LochoTicket } from '@locho/web';

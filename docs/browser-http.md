@@ -1,4 +1,4 @@
-# Browser buffered HTTP subset
+# Browser HTTP subset
 
 The prerelease browser SDK transports HTTP/1.1 bytes through an authorized Locho
 TCP stream; it does not call `window.fetch` for the homelab API. One stream is opened
@@ -65,9 +65,80 @@ Backend 4xx/5xx and redirects remain ordinary responses. No redirect is followed
 Handshake/transport/framing failures reject with `LochoError`; no backend status is
 fabricated. Excess concurrent HTTP operations reject with `resourceLimit`.
 
+## Streaming HTTP — browser package dev.3
+
+`fetchStream(path, options)` resolves as soon as final headers have been parsed.
+It accepts the same method/headers/body/signal as `fetch`, replacing `timeoutMs`
+with `setupTimeoutMs` (default 15000) and `idleTimeoutMs` (default 75000). Both are
+integers in 1–300000 ms. Unknown options, including `timeoutMs`, are rejected.
+
+```ts
+const abort = new AbortController();
+const response = await client.fetchStream('/api/events', {
+  headers: { Authorization: `Bearer ${token}` },
+  signal: abort.signal,
+  setupTimeoutMs: 15_000,
+  idleTimeoutMs: 75_000,
+});
+if (!response.ok) {
+  await response.body?.cancel();
+  // Handle HTTP status (including 401/429) before attempting SSE parsing.
+} else {
+  const reader = response.body!.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // Feed bytes to an incremental bounded application parser.
+      consume(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+```
+
+- Setup covers peer acquisition, service authorization, request write and final
+  headers. It does not cover the body lifetime. Deadline failure is `setupTimeout`;
+  an underlying service/session timeout can still report `timeout`.
+- Idle applies only while waiting for upstream bytes during an active pull,
+  including chunk framing. Every successful upstream read resets that wait.
+  Consumer pauses do not run an idle timer. A silent pending read fails with
+  `idleTimeout`. There is no automatic reconnect, lifetime deadline or replay.
+- Rust retains an 8 KiB BufReader, at most one 16 KiB decoded read, and bounded
+  framing/header storage. JS requests no read-ahead (`highWaterMark: 0`); one pull
+  is in flight. Transport receive windows/runtime buffers are additional bounds,
+  not included in this decoder memory budget. Server HTTP chunks can be larger
+  than 16 KiB; they are read in bounded pieces, never allocated as whole chunks.
+- Streamed bodies have no cumulative body/chunk-count limit. Chunk-size lines are
+  capped at 1024 bytes each; trailer handling remains bounded/unsupported as above.
+  Buffered fetch retains its 8 MiB body and aggregate 64 KiB chunk-size limits.
+- The shared 16-operation cap counts buffered requests and live streamed bodies.
+  A body owns its permit and authorized stream until framed completion, EOF,
+  error, cancel or client close. An unread body retains its permit; callers must
+  consume or cancel it. `releaseLock()` alone does not cancel. No pooling is added.
+- Abort remains attached after headers and cancels only that response. `reader.cancel()`
+  waits for Rust body cleanup. Client close cancels even unread/paused bodies and
+  awaits their cleanup along with shared session close. HEAD/204/205/304 bodies
+  remain null and immediately release ownership.
+- Backend errors/redirects remain ordinary Responses; redirects are not followed.
+  Framing/transport failures after headers error the body rather than fabricate an
+  HTTP status. Direct `reader.read()` rejects with sanitized `LochoError` codes;
+  platform convenience methods (`text`, `json`, `arrayBuffer`) may replace a stream
+  error with a browser-specific TypeError/DOMException. Do not rely on their codes.
+- The stream is a default byte-chunk ReadableStream, not a BYOB byte source.
+  Chunks are arbitrary boundaries, not HTTP chunks, UTF-8 characters or SSE frames.
+  `Response.clone()`/`body.tee()` can queue unbounded data for a slower branch;
+  they are outside this bounded single-reader usage contract. Likewise convenience
+  whole-body methods buffer by design and are unsuitable for infinite SSE.
+
+This API transports bytes. SSE framing, schema validation, heartbeat/reconnect policy,
+session validation and canonical refresh belong to the consuming application.
+
 ## Standard Response limitations
 
-The result is a synthetic buffered `Response`. `url` is empty, `redirected` is false,
+The result is a synthetic `Response`. `url` is empty, `redirected` is false,
 `type` follows the platform constructor rather than a browser network fetch, and
 statusText is not populated. Repeated application headers are appended using
 standard Headers semantics; Set-Cookie has no browser cookie-jar effect. Hop-by-hop,
@@ -88,5 +159,13 @@ completion before EOF, ambiguous/truncated framing and header/body limits.
 For local full integration, build the examples API and set `LOCHO_REFERENCE_API`
 to its checkout alongside the existing N0 fixture environment variables. CI checks
 out and builds that exact backend commit. Hosted Linux results are a separate gate.
-This milestone does not establish npm/tarball consumption, real mobile-browser
-support, general status subscriptions, streaming/SSE or WebSockets.
+That original buffered milestone did not establish streaming. The dev.3 follow-up
+adds Rust tests for headers/partial chunks before EOF, reads beyond the buffered
+body limit, and per-line rather than lifetime chunk framing bounds. Production
+WASM/browser tests cover incremental data, deadlines, paused readers, abort/cancel,
+operation capacity, pending/unread close and authenticated note invalidations
+against examples commit `75a93b3f50900becc320d50c2ecf2dc662292141` (OpenAPI 1.1.0).
+The same matrix runs against an installed tarball in the external Vite consumer.
+Local macOS verification passes all 69 external-consumer cases across Chromium,
+Firefox and WebKit, plus the locked Rust workspace suite (14 locho-web tests).
+Physical/mobile browsers, app event consumers and WebSockets remain subsequent gates.

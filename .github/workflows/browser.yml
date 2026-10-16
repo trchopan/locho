@@ -45,11 +45,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: trchopan/locho_sdk_examples
-          ref: 310d6cf756c1b1d8ccd584c576c94f97e9c72a94
+          ref: 75a93b3f50900becc320d50c2ecf2dc662292141
           path: target/reference-api
           persist-credentials: false
-      - run: npm ci && npm run build
+      - run: npm run sdk:setup && npm ci && npm run build
         working-directory: target/reference-api
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: packages/locho-web
       - run: npm run test:browser
