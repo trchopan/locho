@@ -41,6 +41,72 @@ pub struct WebClient {
     session: Arc<PeerSession>,
     shutdown: CancellationToken,
     requests: Arc<tokio::sync::Semaphore>,
+    observers: Arc<tokio::sync::Semaphore>,
+}
+
+#[wasm_bindgen]
+pub struct WebStatusObserver {
+    receiver: tokio::sync::watch::Receiver<locho_core::session::SessionStatus>,
+    first: bool,
+    finished: bool,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+fn status_json(status: &locho_core::session::SessionStatus) -> String {
+    let code = |value: Option<SessionError>| {
+        value.map(|error| match error {
+            SessionError::Closed => "closed",
+            SessionError::Cancelled => "cancelled",
+            SessionError::Timeout(_) => "timeout",
+            SessionError::Transport(_) => "transport",
+            SessionError::Protocol => "protocol",
+            SessionError::ServiceRejected(_) => "serviceRejected",
+            SessionError::UnsupportedService => "unsupportedService",
+            SessionError::ResourceLimit => "resourceLimit",
+            SessionError::DriverStopped => "driverStopped",
+        })
+    };
+    serde_json::json!({
+        "revision": status.revision,
+        "state": format!("{:?}", status.state).to_lowercase(),
+        "path": format!("{:?}", status.path).to_lowercase(),
+        "connectionErrorCode": code(status.last_error),
+        "errorCode": code(status.terminal_error),
+    })
+    .to_string()
+}
+
+#[wasm_bindgen]
+impl WebStatusObserver {
+    pub async fn next(
+        &mut self,
+        cancellation: &WebCancellation,
+    ) -> Result<Option<String>, JsValue> {
+        if cancellation.token.is_cancelled() {
+            return Ok(None);
+        }
+        if self.first {
+            self.first = false;
+            let status = self.receiver.borrow_and_update();
+            self.finished = status.state == locho_core::session::SessionState::Closed;
+            return Ok(Some(status_json(&status)));
+        }
+        if self.finished {
+            return Ok(None);
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.token.cancelled() => Ok(None),
+            result = self.receiver.changed() => {
+                if result.is_err() && self.receiver.borrow().state != locho_core::session::SessionState::Closed {
+                    return Err(JsValue::from_str("driverStopped"));
+                }
+                let status = self.receiver.borrow_and_update();
+                self.finished = status.state == locho_core::session::SessionState::Closed;
+                Ok(Some(status_json(&status)))
+            }
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -217,11 +283,25 @@ async fn connect_inner(
         session,
         shutdown: CancellationToken::new(),
         requests: Arc::new(tokio::sync::Semaphore::new(16)),
+        observers: Arc::new(tokio::sync::Semaphore::new(16)),
     })
 }
 
 #[wasm_bindgen]
 impl WebClient {
+    pub fn observe_status(&self) -> Result<WebStatusObserver, JsValue> {
+        let permit = self
+            .observers
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| JsValue::from_str("resourceLimit"))?;
+        Ok(WebStatusObserver {
+            receiver: self.session.subscribe(),
+            first: true,
+            finished: false,
+            _permit: permit,
+        })
+    }
     pub async fn request(
         &self,
         capability: String,
@@ -277,12 +357,7 @@ impl WebClient {
         }
     }
     pub fn status(&self) -> String {
-        let status = self.session.snapshot();
-        format!(
-            "{{\"revision\":{},\"state\":\"{:?}\",\"path\":\"{:?}\"}}",
-            status.revision, status.state, status.path
-        )
-        .to_lowercase()
+        status_json(&self.session.snapshot())
     }
 
     /// Proof request only: returns raw HTTP/1.1 response bytes as UTF-8 text.
@@ -403,6 +478,62 @@ fn validate_health_response(response: &[u8]) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn status_observer_cancels_without_status_change_and_releases_capacity() {
+        let (sender, receiver) =
+            tokio::sync::watch::channel(locho_core::session::SessionStatus::default());
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut observer = WebStatusObserver {
+            receiver,
+            first: true,
+            finished: false,
+            _permit: permits.clone().try_acquire_owned().unwrap(),
+        };
+        let cancel = WebCancellation::new();
+        let first = observer.next(&cancel).await.unwrap().unwrap();
+        assert!(first.contains("\"state\":\"starting\""));
+        let waiting = observer.next(&cancel);
+        let cancel_work = async {
+            tokio::task::yield_now().await;
+            cancel.cancel();
+        };
+        let (result, _) = tokio::join!(waiting, cancel_work);
+        assert!(result.unwrap().is_none());
+        assert_eq!(permits.available_permits(), 0);
+        drop(observer);
+        assert_eq!(permits.available_permits(), 1);
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn status_observer_coalesces_and_preserves_terminal_error() {
+        use locho_core::session::{SessionState, SessionStatus};
+        let (sender, receiver) = tokio::sync::watch::channel(SessionStatus::default());
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut observer = WebStatusObserver {
+            receiver,
+            first: true,
+            finished: false,
+            _permit: permits.try_acquire_owned().unwrap(),
+        };
+        let cancel = WebCancellation::new();
+        observer.next(&cancel).await.unwrap();
+        sender.send_modify(|s| {
+            s.revision = 1;
+            s.state = SessionState::Closing;
+        });
+        sender.send_modify(|s| {
+            s.revision = 2;
+            s.state = SessionState::Closed;
+            s.terminal_error = Some(SessionError::DriverStopped);
+        });
+        let value: serde_json::Value =
+            serde_json::from_str(&observer.next(&cancel).await.unwrap().unwrap()).unwrap();
+        assert_eq!(value["revision"], 2);
+        assert_eq!(value["errorCode"], "driverStopped");
+        assert!(observer.next(&cancel).await.unwrap().is_none());
+    }
 
     #[test]
     fn accepts_bounded_content_length_health_response() {

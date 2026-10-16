@@ -38,6 +38,10 @@ startup and page-destruction cleanup bounds.
 
 ## Implemented Boundary
 
+SDK [status observation](status-observation.md) now provides bounded cancellation
+for Flutter subscriptions and cancellable Rust-watch-backed browser observers.
+Application package-pin upgrades remain a separate integration slice.
+
 The browser now also exposes a [buffered HTTP subset](browser-http.md), backed by
 bounded Rust framing and binary WASM responses. Local production integration passes
 48 browser cases including the pinned reference API health/login/notes/logout

@@ -5,6 +5,10 @@ export class WebCancellation {
   cancel(): void;
   free(): void;
 }
+export class WebStatusObserver {
+  next(cancellation: WebCancellation): Promise<string | undefined>;
+  free(): void;
+}
 export class WebResponse {
   metadata(): string;
   body(): Uint8Array;
@@ -12,6 +16,7 @@ export class WebResponse {
 }
 export class WebClient {
   status(): string;
+  observe_status(): WebStatusObserver;
   health(capability: string, authority: string, cancellation: WebCancellation): Promise<string>;
   request(capability: string, options: string, body: Uint8Array, cancellation: WebCancellation): Promise<WebResponse>;
   close(): Promise<void>;

@@ -20,7 +20,11 @@ function rawTicket(ticket: LochoTicket): WebTicket {
 export type LochoState = 'starting' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closing' | 'closed';
 export type LochoPath = 'unknown' | 'direct' | 'relay' | 'mixed';
 
-export interface LochoStatus { revision: number; state: LochoState; path: LochoPath }
+export interface LochoStatus { revision: number; state: LochoState; path: LochoPath; connectionErrorCode: string | null; errorCode: string | null }
+export interface LochoStatusOptions {
+  signal?: AbortSignal;
+  onError?: (error: LochoError) => void;
+}
 export class LochoError extends Error {
   constructor(readonly code: string) { super(`Locho error: ${code}`); }
 }
@@ -72,6 +76,8 @@ async function cancellable<T>(signal: AbortSignal | undefined, run: (cancel: Web
 
 export class LochoClient {
   private closing?: Promise<void>;
+  private wakeObservers!: () => void;
+  private readonly closeStarted = new Promise<void>((resolve) => { this.wakeObservers = resolve; });
   private constructor(private readonly raw: RawClient, private readonly ticket?: LochoTicket, private readonly authority = 'locho.local') {}
 
   static async connect(options: { hostId?: string; peerRelayUrl?: string; ticket?: LochoTicket; signal?: AbortSignal; http?: { authority: string } }): Promise<LochoClient> {
@@ -97,6 +103,39 @@ export class LochoClient {
   get status(): LochoStatus {
     try { return JSON.parse(this.raw.status()) as LochoStatus; }
     catch { throw new LochoError('invalidStatus'); }
+  }
+  /** Returns shared async unsubscribe; observation never owns client shutdown. */
+  subscribeStatus(listener: (status: LochoStatus) => void | Promise<void>, options: LochoStatusOptions = {}): () => Promise<void> {
+    if (options.signal?.aborted) return () => Promise.resolve();
+    let observer;
+    try { observer = this.raw.observe_status(); }
+    catch (value) { throw error(value); }
+    const cancellation = new WebCancellation();
+    let stopped = false;
+    let wake!: () => void;
+    const aborted = new Promise<void>((resolve) => { wake = resolve; });
+    const abort = () => { if (!stopped) { stopped = true; cancellation.cancel(); wake(); } };
+    options.signal?.addEventListener('abort', abort, { once: true });
+    const run = async () => {
+      try {
+        while (!stopped) {
+          const value = await observer.next(cancellation);
+          if (stopped || value === undefined) break;
+          const status = JSON.parse(value) as LochoStatus;
+          // Callbacks are serialized, so slow listeners coalesce watch revisions.
+          await Promise.race([Promise.resolve().then(() => { if (!stopped) return listener(status); }), aborted, this.closeStarted]);
+          if (status.state === 'closed') break;
+        }
+      } catch (value) {
+        if (!stopped) { try { options.onError?.(error(value)); } catch { /* listener errors never affect transport */ } }
+      } finally {
+        stopped = true;
+        options.signal?.removeEventListener('abort', abort);
+        observer.free(); cancellation.free();
+      }
+    };
+    const finished = run();
+    return () => { abort(); return finished; };
   }
   async fetch(path: string, options: LochoRequestOptions = {}): Promise<Response> {
     if (this.closing) throw new LochoError('closed');
@@ -153,6 +192,7 @@ export class LochoClient {
     } catch (value) { throw error(value); }
   }
   close(): Promise<void> {
+    this.wakeObservers();
     this.closing ??= this.raw.close().catch((value) => { throw error(value); });
     return this.closing;
   }
