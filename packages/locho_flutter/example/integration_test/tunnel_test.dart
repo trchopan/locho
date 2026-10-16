@@ -34,6 +34,14 @@ void main() {
       expect(response.body, contains('locho-notes'));
       final subscription = first.statuses.listen((_) {});
       await subscription.cancel();
+      // Unsubscribe must finish while the owner is connected and remains usable.
+      final pending = first.statuses.listen((_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pending.cancel().timeout(const Duration(seconds: 3));
+      final afterUnsubscribe = await httpClient.get(
+        first.httpBaseUri.resolve('/health'),
+      );
+      expect(afterUnsubscribe.statusCode, 200);
       await Future.wait([first.close(), first.close()]);
       expect(first.currentStatus.state, LochoState.closed);
       // Runtime and client survive closing an attachment.

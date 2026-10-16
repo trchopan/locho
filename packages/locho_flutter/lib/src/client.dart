@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'status_stream.dart';
 import 'rust/api/simple.dart' as native;
 import 'rust/frb_generated.dart';
 
@@ -34,6 +35,7 @@ Future<T> _call<T>(Future<T> Function() operation) async {
       'invalidHostId',
       'invalidCapability',
       'invalidTicket',
+      'resourceLimit',
       'conflictingOptions',
       'invalidPeerRelay',
       'unsupportedService',
@@ -252,6 +254,21 @@ class LochoAttachment {
   Future<void>? _closing;
   void Function()? _onClosed;
   LochoAttachment._(this._native);
+  late final _statuses = StatusStreams<LochoStatus>(
+    snapshot: snapshot,
+    next: (status) async {
+      final update = LochoStatus.fromNative(
+        await _call(() => _native.nextStatus(revision: status.revision)),
+      );
+      if (_current == null || update.revision >= _current!.revision) {
+        _current = update;
+      }
+      return update;
+    },
+    terminal: (status) => status.state == LochoState.closed,
+    newer: (a, b) => a.revision > b.revision,
+    limitError: () => const LochoException('resourceLimit'),
+  );
 
   LochoStatus get currentStatus => _current!;
   int get localPort => currentStatus.localPort;
@@ -268,22 +285,7 @@ class LochoAttachment {
 
   /// Pull-based/coalescing: each subscriber has at most one native wait in flight.
   /// Cancelling the subscription does not close its attachment.
-  Stream<LochoStatus> get statuses async* {
-    var status = await snapshot();
-    yield status;
-    while (status.state != LochoState.closed) {
-      final next = LochoStatus.fromNative(
-        await _call(() => _native.nextStatus(revision: status.revision)),
-      );
-      if (next.revision > status.revision) {
-        status = next;
-        if (_current == null || status.revision >= _current!.revision) {
-          _current = status;
-        }
-        yield status;
-      }
-    }
-  }
+  Stream<LochoStatus> get statuses => _statuses.observe();
 
   Future<void> waitConnected(Duration timeout) async {
     if (timeout <= Duration.zero || timeout > const Duration(seconds: 300)) {
