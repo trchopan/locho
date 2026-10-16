@@ -1,6 +1,6 @@
 # Flutter standalone source-build package
 
-`scripts/package-flutter.py` creates `target/flutter-package/locho_flutter-0.1.0-dev.1.tar.gz`,
+`scripts/package-flutter.py` creates `target/flutter-package/locho_flutter-0.1.0-dev.2.tar.gz`,
 a SHA-256 sidecar and a file manifest. CI uploads them as `locho-flutter-source-package`.
 No pub.dev publication or prebuilt native download occurs.
 
@@ -10,8 +10,8 @@ Download the archive and checksum from the same CI artifact, verify the checksum
 and extract it outside the SDK checkout:
 
 ```sh
-shasum -a 256 -c locho_flutter-0.1.0-dev.1.tar.gz.sha256
-tar -xzf locho_flutter-0.1.0-dev.1.tar.gz
+shasum -a 256 -c locho_flutter-0.1.0-dev.2.tar.gz.sha256
+tar -xzf locho_flutter-0.1.0-dev.2.tar.gz
 ```
 
 Reference the extracted package from your application's pubspec:

@@ -1,6 +1,6 @@
 name: locho_flutter
 description: Foreground Locho TCP attachments for Flutter native applications.
-version: 0.1.0-dev.1
+version: 0.1.0-dev.2
 publish_to: none
 environment:
   sdk: '>=3.12.2 <4.0.0'
