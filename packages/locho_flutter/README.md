@@ -2,7 +2,9 @@
 
 Foreground-only Android/iOS Dart wrapper over `locho-client-native`, using pinned
 Flutter Rust Bridge **2.12.0** and its Cargokit source-build template. This is an
-unpublished development package, not a standalone distribution or Flutter web SDK.
+unpublished prerelease package, not a Flutter web SDK. A standalone source-build
+archive is available through CI; see `docs/flutter-package.md` in the Locho
+repository for artifact installation and external-consumer verification.
 
 ## Toolchain and build
 
@@ -40,10 +42,10 @@ flutter run -d <android-device-id>
 
 Cargokit compiles Rust automatically. Bridge has an isolated Cargo workspace/lock
 and is excluded from root CLI workspace gates; CLI builds need no Flutter tools.
-Local core/native path dependencies require this whole checkout. External package
-distribution requires published crates or explicitly pinned Git Rust dependencies
-and an external consuming-app test in a later slice. Do not advertise this package
-as independently installable yet.
+Local development core/native paths require this checkout. The distribution builder
+rewrites the archive dependency to an exact public Git revision with a locked Cargo
+graph. Consumers extract the archive and reference that package directory, with no
+sibling Rust sources. Internet/native source-build toolchains are required.
 
 Vendored Cargokit comes from the FRB 2.12 plugin template, with two local Gradle
 patches: `ExecOperations` replaces removed `Project.exec` for Gradle 9; generated
@@ -154,7 +156,7 @@ signing key for development, not store distribution.
 | iOS simulator/device compilation | Passed hosted simulator/debug and unsigned-device/release CI through PR #91 |
 | Physical iOS, physical-device ticket acceptance, Wi-Fi/cellular and authenticated custom relay | Pending |
 | Full UI pause/resume/lock/unlock/manual network matrix | Pending; generation-based policy implemented in example |
-| External source-build consumer / standalone distribution | Pending |
+| External source-build consumer / standalone distribution | Android debug/release builds, alignment and 16 KiB emulator CLI-ticket runtime passed; hosted external iOS builds pending |
 
 This completes the Android attach/GET/close feasibility path, not the full platform
 G1 matrix. Tiny example is memory-only; full notes/login/remembered-session apps

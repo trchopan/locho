@@ -171,7 +171,10 @@ Browser package delivery now builds an allowlisted ESM/types/WASM tarball with
 source/version metadata. A temporary external Vite consumer installs only that
 tarball, builds below `/sdk/`, and runs the N0/notes integration matrix. Public
 declarations contain no raw WASM handles. Hosted package evidence is pending;
-Flutter standalone source-build packaging remains the next delivery slice.
+Flutter now has a [standalone source-build archive](flutter-package.md), with exact
+public Git native/core dependencies instead of sibling Rust paths. Fresh external
+Android debug/release builds and 16 KiB emulator ticket runtime pass locally;
+external iOS builds are delegated to hosted CI.
 
 The core API is an internal prerelease boundary and may evolve during these gates.
 No wire version change or new host configuration is introduced by this extraction.

@@ -7,12 +7,16 @@ on:
       - '.github/workflows/flutter.yml'
       - 'scripts/flutter-device-smoke.py'
       - 'scripts/check-android-pages.py'
+      - 'scripts/package-flutter.py'
+      - 'scripts/test-flutter-package.py'
   push:
     branches: [main]
     paths:
       - 'packages/locho_flutter/**'
       - 'crates/**'
       - '.github/workflows/flutter.yml'
+      - 'scripts/package-flutter.py'
+      - 'scripts/test-flutter-package.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -76,6 +80,14 @@ jobs:
       - run: flutter build apk --release --target-platform android-arm64,android-x64
       - run: python3 ../../../scripts/check-android-pages.py build/app/outputs/flutter-apk/app-release.apk
       - run: '$ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 build/app/outputs/flutter-apk/app-release.apk'
+      - run: python3 scripts/package-flutter.py
+        working-directory: .
+      - run: python3 scripts/test-flutter-package.py --platform android
+        working-directory: .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locho-flutter-source-package
+          path: target/flutter-package
   ios-build:
     runs-on: macos-latest
     defaults:
@@ -95,3 +107,7 @@ jobs:
       - run: flutter pub get
       - run: flutter build ios --simulator --debug
       - run: flutter build ios --release --no-codesign
+      - run: python3 scripts/package-flutter.py
+        working-directory: .
+      - run: python3 scripts/test-flutter-package.py --platform ios
+        working-directory: .

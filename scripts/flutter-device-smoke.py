@@ -21,6 +21,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = Path(os.environ.get("LOCHO_EXAMPLES_DIR", ROOT.parent / "locho_sdk_examples"))
 DEVICE = sys.argv[1]
+CONSUMER = Path(os.environ.get("LOCHO_FLUTTER_CONSUMER", ROOT / "packages/locho_flutter/example"))
 
 def port(kind):
     with socket.socket(socket.AF_INET, kind) as reservation:
@@ -85,13 +86,13 @@ with tempfile.TemporaryDirectory(prefix="flutter-smoke-", dir=ROOT / "target") a
         if "--release" in sys.argv:
             command = ["flutter", "build", "apk", "--target=lib/release_smoke.dart",
                        "--target-platform=android-arm64", "--dart-define-from-file=" + str(defines), "--release"]
-        subprocess.run(command, cwd=ROOT / "packages/locho_flutter/example", check=True, timeout=600)
+        subprocess.run(command, cwd=CONSUMER, check=True, timeout=600)
         if "--release" in sys.argv:
             adb = str(Path(os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk")) / "platform-tools/adb")
             def android(*args):
                 return subprocess.check_output([adb, "-s", DEVICE, *args], text=True)
-            android("install", "-r", str(ROOT / "packages/locho_flutter/example/build/app/outputs/flutter-apk/app-release.apk"))
-            package = "dev.chop.locho.locho_flutter_example"
+            android("install", "-r", str(CONSUMER / "build/app/outputs/flutter-apk/app-release.apk"))
+            package = os.environ.get("LOCHO_ANDROID_PACKAGE", "dev.chop.locho.locho_flutter_example")
             android("shell", "am", "force-stop", package)
             android("logcat", "-c")
             android("shell", "am", "start", "-n", package + "/.MainActivity")
