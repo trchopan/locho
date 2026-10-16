@@ -87,6 +87,10 @@ try {
   the current snapshot, then coalesces watch updates. Each subscriber has one native
   long-poll in flight (at most one second); no unbounded event queue. Unsubscribe
   does not close its tunnel. Calls after close retain final status.
+  Observation is capped at 16 active subscribers per attachment. Unsubscribe stops
+  new waits and finishes after its bounded in-flight bridge call, even when no
+  revision changes. Pause/resume holds bounded delivery. See the repository
+  `docs/status-observation.md` contract and scheduling limitations.
 - Peer `connected` means host identity connectivity, not service authorization or
   application login. Explicit `/health` is separate. Wrong capability may appear as
   HTTP socket closure, not a typed auth exception. Do not replay failed writes.
