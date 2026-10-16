@@ -1,10 +1,10 @@
 {
   "name": "@locho/web",
-  "version": "0.1.0-dev.2",
+  "version": "0.1.0-dev.3",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Browser Locho TCP tickets and buffered HTTP over WASM",
+  "description": "Browser Locho TCP tickets and bounded streaming HTTP over WASM",
   "repository": { "type": "git", "url": "https://github.com/trchopan/locho.git", "directory": "packages/locho-web" },
   "main": "./dist/package/index.js",
   "types": "./dist/package/index.d.ts",

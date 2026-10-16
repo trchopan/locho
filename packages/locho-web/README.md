@@ -1,17 +1,17 @@
 # Locho Browser SDK — prerelease
 
-Unpublished browser SDK with portable TCP tickets, buffered HTTP, cancellation and
+Unpublished browser SDK with portable TCP tickets, buffered/streaming HTTP, cancellation and
 explicit close. Uses shared Rust framing/authorization and iroh WASM relay transport.
-It does not implement streaming, WebSockets, cookie storage or custom relay auth.
+It does not implement WebSockets, cookie storage or custom relay auth.
 Redirect responses are returned without following them.
 
 ## Install the built package
 
-Download `locho-web-0.1.0-dev.2.tgz` from the `locho-web-npm-package` CI artifact,
+Download `locho-web-0.1.0-dev.3.tgz` from the `locho-web-npm-package` CI artifact,
 then install it in an external Vite application:
 
 ```sh
-npm install /path/to/locho-web-0.1.0-dev.2.tgz
+npm install /path/to/locho-web-0.1.0-dev.3.tgz
 ```
 
 ```ts
@@ -63,6 +63,18 @@ and coalesced Rust watch updates, returning an async unsubscribe function. At mo
 errors terminate only their observer. Snapshots now include nullable
 `connectionErrorCode` and `errorCode`. See `docs/status-observation.md` in the source
 repository for cancellation, slow-listener and terminal delivery semantics.
+
+## Streaming HTTP
+
+`client.fetchStream(path, { headers, signal, setupTimeoutMs: 15000,
+idleTimeoutMs: 75000 })` returns a standard Response at final headers. Consume
+`response.body` with a reader for incremental data; always consume or cancel it.
+Abort remains active for the body lifetime. Reads are pull-driven without JS
+read-ahead, capped at 16 KiB per decoded Rust read. Consumer pauses do not count
+as upstream idle time. Live bodies share the 16 HTTP operation slots with fetch.
+There is no cumulative streaming body limit, automatic reconnection or replay.
+See packaged `HTTP.md` for bounds, errors, framing and single-reader limitations.
+SSE parsing and session recovery are application-owned; dev.3 adds the transport.
 
 ## Build from source
 
@@ -129,8 +141,8 @@ Local production WASM ticket verification passes 39 tests across Chromium, Firef
 and WebKit, including shared vectors and a real CLI-generated ticket over N0.
 The ticket-backed buffered `client.fetch` API now supports JSON/text/byte requests.
 See [the exact HTTP subset](../../docs/browser-http.md) for headers, framing, limits,
-synthetic Response metadata and unsupported features. Standalone distribution and
-status subscriptions remain follow-up milestones.
+synthetic Response metadata and unsupported features. Standalone distribution,
+status subscriptions and streaming are now available in the prerelease package.
 
 ### Cancellation and close
 

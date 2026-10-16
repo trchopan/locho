@@ -1,6 +1,6 @@
 //! Bounded, one-request-per-stream HTTP/1.1 subset.
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 
 pub const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_REQUEST: usize = 4 * 1024 * 1024;
@@ -138,24 +138,156 @@ async fn line<R: AsyncBufRead + Unpin>(
     Ok(out)
 }
 
-async fn append_exact<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    body: &mut Vec<u8>,
-    count: usize,
-) -> Result<(), &'static str> {
-    if count > MAX_BODY - body.len() {
-        return Err("responseLimit");
-    }
-    let start = body.len();
-    body.resize(start + count, 0);
-    reader
-        .read_exact(&mut body[start..])
-        .await
-        .map_err(|_| "truncatedResponse")?;
-    Ok(())
+pub const READ_BYTES: usize = 16 * 1024;
+const MAX_CHUNK_LINE: usize = 1024;
+
+enum Framing {
+    Empty,
+    Length(usize),
+    Chunked { remaining: usize, ending: bool },
+    Eof,
 }
 
-pub async fn read<R: AsyncRead + Unpin>(stream: R, method: &str) -> Result<Response, &'static str> {
+pub struct Body<R> {
+    reader: BufReader<R>,
+    framing: Framing,
+    framing_bytes: usize,
+    trailer_limit: usize,
+}
+
+impl<R: AsyncRead + Unpin> Body<R> {
+    pub fn empty(&self) -> bool {
+        matches!(self.framing, Framing::Empty | Framing::Length(0))
+    }
+
+    // Timeout only waits for upstream bytes, never time spent paused by the consumer.
+    async fn available(&mut self, idle: Option<u32>) -> Result<&[u8], &'static str> {
+        let read = self.reader.fill_buf();
+        match idle {
+            Some(ms) => {
+                n0_future::time::timeout(n0_future::time::Duration::from_millis(ms.into()), read)
+                    .await
+                    .map_err(|_| "idleTimeout")?
+                    .map_err(|_| "transport")
+            }
+            None => read.await.map_err(|_| "transport"),
+        }
+    }
+
+    async fn framing_line(
+        &mut self,
+        limit: usize,
+        idle: Option<u32>,
+    ) -> Result<Vec<u8>, &'static str> {
+        let mut out = Vec::new();
+        loop {
+            let bytes = self.available(idle).await?;
+            if bytes.is_empty() {
+                return Err("truncatedResponse");
+            }
+            let count = bytes
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(bytes.len(), |i| i + 1);
+            if out.len() + count > limit {
+                return Err("responseLimit");
+            }
+            out.extend_from_slice(&bytes[..count]);
+            self.reader.consume(count);
+            if out.ends_with(b"\n") {
+                break;
+            }
+        }
+        if !out.ends_with(b"\r\n") {
+            return Err("invalidResponse");
+        }
+        Ok(out)
+    }
+
+    pub async fn next(
+        &mut self,
+        idle: Option<u32>,
+        buffered: bool,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        loop {
+            match self.framing {
+                Framing::Empty | Framing::Length(0) => return Ok(None),
+                Framing::Chunked {
+                    remaining: 0,
+                    ending,
+                } => {
+                    if ending && self.framing_line(2, idle).await? != b"\r\n" {
+                        return Err("invalidResponse");
+                    }
+                    let limit = if buffered {
+                        MAX_HEAD.saturating_sub(self.framing_bytes)
+                    } else {
+                        MAX_CHUNK_LINE
+                    };
+                    let size_line = self.framing_line(limit, idle).await?;
+                    self.framing_bytes = if buffered {
+                        self.framing_bytes + size_line.len()
+                    } else {
+                        0
+                    };
+                    let text = std::str::from_utf8(&size_line[..size_line.len() - 2])
+                        .map_err(|_| "invalidResponse")?;
+                    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err("invalidResponse");
+                    }
+                    let size = usize::from_str_radix(text, 16).map_err(|_| "invalidResponse")?;
+                    if size == 0 {
+                        if self.framing_line(self.trailer_limit, idle).await? != b"\r\n" {
+                            return Err("unsupportedTrailers");
+                        }
+                        self.framing = Framing::Empty;
+                        return Ok(None);
+                    }
+                    if buffered && size > MAX_BODY {
+                        return Err("responseLimit");
+                    }
+                    self.framing = Framing::Chunked {
+                        remaining: size,
+                        ending: false,
+                    };
+                }
+                _ => {
+                    let max = match self.framing {
+                        Framing::Length(n) | Framing::Chunked { remaining: n, .. } => {
+                            n.min(READ_BYTES)
+                        }
+                        _ => READ_BYTES,
+                    };
+                    let bytes = self.available(idle).await?;
+                    if bytes.is_empty() {
+                        if matches!(self.framing, Framing::Eof) {
+                            self.framing = Framing::Empty;
+                            return Ok(None);
+                        }
+                        return Err("truncatedResponse");
+                    }
+                    let count = max.min(bytes.len());
+                    let out = bytes[..count].to_vec();
+                    self.reader.consume(count);
+                    match &mut self.framing {
+                        Framing::Length(n) => *n -= count,
+                        Framing::Chunked { remaining, ending } => {
+                            *remaining -= count;
+                            *ending = *remaining == 0;
+                        }
+                        _ => {}
+                    }
+                    return Ok(Some(out));
+                }
+            }
+        }
+    }
+}
+
+pub async fn head<R: AsyncRead + Unpin>(
+    stream: R,
+    method: &str,
+) -> Result<(Response, Body<R>), &'static str> {
     let mut reader = BufReader::new(stream);
     let mut header_bytes = 0;
     let mut field_count = 0;
@@ -265,66 +397,116 @@ pub async fn read<R: AsyncRead + Unpin>(stream: R, method: &str) -> Result<Respo
     if status == 205 && (chunked || length.is_some_and(|n| n != 0)) {
         return Err("invalidResponse");
     }
-    let mut body = Vec::new();
     if status == 204 && (chunked || length.is_some()) {
         return Err("invalidResponse");
     }
-    if method != "HEAD" && !matches!(status, 204 | 205 | 304) {
-        if chunked {
-            let mut framing_bytes = 0;
-            loop {
-                let size_line = line(&mut reader, MAX_HEAD - framing_bytes).await?;
-                framing_bytes += size_line.len();
-                let text = std::str::from_utf8(&size_line[..size_line.len() - 2])
-                    .map_err(|_| "invalidResponse")?;
-                // Chunk extensions are outside the initial supported subset.
-                if text.is_empty() || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err("invalidResponse");
-                }
-                let size = usize::from_str_radix(text, 16).map_err(|_| "invalidResponse")?;
-                if size == 0 {
-                    let trailer = line(&mut reader, MAX_HEAD - header_bytes).await?;
-                    if trailer != b"\r\n" {
-                        return Err("unsupportedTrailers");
-                    }
-                    break;
-                }
-                append_exact(&mut reader, &mut body, size).await?;
-                let mut ending = [0; 2];
-                reader
-                    .read_exact(&mut ending)
-                    .await
-                    .map_err(|_| "truncatedResponse")?;
-                if ending != *b"\r\n" {
-                    return Err("invalidResponse");
-                }
-            }
-        } else if let Some(length) = length {
-            append_exact(&mut reader, &mut body, length).await?;
-        } else {
-            reader
-                .take((MAX_BODY + 1) as u64)
-                .read_to_end(&mut body)
-                .await
-                .map_err(|_| "transport")?;
-            if body.len() > MAX_BODY {
-                return Err("responseLimit");
-            }
+    let framing = if method == "HEAD" || matches!(status, 204 | 205 | 304) {
+        Framing::Empty
+    } else if chunked {
+        Framing::Chunked {
+            remaining: 0,
+            ending: false,
         }
-    }
+    } else if let Some(n) = length {
+        Framing::Length(n)
+    } else {
+        Framing::Eof
+    };
     headers.retain(|(name, _)| {
         !hop(name) && !connection_fields.contains(name) && name != "content-length"
     });
-    Ok(Response {
-        status,
-        headers,
-        body,
-    })
+    Ok((
+        Response {
+            status,
+            headers,
+            body: Vec::new(),
+        },
+        Body {
+            reader,
+            framing,
+            framing_bytes: 0,
+            trailer_limit: MAX_HEAD - header_bytes,
+        },
+    ))
+}
+
+pub async fn read<R: AsyncRead + Unpin>(stream: R, method: &str) -> Result<Response, &'static str> {
+    let (mut response, mut body) = head(stream, method).await?;
+    if matches!(body.framing, Framing::Length(n) if n > MAX_BODY) {
+        return Err("responseLimit");
+    }
+    while let Some(bytes) = body.next(None, true).await? {
+        if bytes.len() > MAX_BODY - response.body.len() {
+            return Err("responseLimit");
+        }
+        response.body.extend(bytes);
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn streaming_returns_headers_and_partial_chunk_before_completion() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            .await
+            .unwrap();
+        let (response, mut body) = head(reader, "GET").await.unwrap();
+        assert_eq!(response.status, 200);
+        writer.write_all(b"1000000\r\nfirst").await.unwrap();
+        assert_eq!(
+            body.next(Some(100), false).await.unwrap().unwrap(),
+            b"first"
+        );
+        // A server HTTP chunk can exceed the buffered lifetime body cap without allocation.
+        assert_eq!(body.next(Some(10), false).await.unwrap_err(), "idleTimeout");
+    }
+
+    #[tokio::test]
+    async fn streaming_has_per_line_not_lifetime_framing_limits() {
+        let mut bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        for _ in 0..25000 {
+            bytes.extend_from_slice(b"1\r\nx\r\n");
+        }
+        bytes.extend_from_slice(b"0\r\n\r\n");
+        assert_eq!(
+            read(bytes.as_slice(), "GET").await.err(),
+            Some("responseLimit")
+        );
+        let (_, mut body) = head(bytes.as_slice(), "GET").await.unwrap();
+        let mut count = 0;
+        while let Some(chunk) = body.next(None, false).await.unwrap() {
+            count += chunk.len();
+            assert!(chunk.len() <= READ_BYTES);
+        }
+        assert_eq!(count, 25000);
+        let malformed = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{}\r\n",
+            "0".repeat(MAX_CHUNK_LINE)
+        );
+        let (_, mut body) = head(malformed.as_bytes(), "GET").await.unwrap();
+        assert_eq!(body.next(None, false).await.err(), Some("responseLimit"));
+    }
+
+    #[tokio::test]
+    async fn streaming_exceeds_buffered_body_cap_with_bounded_reads() {
+        let bytes = [
+            b"HTTP/1.1 200 OK\r\n\r\n".as_slice(),
+            &vec![42; MAX_BODY + 1],
+        ]
+        .concat();
+        let (_, mut body) = head(bytes.as_slice(), "GET").await.unwrap();
+        let mut count = 0;
+        while let Some(chunk) = body.next(None, false).await.unwrap() {
+            assert!(chunk.len() <= READ_BYTES);
+            count += chunk.len();
+        }
+        assert_eq!(count, MAX_BODY + 1);
+    }
     #[tokio::test]
     async fn fragmented_length_response_completes_without_waiting_for_eof() {
         use tokio::io::AsyncWriteExt;
