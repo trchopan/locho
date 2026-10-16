@@ -7,11 +7,11 @@ Redirect responses are returned without following them.
 
 ## Install the built package
 
-Download `locho-web-0.1.0-dev.1.tgz` from the `locho-web-npm-package` CI artifact,
+Download `locho-web-0.1.0-dev.2.tgz` from the `locho-web-npm-package` CI artifact,
 then install it in an external Vite application:
 
 ```sh
-npm install /path/to/locho-web-0.1.0-dev.1.tgz
+npm install /path/to/locho-web-0.1.0-dev.2.tgz
 ```
 
 ```ts
