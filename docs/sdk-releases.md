@@ -1,5 +1,34 @@
 # SDK beta releases
 
+## 0.1.0-beta.2 — Browser — 2026-10-17
+
+The browser package now has an app-developer README covering installation, ticket
+setup, the first `/health` request, JSON and streaming calls, Vite/WASM deployment,
+status/lifecycle handling and troubleshooting. The browser API and implementation
+remain compatible with beta.1.
+
+| SDK | Registry | Install |
+| --- | --- | --- |
+| Browser | [locho_web](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.2) | `npm install --save-exact locho_web@0.1.0-beta.2` |
+
+The npm `beta` dist-tag points to beta.2; npm `latest` remains beta.1 because both
+published versions are prereleases.
+
+### Registry integrity
+
+- npm tarball integrity:
+  `sha512-OEpW+aNcQ80ChJSixIQPiCIcpA8Z9WxoAp0Aq7vI5+m/W149hZhXlzuEcYtuMRg3kdkyGX+93Xc2IOl/ZsNflQ==`
+- Package source provenance: clean Locho commit
+  `e9d09b8020e947a23fda8d5d96adf52122ea1065`, wire protocol 3, ticket format 1.
+
+### Verification
+
+- TypeScript, WASM, package and production builds passed.
+- Fresh external Vite consumer installed the registry beta.2 package with scripts
+  disabled; package declarations, explicit WASM initialization and 9 local browser
+  smoke/package checks passed. Public-N0 integration remains environment-dependent.
+- Hosted browser WASM CI passed the full source build and package workflow.
+
 ## 0.1.0-beta.2 — 2026-10-17
 
 Flutter beta.2 is a documentation-focused update. The API, wire protocol, ticket
