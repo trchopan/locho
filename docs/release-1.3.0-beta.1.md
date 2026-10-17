@@ -58,31 +58,40 @@ archive evidence must identify their own commits.
 - iOS simulator and unsigned-device compilation pass in SDK/examples CI; physical
   iOS runtime remains unaccepted.
 
-## Final examples handoff — pending release PR merge
+## Final examples handoff — complete
 
-After the release-preparation PR merges, pin its final full Locho SHA in examples
-`.github/workflows/check.yml`, `deploy/Dockerfile.locho` and compatibility/deployment
-documentation. Keep both registry SDK versions pinned at `0.1.0-beta.1`.
+Examples PR [#12](https://github.com/trchopan/locho_sdk_examples/pull/12) merged as
+`57f95ff94835de5525e77e182d9921245dba773b`. It pins the final Locho merge
+`3786da3127338b2530e0cd8cea8ef23bc6d55dfd` in
+`.github/workflows/check.yml` and `deploy/Dockerfile.locho`, with compatibility and
+deployment records updated. Both registry SDK versions remain pinned at
+`0.1.0-beta.1`.
 
-Run API/contract checks, real CLI JSON/SSE smoke, the three-browser production
-matrix, private Compose/HTTPS acceptance and existing Android runtime modes against
-that host. Record the examples commit, candidate host version/SHA, SDK integrity,
-platform/tool versions and results together. Existing baseline acceptance is not
-evidence for an untested final host commit.
+The merged PR checks passed for browser, private Compose/HTTPS deployment and
+Flutter Ubuntu/macOS builds. Local candidate rerun also passed API/contract checks,
+real CLI JSON/SSE smoke, private Compose/HTTPS acceptance, the focused browser
+reruns and Flutter static/unit/Android debug-release builds. No Android emulator was
+attached in the final local rerun; earlier emulator and physical-device evidence is
+recorded separately in the examples repository.
 
-## Tag and published-artifact acceptance — pending
+## Tag and published-artifact acceptance — complete
 
-After final candidate gates and examples acceptance pass:
+The final clean candidate was tagged and published:
 
-1. Tag that exact clean Locho commit `v1.3.0-beta.1` and push the tag.
-2. Confirm the release workflow publishes all five configured target archives,
-   matching checksums and shell/PowerShell installers, marks the release prerelease,
-   and keeps `1.2.0` as latest stable. Internal dist manifests are not public assets.
-3. Download and verify the published artifacts, commit provenance, installers,
-   `--help`, `--version`, HTTP/TCP quickstarts and SDK ticket/notes journey. Execute
-   only native artifacts for the available platform; record other native checks or
-   their pending status explicitly.
-4. Add final release/CI URLs and post-publication results to the release record.
+1. Tag `v1.3.0-beta.1` points to `3786da3127338b2530e0cd8cea8ef23bc6d55dfd`.
+2. The [release workflow](https://github.com/trchopan/locho/actions/runs/39038125597)
+   passed and published Linux x86_64/ARM64, macOS x86_64/Apple silicon and Windows
+   x86_64 archives, checksums, shell/PowerShell installers and source archives.
+   Internal dist metadata was removed from the public release assets.
+3. [GitHub release](https://github.com/trchopan/locho/releases/tag/v1.3.0-beta.1)
+   is marked prerelease. GitHub's stable `latest` API still resolves to `v1.2.0`.
+4. Downloaded release assets passed `sha256.sum`; the downloaded macOS ARM64 archive
+   passed archive-content, `--help`, `--version` and clean commit-provenance checks.
+   The downloaded shell installer was exercised against a local asset server and
+   installed the same verified binary. PowerShell execution was not available on the
+   development Mac; Windows archive/installer smoke passed in the release workflow.
+5. The candidate binary passed the real examples notes API/JSON/SSE smoke and the
+   examples' candidate-pinned browser/Compose/HTTPS checks before publication.
 
 Use the version-specific beta installer URLs in the [README](../README.md#testing-130-beta1);
 `/releases/latest/` follows stable releases.
