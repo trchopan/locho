@@ -114,7 +114,7 @@ def check_http(port):
     try:
         connection.request("GET", "/upgrade-check")
         response = connection.getresponse()
-        require(response.status == 200, "HTTP forwarding returned an unexpected status")
+        require(response.status == 200, f"HTTP forwarding returned status {response.status}")
         require(response.read(1024) == b"locho-upgrade-http", "HTTP forwarding body mismatch")
     finally:
         connection.close()
@@ -159,7 +159,10 @@ def main():
         certificate, key = directory / "ca.pem", directory / "tls.key"
         run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
              "-keyout", str(key), "-out", str(certificate), "-subj", "/CN=127.0.0.1",
-             "-addext", "subjectAltName=IP:127.0.0.1"])
+             "-addext", "subjectAltName=IP:127.0.0.1",
+             "-addext", "basicConstraints=critical,CA:FALSE",
+             "-addext", "extendedKeyUsage=serverAuth",
+             "-addext", "keyUsage=critical,digitalSignature,keyEncipherment"])
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(certificate, key)
         http = ThreadingHTTPServer(("127.0.0.1", 0), HttpFixture)
@@ -211,6 +214,7 @@ def main():
                     process.close()
 
         for client in [previous, candidate]:
+            print(f"Checking {'1.2.0' if client == previous else 'beta'} client against 1.2.0 host")
             exercise(client)
         old_host.close()
         print("Both client versions pass HTTP/TCP against the 1.2.0 host")
@@ -222,6 +226,7 @@ def main():
         for service, token in tokens.items():
             require(capability(candidate, service) == token, "Service capability changed during upgrade")
         for client in [previous, candidate]:
+            print(f"Checking {'1.2.0' if client == previous else 'beta'} client against beta host")
             exercise(client)
         ticket = run([str(candidate), "share", "database", "--config", str(config), "--ticket"], env)
         require(ticket.startswith("locho1:"), "Candidate ticket prefix mismatch")
