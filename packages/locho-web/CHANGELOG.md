@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.2
+
+- Rewrite the README as a browser-app quickstart with ticket setup, first request,
+  Vite/WASM deployment, status, streaming and troubleshooting guidance.
+- Clarify the supported HTTP subset, application-owned authentication/storage and
+  browser beta limitations.
+
 ## 0.1.0-beta.1
 
 - First npm beta of the browser SDK, including ESM, TypeScript declarations and WASM.

@@ -1,219 +1,230 @@
-# Locho Browser SDK — prerelease
+# Locho for the Browser
 
-Browser beta SDK with portable TCP tickets, buffered/streaming HTTP, cancellation and
-explicit close. Uses shared Rust framing/authorization and iroh WASM relay transport.
-It does not implement WebSockets, cookie storage or custom relay auth.
-Redirect responses are returned without following them.
+Connect a browser app to a private HTTP API through an encrypted Locho tunnel.
+The API stays private, and users do not need to install the Locho CLI on their
+device.
 
-## Install the built package
+Use the SDK's fetch-like API for JSON requests and streaming responses. This is a
+browser-only beta package; it does not replace the browser's native `window.fetch`.
 
-Install the exact beta in a browser application:
+## Install
 
 ```sh
-npm install --save-exact locho_web@0.1.0-beta.1
+npm install --save-exact locho_web@0.1.0-beta.2
 ```
+
+The package includes ESM, TypeScript declarations and the WASM runtime. Consumer
+apps do not need Rust, wasm-bindgen, a Locho checkout or install-time build scripts.
+Node SSR and CommonJS are not supported because the SDK requires a browser runtime.
+
+## Get A Ticket
+
+Configure the private API as a TCP service on the machine where it runs:
+
+```toml
+[[services]]
+name = "sample-api"
+type = "tcp"
+endpoint = "127.0.0.1:8080"
+```
+
+Start Locho and create a ticket:
+
+```sh
+locho host --config locho.toml
+locho share sample-api --config locho.toml --ticket
+```
+
+Copy the complete `locho1:...` value into your application configuration or ticket
+input. A ticket is a bearer credential for one service. Do not put it in a URL,
+log, analytics event or source repository.
+
+The CLI runs on the machine hosting the API. The browser user only needs your HTTPS
+website. The ticket and your API's own login token are separate credentials.
+
+## First Request
 
 ```ts
 import { LochoClient, LochoTicket } from 'locho_web';
-const ticket = await LochoTicket.parse(ticketText);
-const client = await LochoClient.connect({ ticket, http: { authority: 'sample-api' } });
-try {
-  const response = await client.fetch('/api/notes', {
-    headers: { Authorization: `Bearer ${token}` },
+
+export async function checkApi(ticketText: string) {
+  const ticket = await LochoTicket.parse(ticketText.trim());
+  const client = await LochoClient.connect({
+    ticket,
+    http: { authority: 'sample-api' },
   });
-  const notes = await response.json();
-} finally { await client.close(); }
+
+  try {
+    // Peer connectivity is not API readiness. Check the API explicitly.
+    const response = await client.fetch('/health', { timeoutMs: 15_000 });
+    if (!response.ok) {
+      throw new Error(`API health check failed: ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    await client.close();
+  }
+}
 ```
 
-Consumer builds require Node/npm and the package, not Rust or sibling source files.
-The package includes ESM, public declarations, generated bindings and WASM; install
-does not execute build scripts. Node SSR execution and CommonJS are unsupported.
-Keep ticket/token data out of server rendering, URLs and logs.
+`authority` is the logical HTTP `Host` value sent to the private API. It is not the
+website hostname, ticket host ID or relay URL.
 
-Vite resolves the default WASM asset relative to the packaged binding and emits it
-under the configured `base`. Explicit asset hosting is also supported before first use:
+## JSON API Calls
+
+Reuse one client for a foreground session. JSON encoding and API authentication are
+application responsibilities:
+
+```ts
+const response = await client.fetch('/api/notes', {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${sessionToken}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ title: 'First note', body: 'Hello' }),
+  signal: requestController.signal,
+  timeoutMs: 15_000,
+});
+
+if (!response.ok) {
+  // 4xx/5xx responses are ordinary backend HTTP responses.
+  throw new Error(`API request failed: ${response.status}`);
+}
+const note = await response.json();
+```
+
+The initial HTTP API supports root-relative paths, common HTTP methods, JSON/text/
+byte bodies, standard `Response` objects, redirects returned without following them,
+bounded buffering and `AbortSignal`. It does not provide cookies, CORS behavior,
+browser caching, native HTTP authentication, FormData or automatic JSON encoding.
+
+## WASM And Vite
+
+Vite normally discovers the WASM file through the package and emits it with your
+application assets. If your deployment needs an explicit asset URL, initialize it
+before parsing tickets or connecting:
 
 ```ts
 import { initializeLocho } from 'locho_web';
 import wasmUrl from 'locho_web/wasm?url';
+
 await initializeLocho(wasmUrl);
 ```
 
-Initialization is shared by concurrent callers; the first input wins. A failed
-initialization may be retried. This does not reconfigure an already initialized
-module. Serve WASM with `Content-Type: application/wasm`. Production hosting should
-use HTTPS; CSP must permit the application module, WebAssembly compilation (for
-example `script-src 'self' 'wasm-unsafe-eval'`) and `connect-src` to the asset origin,
-N0 HTTPS discovery and WSS relays. No SharedArrayBuffer/isolation headers are needed.
-Custom CDN assets need appropriate CORS. Deployment-specific HTTPS/CSP behavior
-must be verified by the consuming application.
+Initialization is shared by concurrent callers. The first initialization input wins;
+a failed initialization can be retried.
 
-The tarball contains `dist/package/HTTP.md`, `TICKETS.md`, and `build.json` with
-package version, source revision/dirty status, wire version 3 and ticket format 1.
-Dirty status excludes the declarations regenerated by wasm-bindgen during the build.
-See those included documents for the exact HTTP/ticket contract. Pin package versions
-and commit the application's lockfile. The beta channel is separate from npm's latest tag.
+Deploy the website over HTTPS and serve `.wasm` with `Content-Type:
+application/wasm`. A restrictive CSP needs to allow WASM compilation and Locho
+discovery/relay connections, for example:
 
-## Status observation
-
-`client.subscribeStatus(listener, { signal, onError })` emits the current snapshot
-and coalesced Rust watch updates, returning an async unsubscribe function. At most
-16 observers per client are allowed. Unsubscribe never closes the client; listener
-errors terminate only their observer. Snapshots now include nullable
-`connectionErrorCode` and `errorCode`. See `docs/status-observation.md` in the source
-repository for cancellation, slow-listener and terminal delivery semantics.
-
-## Streaming HTTP
-
-`client.fetchStream(path, { headers, signal, setupTimeoutMs: 15000,
-idleTimeoutMs: 75000 })` returns a standard Response at final headers. Consume
-`response.body` with a reader for incremental data; always consume or cancel it.
-Abort remains active for the body lifetime. Reads are pull-driven without JS
-read-ahead, capped at 16 KiB per decoded Rust read. Consumer pauses do not count
-as upstream idle time. Live bodies share the 16 HTTP operation slots with fetch.
-There is no cumulative streaming body limit, automatic reconnection or replay.
-See packaged `HTTP.md` for bounds, errors, framing and single-reader limitations.
-SSE parsing and session recovery are application-owned; dev.3 adds the transport.
-
-## Build from source
-
-Requirements: Rust 1.96+, `wasm32-unknown-unknown`, a browser-compatible Clang,
-`wasm-bindgen-cli` matching the generated wasm-bindgen dependency, Node/npm.
-
-```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
-npm install
-npm run build:wasm
-npm run build
-npm run build:package
-npm run build:production
-npx playwright install chromium firefox webkit
-npm run test:browser
-npm run test:external
-npm run dev
+```text
+script-src 'self' 'wasm-unsafe-eval'
+connect-src 'self' https://dns.iroh.link https://*.iroh.link wss://*.iroh.link
 ```
 
-Apple Clang lacks a wasm C target for ring; use the controlled Linux CI runner
-or a WebAssembly-capable LLVM installation. For Homebrew LLVM, build with
-`CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang npm run build:wasm`.
-Do not claim browser feasibility from native builds. CI records the actual browser
-build result, generated artifact versions and integration evidence.
+Add only the origins required by your relay configuration. Custom CDN WASM assets
+may also require CORS. No `SharedArrayBuffer` or cross-origin isolation headers are
+required.
 
-`build:package` requires generated WASM assets from `build:wasm`. `test:external`
-checks exact tarball contents, creates a fresh temporary Vite consumer outside this
-checkout, installs the tarball (no source aliases), checks public declarations and
-builds at `/sdk/`. It runs the existing matrix plus explicit WASM URL/MIME checks
-against that consumer. To include N0/notes tests, set the fixture variables described
-below and `LOCHO_REFERENCE_API`; CI supplies the pinned backend. The tarball and pack
-manifest/integrity are saved under `dist/artifacts/` for the CI artifact.
+## Status And Lifecycle
 
-Compatibility baseline: Node 24.18.0, TypeScript 5.9.3, Vite 7.3.7, iroh 1.2.0,
-wasm-bindgen 0.2.126; Chromium/Firefox/WebKit through Playwright 1.64.1. Local macOS
-external-tarball verification passes default WASM loading under a non-root base;
-hosted Linux results and real mobile browsers remain separate evidence.
-
-Local external-consumer matrix: 51 tests pass across Chromium, Firefox and WebKit,
-including explicit asset initialization, MIME validation, cancellation and the
-reference backend login/CRUD/logout journey. The temporary app installs with scripts
-disabled; all generated runtime files are already present in the tarball.
-
-## Proof API
+Status observation is useful for showing connection progress and recovery:
 
 ```ts
-const client = await LochoClient.connect({ hostId, peerRelayUrl });
-const response = await client.health(capability, 'sample-api');
-console.log(response.status, await response.text());
+const unsubscribe = client.subscribeStatus((status) => {
+  console.log(status.state, status.path, status.connectionErrorCode);
+});
+
+// When the session ends:
+await unsubscribe();
 await client.close();
 ```
 
-Alternatively, import `LochoTicket` and use
-`const ticket = await LochoTicket.parse(text); const client = await ticket.connect(signal);`
-then `await client.health()` without a capability argument. The ticket keeps the
-selected capability in Rust; metadata exposes only host/service/type/relay hints.
-`ticket.export()` explicitly returns the credential; string/JSON formatting is
-redacted. Mixed ticket and host/hint/capability inputs report `conflictingOptions`.
-Valid HTTP tickets report `unsupportedService` on connect. All peer hints are passed
-to iroh without a dialing-order guarantee. See [ticket v1](../../docs/tickets.md).
+`connected` means the Locho host identity is reachable. It does not prove service
+authorization, upstream availability or application login. Always validate your API
+with `/health` and your own authenticated endpoint.
 
-Local production WASM ticket verification passes 39 tests across Chromium, Firefox
-and WebKit, including shared vectors and a real CLI-generated ticket over N0.
-The ticket-backed buffered `client.fetch` API now supports JSON/text/byte requests.
-See [the exact HTTP subset](../../docs/browser-http.md) for headers, framing, limits,
-synthetic Response metadata and unsupported features. Standalone distribution,
-status subscriptions and streaming are now available in the prerelease package.
+Use a session owner and an `AbortController` when switching tickets or leaving a
+page. Close the client on explicit disconnect and do not silently replay interrupted
+writes. The application owns credential persistence; browser storage is accessible
+to scripts running on the website origin.
 
-### Cancellation and close
+## Streaming Responses
 
-`connect({ hostId, signal })` and `health(capability, authority, signal)` accept
-an `AbortSignal`. Already-aborted calls reject with `LochoError.code === 'cancelled'`
-before endpoint/request work begins. Startup cancellation reaches Rust and waits
-for session cleanup before rejecting. WASM module initialization itself is not
-abortable. Endpoint binding and peer connection each have a 15-second deadline;
-session cleanup follows the shared core bounds.
+Use `fetchStream` for SSE or another long-lived response. The response resolves after
+headers, and the application owns parsing and reconnect policy:
 
-Health cancellation drops only the operation's authorized stream. Concurrent
-requests and the peer session remain usable. An active health operation interrupted
-by `close()` rejects with `closed`. Calls after close starts also reject with
-`closed`; repeated/concurrent close calls share the same completion promise.
-Close retains the shared core's bounded cleanup and final status. Abort/close races
-may resolve as `closed` when client shutdown wins. No application requests are
-automatically replayed.
+```ts
+const response = await client.fetchStream('/api/events', {
+  headers: { Authorization: `Bearer ${sessionToken}` },
+  setupTimeoutMs: 15_000,
+  idleTimeoutMs: 75_000,
+});
 
-The interactive example aborts superseded operations and requests cleanup on
-`pagehide`, and ignores stale results. Browsers do not guarantee asynchronous
-cleanup finishes during page destruction; applications should explicitly await
-close when their own navigation lifecycle allows it.
+if (!response.ok) {
+  await response.body?.cancel();
+  throw new Error(`Stream failed: ${response.status}`);
+}
 
-The optional peer relay URL is a host address hint, separate from client relay
-policy. The proof requests `/health` with a TCP service handshake and returns a
-standard `Response` assembled from the raw response. Application authority is
-explicit; it is never derived from the website origin. Peer `connected` does not
-mean capability/upstream/API readiness.
+const reader = response.body!.getReader();
+try {
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    // Feed byte chunks to your bounded SSE/parser implementation.
+    consumeEventBytes(value);
+  }
+} finally {
+  await reader.cancel().catch(() => {});
+  reader.releaseLock();
+}
+```
 
-The API does not automatically retry or replay. Close on page lifecycle changes,
-discard stale results after restoration, and keep credentials out of logs/URLs.
-The minimal page is intentionally not a production authentication UI.
+Always consume or cancel a streaming body. There is no automatic reconnection,
+message replay or cumulative streaming body limit. Consumer pauses do not count as
+upstream idle time, but an idle upstream read is bounded.
 
-Playwright's default matrix verifies production asset loading in Chromium, Firefox
-and WebKit. The controlled CI job additionally starts a real Locho host and local
-TCP health backend, then uses the official N0 relay/discovery configuration for
-the fixture. The addressing matrix uses fresh browser contexts for a correct
-explicit hint, host-ID-only discovery, a dotted DNS hostname, and an unreachable
-hint (`https://127.0.0.1:1/`). Every case asserts the relay path and exact health
-response. It sets `LOCHO_N0_INTEGRATION=1`, `LOCHO_N0_FIXTURE_FILE` (a private
-temporary path) and `LOCHO_HOST_BINARY`; setup derives credentials and cleans
-up the host/backend processes. This is public-network evidence and can fail when
-N0 discovery or relay service is unavailable.
+## Troubleshooting
 
-The browser adapter normalizes a trailing DNS root dot in explicit hints and
-verified N0 Pkarr lookup results before handing addresses to the transport. The
-N0 publisher, signed-record verification, identity verification and startup deadline
-are retained. iroh performs discovery alongside address hints; the adapter does not
-retry or replay HTTP requests. WebSocket/error counts are attached as sanitized
-test diagnostics without retaining URLs, headers or frames.
+### `invalidTicket`
 
-Local macOS production WASM verification on 2026-10-15 passed all 18 cases in
-Chromium, Firefox and WebKit. This includes recovery from an unreachable hint;
-it does not simulate migration between two live relays or an authenticated relay.
-PR #89 also passed hosted Linux verification for the addressing matrix.
+Generate a fresh value with `locho share ... --ticket`. Use the complete `locho1:`
+text and do not edit its contents. The parser rejects surrounding whitespace; an app
+may trim clipboard input before parsing.
 
-The lifecycle follow-up adds a production test entry point and controllable upstream
-fixture. Local macOS production WASM verification passed 33 tests across all three
-browsers: startup/pre-abort cancellation, independent concurrent traffic, stalled
-stream cancellation, active close, upstream interruption/unavailability and repeated
-close cycles. Tests observe upstream connection release and request counts; these
-are not heap-leak measurements. Hosted Linux lifecycle verification is pending.
+### `unsupportedService`
 
-## Feasibility evidence
+The initial browser SDK attaches TCP services. Generate the ticket from a service
+with `type = "tcp"`, not an HTTP-service ticket.
 
-Required before freezing browser tickets/API:
+### `startupTimeout`
 
-- Controlled browser relay/TLS connection to a real Locho host through the official N0 relay.
-- Host-ID discovery, explicit peer hint, stale-hint fallback behavior.
-- Chromium, Firefox, WebKit and mobile-browser smoke.
-- Wrong capability, stopped upstream, interruption, cancellation and close cleanup.
-- Custom authenticated relay support verified or marked deferred.
+Check that the host is running, the private API is reachable from the host, and the
+browser can reach the Locho discovery/relay endpoints over HTTPS/WSS. A peer status
+alone does not validate the service.
 
-The shared `locho/3` framing/authorization code is reused. Browser runtime, relay,
-crypto and discovery behavior remain target-specific evidence.
+### WASM or CSP errors
+
+Confirm that the `.wasm` response has `application/wasm`, the site is served over
+HTTPS, and CSP `script-src` permits WASM compilation. For Vite, try the explicit
+`initializeLocho(wasmUrl)` example above.
+
+## API And Advanced Documentation
+
+- [TypeScript API reference](https://www.npmjs.com/package/locho_web?activeTab=code)
+- [HTTP request and response limits](https://github.com/trchopan/locho/blob/main/docs/browser-http.md)
+- [Portable ticket format](https://github.com/trchopan/locho/blob/main/docs/tickets.md)
+- [Runnable browser notes app](https://github.com/trchopan/locho_sdk_examples/tree/main/apps/web)
+- [Browser SDK source and contributor checks](https://github.com/trchopan/locho/tree/main/packages/locho-web)
+
+## Beta Limitations
+
+- Browser-only; no native mobile bindings or server-side rendering.
+- No browser-managed WebSocket API, cookie jar, redirect following or application
+  authentication manager.
+- Custom authenticated browser relays, real mobile-browser coverage, live relay
+  migration and BFCache behavior remain separate acceptance work.
+- The API transports bytes over an authorized TCP service. It does not expose a
+  public URL or bypass your backend's authentication.
