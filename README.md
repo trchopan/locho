@@ -342,7 +342,7 @@ accepted for migration, but new commands should use the capability-token form.
 
 Released binaries are published on the
 [GitHub Releases page](https://github.com/trchopan/locho/releases). The
-supported `1.2.0` targets are:
+supported CLI distribution targets for stable `1.2.0` and `1.3.0-beta.1` are:
 
 - Linux x86_64 and ARM64
 - macOS x86_64 and Apple silicon
@@ -363,6 +363,35 @@ Invoke-WebRequest `
 Get-Content .\locho-installer.ps1
 .\locho-installer.ps1
 ```
+
+### Testing 1.3.0-beta.1
+
+The latest-release installers above follow the stable channel. To test the beta,
+use its version-specific installer after the prerelease is published:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.1/locho-installer.sh | sh
+locho --version
+```
+
+```powershell
+Invoke-WebRequest `
+  https://github.com/trchopan/locho/releases/download/v1.3.0-beta.1/locho-installer.ps1 `
+  -OutFile locho-beta-installer.ps1
+Get-Content .\locho-beta-installer.ps1
+.\locho-beta-installer.ps1
+locho --version
+```
+
+Expect `locho 1.3.0-beta.1 (commit <full-sha>, clean)`. Browser and Flutter SDKs
+remain independently versioned at `0.1.0-beta.1`; see
+[SDK installation](docs/sdk-releases.md) and the
+[beta scope and verification record](docs/release-1.3.0-beta.1.md).
+Linux ARM64 native verification remains pending; a cross-build alone is not runtime
+acceptance. Physical iOS/mobile-browser and broad device/network acceptance also
+remain open for this beta.
+
+### Manual installation and upgrades
 
 Manual installation is also supported: download the archive for the operating
 system and architecture, extract `locho` or `locho.exe` into a directory on

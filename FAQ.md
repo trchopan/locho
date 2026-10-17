@@ -57,6 +57,22 @@ tunnel streams are not retroactively closed; new requests must use the
 replacement capability. Stop the host before running the command because the
 host holds the state lock while running, then restart it to load the replacement.
 
+## Can browser and Flutter apps connect without a client CLI?
+
+Yes. The `1.3.0-beta.1` CLI can generate a portable ticket with
+`locho share SERVICE --config PATH --ticket`. The published `locho_web` and
+`locho_flutter` SDKs are independently versioned at `0.1.0-beta.1`. Both use TCP
+service capabilities and the existing `locho/3` protocol. Browser HTTP runs over
+the SDK's relay transport; Flutter uses ordinary Dart HTTP through a local loopback
+attachment. Backend user authentication and credential persistence belong to the app.
+
+Tickets contain bearer credentials and are not encrypted invitations. Peer
+`connected` status is not proof of service/API readiness; apps check `/health`
+separately. Flutter is foreground-only. Physical iOS, full physical/mobile-browser
+and real network-transition acceptance remain open. Browser managed WebSockets and
+authenticated browser relays are unsupported in this beta. See
+[SDK releases](docs/sdk-releases.md) and [beta evidence](docs/release-1.3.0-beta.1.md).
+
 ## Can one host expose multiple services?
 
 Yes. A single host process can expose multiple explicitly configured HTTP and
