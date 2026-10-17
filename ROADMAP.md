@@ -62,7 +62,8 @@ audit-grade access records, or a centralized locho account system.
 ## 1.3.0-beta.1: SDK Integration Beta
 
 The beta adds portable single-service tickets, shared client libraries and public
-browser/foreground Flutter SDKs, independently versioned at `0.1.0-beta.1`.
+browser/foreground Flutter SDKs, independently versioned at browser `0.1.0-beta.1`
+and Flutter `0.1.0-beta.2`.
 Both standalone notes examples consume the registry packages and share one API.
 JSON, scoped opt-in persistence, explicit lifecycle/recovery and SSE have
 desktop-browser/Android-emulator evidence; Android/iOS compilation is covered in CI.
