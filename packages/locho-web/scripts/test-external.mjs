@@ -15,7 +15,7 @@ try {
   const pack = JSON.parse(run('npm', ['pack', '--json', '--pack-destination', temporary], root, process.env, true))[0];
   const files = pack.files.map((file) => file.path);
   const expected = [
-    'package.json', 'LICENSE', 'README.md', 'dist/package/index.js', 'dist/package/index.d.ts',
+    'package.json', 'LICENSE', 'README.md', 'CHANGELOG.md', 'dist/package/index.js', 'dist/package/index.d.ts',
     'dist/package/generated/locho_web.js', 'dist/package/generated/locho_web.d.ts',
     'dist/package/generated/locho_web_bg.wasm', 'dist/package/generated/locho_web_bg.wasm.d.ts',
     'dist/package/HTTP.md', 'dist/package/TICKETS.md', 'dist/package/build.json',
@@ -33,14 +33,14 @@ try {
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module', dependencies: {
-    '@locho/web': `file:../${pack.filename}`, vite: '7.3.7', typescript: '5.9.3',
+    locho_web: process.env.LOCHO_NPM_VERSION ?? `file:../${pack.filename}`, vite: '7.3.7', typescript: '5.9.3',
   } }));
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
   for (const name of ['index.html', 'main.ts', 'lifecycle.html', 'lifecycle.ts']) {
     const source = await readFile(join(root, 'examples/minimal', name), 'utf8');
-    await writeFile(join(consumer, name), source.replaceAll("'../../src/index'", "'@locho/web'"));
+    await writeFile(join(consumer, name), source.replaceAll("'../../src/index'", "'locho_web'"));
   }
-  await writeFile(join(consumer, 'types.ts'), `import { LochoClient, LochoTicket, initializeLocho, type LochoRequestOptions, type LochoStreamRequestOptions } from '@locho/web';
+  await writeFile(join(consumer, 'types.ts'), `import { LochoClient, LochoTicket, initializeLocho, type LochoRequestOptions, type LochoStreamRequestOptions } from 'locho_web';
 const options: LochoRequestOptions = { method: 'POST', body: new Uint8Array([1]) };
 const streamOptions: LochoStreamRequestOptions = { setupTimeoutMs: 15000, idleTimeoutMs: 75000 };
 async function stream(client: LochoClient) { const response: Response = await client.fetchStream('/api/events', streamOptions); await response.body?.cancel(); }
@@ -49,8 +49,8 @@ void consume;
 void stream;
 `);
   await writeFile(join(consumer, 'initialize.html'), '<!doctype html><p id="result">initializing</p><script type="module" src="./initialize.ts"></script>');
-  await writeFile(join(consumer, 'initialize.ts'), `import { initializeLocho, LochoTicket } from '@locho/web';
-import wasmUrl from '@locho/web/wasm?url';
+  await writeFile(join(consumer, 'initialize.ts'), `import { initializeLocho, LochoTicket } from 'locho_web';
+import wasmUrl from 'locho_web/wasm?url';
 await Promise.all([initializeLocho(wasmUrl), initializeLocho()]);
 const code = await LochoTicket.parse('invalid').catch((error) => error.code);
 document.querySelector('#result').textContent = code === 'invalidTicket' ? 'initialized' : 'failed';

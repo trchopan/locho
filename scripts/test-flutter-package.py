@@ -20,24 +20,31 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", choices=["android", "ios"], required=True)
     parser.add_argument("--device", help="Android device/emulator for debug and release runtime tests")
+    parser.add_argument("--hosted", metavar="VERSION", help="Verify the published pub.dev version instead of the local archive")
     args = parser.parse_args()
-    manifest = json.loads((ROOT / "target/flutter-package/manifest.json").read_text())
-    archive = ROOT / "target/flutter-package" / manifest["archive"]
-    import hashlib
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != manifest["sha256"]:
-        raise RuntimeError("Flutter package checksum mismatch")
+    if not args.hosted:
+        manifest = json.loads((ROOT / "target/flutter-package/manifest.json").read_text())
+        archive = ROOT / "target/flutter-package" / manifest["archive"]
+        import hashlib
+        if hashlib.sha256(archive.read_bytes()).hexdigest() != manifest["sha256"]:
+            raise RuntimeError("Flutter package checksum mismatch")
     with tempfile.TemporaryDirectory(prefix="locho-external-flutter-") as temporary:
         directory = Path(temporary)
-        with tarfile.open(archive) as source:
-            source.extractall(directory, filter="data")
-        package = directory / "locho_flutter"
-        if any((package / name).exists() for name in ["example", "build", "rust/target"]):
-            raise RuntimeError("Package includes development artifacts")
-        if "../../../crates" in (package / "rust/Cargo.toml").read_text():
-            raise RuntimeError("Package still depends on sibling Rust paths")
+        if not args.hosted:
+            with tarfile.open(archive) as source:
+                source.extractall(directory, filter="data")
+            package = directory / "locho_flutter"
+            if any((package / name).exists() for name in ["example", "build", "rust/target"]):
+                raise RuntimeError("Package includes development artifacts")
+            if "../../../crates" in (package / "rust/Cargo.toml").read_text():
+                raise RuntimeError("Package still depends on sibling Rust paths")
+            for crate in ["locho-core", "locho-client-native"]:
+                if not (package / "rust/crates" / crate / "Cargo.toml").is_file():
+                    raise RuntimeError(f"Package is missing bundled {crate}")
+            subprocess.run(["cargo", "metadata", "--locked", "--offline", "--format-version=1", "--no-deps", "--manifest-path", str(package / "rust/Cargo.toml")], cwd=directory, check=True, stdout=subprocess.DEVNULL)
         app = directory / "consumer"
         run(["flutter", "create", "--platforms", args.platform, "--org", "dev.chop", "--project-name", "locho_external", str(app)], directory)
-        (app / "pubspec.yaml").write_text('''name: locho_external
+        pubspec = '''name: locho_external
 publish_to: none
 version: 0.1.0+1
 environment:
@@ -56,7 +63,10 @@ dev_dependencies:
     sdk: flutter
 flutter:
   uses-material-design: true
-''')
+'''
+        if args.hosted:
+            pubspec = pubspec.replace("  locho_flutter:\n    path: ../locho_flutter", f"  locho_flutter: {args.hosted}")
+        (app / "pubspec.yaml").write_text(pubspec)
         shutil.rmtree(app / "test")
         example = ROOT / "packages/locho_flutter/example"
         # These app entry points import curated package exports, never generated FRB.
@@ -94,7 +104,7 @@ flutter:
             info.write_bytes(plistlib.dumps(values))
             run(["flutter", "build", "ios", "--simulator", "--debug"], app)
             run(["flutter", "build", "ios", "--release", "--no-codesign"], app)
-        print(f"External Flutter archive consumer passed: {args.platform}")
+        print(f"External Flutter {'pub.dev ' + args.hosted if args.hosted else 'archive'} consumer passed: {args.platform}")
 
 
 if __name__ == "__main__":

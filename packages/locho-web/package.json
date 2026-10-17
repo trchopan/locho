@@ -1,7 +1,7 @@
 {
-  "name": "@locho/web",
-  "version": "0.1.0-dev.3",
-  "private": true,
+  "name": "locho_web",
+  "version": "0.1.0-beta.1",
+  "publishConfig": { "access": "public", "tag": "beta" },
   "type": "module",
   "license": "MIT",
   "description": "Browser Locho TCP tickets and bounded streaming HTTP over WASM",
@@ -12,7 +12,7 @@
     ".": { "types": "./dist/package/index.d.ts", "import": "./dist/package/index.js" },
     "./wasm": "./dist/package/generated/locho_web_bg.wasm"
   },
-  "files": ["dist/package/", "LICENSE", "README.md"],
+  "files": ["dist/package/", "LICENSE", "README.md", "CHANGELOG.md"],
   "scripts": {
     "build": "tsc --noEmit",
     "build:package": "node scripts/build-package.mjs",
