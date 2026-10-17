@@ -265,7 +265,8 @@ locho share api --config locho.toml --ticket
 
 See [portable tickets v1](docs/tickets.md) for optional peer relay hints, encoding,
 and credential handling. Prerelease Flutter and browser wrappers accept the same
-ticket through the shared Rust parser; standalone package delivery remains pending.
+ticket through the shared Rust parser. Both SDKs are available as public beta
+packages; see [SDK releases](docs/sdk-releases.md) for installation and compatibility.
 
 Check local state and configuration without printing capabilities:
 
@@ -485,9 +486,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, complete
 quality gate, integration tests, and release verification commands. Maintainers
 preparing a release should follow [RELEASE.md](RELEASE.md).
 
-The workspace's shared protocol/validation library is the first step toward
-Flutter and browser SDKs. See [SDK foundation](docs/sdk-foundation.md) for the
-implemented boundary and remaining integration gates.
+Flutter and browser SDK beta packages use the workspace's shared protocol and
+client libraries. See [SDK releases](docs/sdk-releases.md) for registry installation,
+verification and platform limitations, and [SDK foundation](docs/sdk-foundation.md)
+for the shared architecture.
 
 ## License
 

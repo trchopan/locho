@@ -1,10 +1,21 @@
-# Locho Flutter native feasibility package
+# Locho Flutter SDK — beta
 
 Foreground-only Android/iOS Dart wrapper over `locho-client-native`, using pinned
-Flutter Rust Bridge **2.12.0** and its Cargokit source-build template. This is an
-unpublished prerelease package, not a Flutter web SDK. A standalone source-build
-archive is available through CI; see `docs/flutter-package.md` in the Locho
-repository for artifact installation and external-consumer verification.
+Flutter Rust Bridge **2.12.0** and its Cargokit source-build template. This is a
+source-build beta package for Android and iOS. It does not support Flutter web.
+
+## Install
+
+```yaml
+dependencies:
+  locho_flutter: 0.1.0-beta.1
+```
+
+Run `flutter pub get` and commit your app's lockfile. Published packages include
+the matching Locho Rust core/native sources and generated FRB bindings; no SDK
+checkout, GitHub authentication or code generation is required by consumers.
+Rust and the platform build toolchains described below are still required.
+Physical iOS runtime and broad physical-device/network acceptance remain open.
 
 ## Toolchain and build
 
@@ -43,9 +54,9 @@ flutter run -d <android-device-id>
 Cargokit compiles Rust automatically. Bridge has an isolated Cargo workspace/lock
 and is excluded from root CLI workspace gates; CLI builds need no Flutter tools.
 Local development core/native paths require this checkout. The distribution builder
-rewrites the archive dependency to an exact public Git revision with a locked Cargo
-graph. Consumers extract the archive and reference that package directory, with no
-sibling Rust sources. Internet/native source-build toolchains are required.
+bundles matching core/native sources inside the published package with a locked
+Cargo graph. Internet access for registry dependencies and native source-build
+toolchains are required; consumer builds do not fetch a separate Locho Git revision.
 
 Vendored Cargokit comes from the FRB 2.12 plugin template, with two local Gradle
 patches: `ExecOperations` replaces removed `Project.exec` for Gradle 9; generated

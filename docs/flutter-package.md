@@ -1,17 +1,27 @@
 # Flutter standalone source-build package
 
-`scripts/package-flutter.py` creates `target/flutter-package/locho_flutter-0.1.0-dev.2.tar.gz`,
-a SHA-256 sidecar and a file manifest. CI uploads them as `locho-flutter-source-package`.
-No pub.dev publication or prebuilt native download occurs.
+`scripts/package-flutter.py` creates a self-contained staging package at
+`target/flutter-package/locho_flutter`, a `locho_flutter-0.1.0-beta.1.tar.gz`
+archive, a SHA-256 sidecar and a file manifest. CI uploads the output as
+`locho-flutter-source-package`. The staging directory is also the pub.dev
+publication input. Native libraries are built from source, not downloaded.
 
 ## Consumer setup
 
-Download the archive and checksum from the same CI artifact, verify the checksum,
-and extract it outside the SDK checkout:
+Use the hosted beta for ordinary application installation:
+
+```yaml
+dependencies:
+  locho_flutter: 0.1.0-beta.1
+```
+
+Run `flutter pub get` and retain the application lockfile. No vendor bootstrap or
+GitHub credentials are needed. For prepublication verification or retained archives,
+download the archive and checksum together and extract outside the SDK checkout:
 
 ```sh
-shasum -a 256 -c locho_flutter-0.1.0-dev.2.tar.gz.sha256
-tar -xzf locho_flutter-0.1.0-dev.2.tar.gz
+shasum -a 256 -c locho_flutter-0.1.0-beta.1.tar.gz.sha256
+tar -xzf locho_flutter-0.1.0-beta.1.tar.gz
 ```
 
 Reference the extracted package from your application's pubspec:
@@ -35,14 +45,13 @@ version, source revision/dirty state, native dependency revision and protocol ve
 ## Rust sources and reproducibility
 
 Development keeps `../../../crates/locho-client-native` for local changes. Packaging
-rewrites that one dependency to the full Git revision
-`4f8aa20c3bcbabb667ef2354510bdb101d690fa6` from the public Locho repository, including
-its matching core crate. This reviewed revision includes ticket support. The
-distribution lockfile updates source identities and is checked against the original
-registry version/checksum set. Consumers build with `--locked` in all Cargokit modes.
-An upgrade of the pinned native/core revision is a deliberate package change.
+copies the matching `locho-core` and `locho-client-native` source trees into
+`rust/crates/` and rewrites the bridge dependency to that internal path. Both crates
+retain their licenses. The lockfile is checked against the original registry
+version/checksum set. Consumers build with `--locked` in all Cargokit modes.
+`BUILD.json` records source revision and dirty state for both wrapper and native code.
 
-Internet access is needed for Git/crates.io, Dart packages and native build tools
+Internet access is needed for crates.io, Dart packages and native build tools
 on a cold machine. Cargokit compiles the native library during application builds;
 consumers do not copy generated bindings or need unpublished sibling Rust crates.
 This is a source-build distribution, not a claim of hermetic/offline builds.
@@ -66,9 +75,31 @@ remains foreground-only. See the package README for ticket/HTTP/error semantics.
 
 ## External-consumer verification
 
+Publish only a verified staging directory outside the Git checkout, not
+`packages/locho_flutter` (which intentionally keeps a development-only sibling path).
+Pub also inherits the repository's ignored `target/` ancestor, so publishing directly
+from that directory incorrectly omits all files. From the repository root:
+
+```sh
+python3 scripts/package-flutter.py --output /absolute/path/outside-the-checkout/locho-sdk-release
+```
+
+Then from `/absolute/path/outside-the-checkout/locho-sdk-release/locho_flutter`:
+
+```sh
+flutter pub get
+flutter pub publish --dry-run
+flutter pub publish
+```
+
+The SDK version must be new for each publication. Commit application lockfiles when
+upgrading consumers, and verify registry installation in a fresh app afterward.
+
 ```sh
 python3 scripts/package-flutter.py
 python3 scripts/test-flutter-package.py --platform android
+# Verify the actual pub.dev package in a fresh external app:
+python3 scripts/test-flutter-package.py --platform android --hosted 0.1.0-beta.1
 # Optional real runtime acceptance (release CLI and reference API must be built):
 python3 scripts/test-flutter-package.py --platform android --device emulator-5554
 python3 scripts/test-flutter-package.py --platform ios

@@ -1,0 +1,16 @@
+# Publication uses the staged package produced by scripts/package-flutter.py.
+.dart_tool/
+.flutter-plugins-dependencies
+build/
+coverage/
+example/
+test/
+integration_test/
+pubspec.lock
+**/target/
+**/.dart_tool/
+**/build/
+**/.gradle/
+**/__pycache__/
+*.log
+.DS_Store
