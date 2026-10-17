@@ -3,49 +3,40 @@
 The workspace contains the `locho` CLI, unpublished `locho-core` 0.1.0 shared
 library and `locho-client-native` 0.1.0 native attachment adapter. See
 [Native TCP attachment API](native-client.md) for caller-owned runtime, loopback
-startup/status/shutdown and HTTP integration. Flutter/browser packages remain
-subsequent deliverables.
+startup/status/shutdown and HTTP integration. The published browser and Flutter
+packages are independently versioned at `0.1.0-beta.1`; see
+[SDK releases](sdk-releases.md) for installation, provenance and registry integrity.
 
-The Android-first [Flutter feasibility package](../packages/locho_flutter/README.md)
-now wraps the native adapter with pinned FRB/source-build integration. Physical
-Android debug/release attach/GET/close evidence is recorded there. iOS build CI and
-remaining platform/network/distribution gates are separate from that evidence.
+The [Flutter SDK](../packages/locho_flutter/README.md) wraps the native adapter with
+pinned FRB, a persistent runtime and bundled core/native source-build integration.
+Android/iOS compilation and fresh external consumers are checked in CI. Android
+emulator notes/ticket/runtime evidence and earlier physical Android feasibility are
+recorded separately from the remaining physical iOS and broad network matrix.
 
-The browser feasibility scaffold is `crates/locho-web` plus `packages/locho-web`.
-It reuses the shared peer session and authorization path and currently exposes only
-a raw `/health` proof. Controlled Linux CI builds WASM and exercises the official
-N0 relay. Local macOS builds also work with a WebAssembly-capable LLVM compiler
-instead of Apple Clang. The proof is not a final browser API or ticket contract.
+The browser adapter is `crates/locho-web` plus `packages/locho-web`. Its public
+TypeScript API reuses shared peer supervision and service authorization through
+WASM. Production external-consumer tests cover Chromium/Firefox/WebKit through
+public N0 relay/discovery, including explicit, absent, dotted and unreachable host
+relay hints. Controlled build runners are not a controlled-relay environment.
+Local macOS builds require a WebAssembly-capable LLVM rather than Apple Clang.
 
-The follow-up proof adds bounded response framing, authority validation, startup and
-request cancellation hooks, late-connect cleanup, and production Playwright asset
-loading tests for Chromium/Firefox/WebKit. Controlled CI now starts a real Locho
-host and TCP health backend and exercises the browser through the official N0 relay
-using a peer relay hint derived from N0 diagnostics. The follow-up addressing matrix
-adds host-ID-only discovery, dotted hints and unreachable-hint recovery in fresh
-browser contexts. The browser adapter normalizes DNS root dots in hints and verified
-Pkarr results while retaining N0 publishing. Local macOS production WASM passed all
-18 cases on 2026-10-15; PR #89 also passed hosted Linux verification. Custom
-authenticated relays and live relay migration remain separate evidence.
-
-Browser lifecycle hardening propagates operation-scoped cancellation into Rust,
-preserves typed errors, and shares close completion across repeated callers.
-Health abort drops its stream without closing independent traffic. The local
-production WASM matrix now passes 33 cases, including upstream-observed stream
-release, active close, interruption/unavailability and repeated cycles. Hosted
-Linux lifecycle evidence remains pending; see the browser package README for
-startup and page-destruction cleanup bounds.
+Operation-scoped cancellation, typed errors, bounded watch subscriptions and shared
+close completion are implemented. Tests check upstream-observed stream release,
+independent concurrent traffic, interruption and repeated cycles. Applications own
+page/foreground lifecycle and backend readiness checks; peer connectivity alone
+does not establish service/API readiness.
 
 ## Implemented Boundary
 
 SDK [status observation](status-observation.md) now provides bounded cancellation
 for Flutter subscriptions and cancellable Rust-watch-backed browser observers.
-Application package-pin upgrades remain a separate integration slice.
+Both standalone notes apps consume the registry betas in
+[locho_sdk_examples](https://github.com/trchopan/locho_sdk_examples).
 
-The browser now also exposes a [buffered HTTP subset](browser-http.md), backed by
-bounded Rust framing and binary WASM responses. Local production integration passes
-48 browser cases including the pinned reference API health/login/notes/logout
-journey. Hosted Linux verification and external package delivery are separate gates.
+The browser exposes a [buffered and streaming HTTP subset](browser-http.md), backed
+by bounded Rust framing and binary WASM responses. External production integration
+includes reference API login/notes/logout and incremental authenticated SSE. The
+Flutter app uses ordinary Dart buffered/streamed HTTP through its loopback tunnel.
 
 `crates/locho-core` owns:
 
@@ -89,8 +80,8 @@ Passing a token to native iroh does not establish browser relay-auth support.
 `PeerSession::start(endpoint, target)` transfers exclusive logical endpoint ownership
 and returns a handle plus `SessionDriver`. The caller must run `driver.run()` on a
 persistent executor; the core never calls `spawn` or creates a runtime. Native
-callers use their Tokio runtime. A browser executor and clock still need feasibility
-verification; avoiding native spawning does not by itself establish WASM support.
+callers use their Tokio runtime. The WASM adapter supplies browser-compatible task
+execution and clocks; the Flutter bridge owns its persistent native runtime.
 
 ```rust,no_run
 use iroh::{Endpoint, EndpointAddr};
@@ -156,29 +147,20 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Remaining Integration Gates
 
-1. Browser `wasm32-unknown-unknown` crypto/runtime/discovery/relay proof against a
-   real host is covered through the official N0 relay; record custom relay
-   authentication and stale peer-hint behavior separately.
-2. FRB runtime/native packaging and physical iOS/Android attach/GET/close proof on
-   the implemented native loopback attachment adapter.
-3. The [single-service ticket v1 contract](tickets.md) now has a shared core codec,
-   interoperability vectors and explicit `locho share --ticket` output. SDK ticket
-   consumption now uses the shared Rust parser through WASM and FRB, with redacted
-   objects, metadata/export and peer hints. Local production browser and real FRB
-   vector tests pass. Android 17/API 37 ARM64 emulator ticket debug/release runtime
-   checks pass on 16 KiB pages; physical-device ticket acceptance and standalone
-   packages remain open.
-4. Deliver distributable Dart/npm packages and exercise external consuming apps
-   against one versioned health/login/notes backend.
+1. Physical iOS and full physical Android/mobile-browser notes and ticket journeys,
+   device storage behavior, lifecycle and real Wi-Fi/cellular transitions.
+2. Actual BFCache and full browser-process restart evidence beyond synthetic page
+   events and new page owners; verified transport-path/live-relay migration evidence.
+3. Controlled-relay coverage, authenticated browser relay support and diagnosis of
+   historical public-N0 initial-health/restore timeouts. Later green runs do not
+   establish the cause of those timeouts.
+4. Candidate-specific host/package/examples compatibility and published CLI artifact
+   verification for each release. See [1.3.0-beta.1 evidence](release-1.3.0-beta.1.md).
 
-Browser package delivery now builds an allowlisted ESM/types/WASM tarball with
-source/version metadata. A temporary external Vite consumer installs only that
-tarball, builds below `/sdk/`, and runs the N0/notes integration matrix. Public
-declarations contain no raw WASM handles. Hosted package evidence is pending;
-Flutter now has a [standalone source-build archive](flutter-package.md), with exact
-public Git native/core dependencies instead of sibling Rust paths. Fresh external
-Android debug/release builds and 16 KiB emulator ticket runtime pass locally;
-external iOS builds are delegated to hosted CI.
+Streaming/SSE has desktop/emulator evidence. Browser managed WebSockets, QR and
+background mobile execution are later scope. Package installation and source-build
+requirements are documented in [SDK releases](sdk-releases.md) and
+[Flutter distribution](flutter-package.md).
 
 The core API is an internal prerelease boundary and may evolve during these gates.
 No wire version change or new host configuration is introduced by this extraction.

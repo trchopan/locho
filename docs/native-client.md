@@ -2,8 +2,9 @@
 
 `locho-client-native` is an unpublished Rust 0.1.0 workspace crate for foreground
 native applications. It uses `locho-core` peer supervision and the existing
-`locho/3` TCP protocol. Flutter bindings and physical-device support are a later
-feasibility gate; this crate alone does not establish mobile packaging support.
+`locho/3` TCP protocol. The published [Flutter beta](sdk-releases.md) wraps it with
+FRB and source-build tooling. Physical iOS and broad device/network acceptance
+remain open; native Rust tests alone do not establish mobile runtime support.
 
 ## Usage
 
@@ -33,8 +34,9 @@ async fn foreground(host_id: String, capability: String) -> Result<(), ClientErr
 Options contain host ID, TCP capability, local port (default zero), optional direct
 address and optional validated in-memory `RelaySettings`. The public SDK always
 binds `127.0.0.1`; an OS-assigned port is returned. Non-TCP capabilities, malformed
-host IDs and invalid direct addresses fail with sanitized typed errors. Tickets
-are deferred until discovery/addressing decisions are proven.
+host IDs and invalid direct addresses fail with sanitized typed errors.
+`TcpOptions::from_ticket(&ticket)` accepts the shared [ticket v1](tickets.md)
+metadata and peer relay hints; client relay policy remains separate.
 
 `start_tcp` bounds validation/listener/endpoint setup to 15 seconds and returns
 before peer connection. `attach_tcp` uses a caller-supplied nonzero deadline, at
@@ -102,5 +104,8 @@ cargo test --workspace --all-targets --all-features -- --test-threads=1
 Native tests use a controlled version-3 direct-address host and exercise HTTP
 GET/POST, concurrency, port release, scoped ownership, startup cancellation/timeouts,
 client-close races, service rejection and restart recovery. CLI optimized integration
-and release-smoke gates remain required. Physical iOS/Android builds, JNI/DNS setup,
-FRB runtime lifetime and external Flutter consumption are subsequent gates.
+and release-smoke gates remain required. FRB runtime ownership, Android JNI/DNS
+initialization, standalone package consumption and Android/iOS build checks are
+implemented. See [SDK evidence](sdk-releases.md) for the distinction between
+compilation, emulator runtime, earlier physical Android feasibility and remaining
+physical-device acceptance.

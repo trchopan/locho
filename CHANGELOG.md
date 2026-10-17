@@ -2,6 +2,45 @@
 
 All notable changes to `locho` are documented here.
 
+## [1.3.0-beta.1] - 2026-10-17
+
+This prerelease introduces portable service tickets and SDK integration for browser
+and foreground Flutter applications. It is intended for beta testing; `1.2.0`
+remains the stable release channel.
+
+- Adds explicit `locho share SERVICE --ticket` output with optional host peer-relay
+  hints. Ticket v1 packages an existing service capability; it is a bearer credential,
+  not an encrypted, expiring or independently revocable invitation.
+- Extracts shared protocol, authorization, peer-session supervision and native TCP
+  attachment libraries while preserving CLI HTTP/TCP and multi-service behavior.
+- Supports the independently versioned public `locho_web` and `locho_flutter`
+  `0.1.0-beta.1` packages using the existing `locho/3` protocol.
+- Provides browser TCP-service HTTP with bounded buffered/streaming responses,
+  operation cancellation, status observation and explicit cleanup. Browser traffic
+  uses iroh's WebSocket-compatible relay transport; no client-side Locho process is
+  required. This is a documented HTTP subset, not the browser's native Fetch stack.
+- Provides foreground Flutter TCP attachments through a phone-local loopback
+  listener, ordinary Dart HTTP clients and bundled Rust source-build integration.
+- Adds packaged external-consumer checks and shared browser/Flutter notes examples
+  with separate backend authentication, remembered sessions, recovery and SSE.
+
+No host configuration or wire-protocol migration is required. Upgrading replaces
+the executable and retains host identity and service capabilities. SDK packages are
+installed separately from npm/pub.dev; see `docs/sdk-releases.md`.
+
+Beta evidence covers desktop Chromium/Firefox/WebKit, Android emulator runtime,
+Android/iOS builds and limited earlier physical Android feasibility. Physical iOS,
+full physical-device/mobile-browser acceptance, real network transitions, actual
+BFCache and controlled-relay acceptance remain open. Earlier browser health/restore
+timeouts over public N0 remain unexplained despite subsequent green runs. Browser
+managed WebSockets, authenticated browser relays, QR scanning and background mobile
+execution are outside this beta's scope. The CLI HTTP service still does not support
+WebSocket upgrades; native TCP byte forwarding remains available.
+
+Linux ARM64 artifacts are cross-compiled; native verification is pending. Other
+target verification boundaries and candidate evidence are in
+`docs/release-1.3.0-beta.1.md`.
+
 ## [1.2.0] - 2026-09-29
 
 This release adds configurable HTTP timeout controls, custom relay transport

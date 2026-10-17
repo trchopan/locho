@@ -59,6 +59,22 @@ relay infrastructure.
 The project does not promise individual machine identity, per-user policy,
 audit-grade access records, or a centralized locho account system.
 
+## 1.3.0-beta.1: SDK Integration Beta
+
+The beta adds portable single-service tickets, shared client libraries and public
+browser/foreground Flutter SDKs, independently versioned at `0.1.0-beta.1`.
+Both standalone notes examples consume the registry packages and share one API.
+JSON, scoped opt-in persistence, explicit lifecycle/recovery and SSE have
+desktop-browser/Android-emulator evidence; Android/iOS compilation is covered in CI.
+The existing host config and `locho/3` wire protocol are preserved.
+
+This is a limited beta, not completion of the full mobile acceptance matrix.
+Physical iOS, full physical Android/mobile-browser journeys, real network/storage
+transitions, actual BFCache and controlled-relay coverage remain follow-up gates.
+Browser managed WebSockets, QR and background mobile execution are later work.
+See [the release evidence record](docs/release-1.3.0-beta.1.md) and
+[SDK installation/provenance](docs/sdk-releases.md).
+
 ## Non-Goals
 
 The following are outside the product boundary:

@@ -6,6 +6,11 @@ same checks locally and in CI.
 
 ## Release Candidate
 
+For the current beta, record candidate-specific results and remaining gates in
+[1.3.0-beta.1 evidence](docs/release-1.3.0-beta.1.md). SDK package versions are
+independent of the CLI version; metadata-only CLI changes may require manual
+dispatch of the browser and Flutter workflows against the candidate branch.
+
 - [ ] Confirm the version in `Cargo.toml`, `Cargo.lock`, and the changelog.
 - [ ] Confirm the changelog describes user-visible changes and known limitations.
 - [ ] Confirm `README.md`, `FAQ.md`, and installation instructions use the
@@ -19,6 +24,8 @@ same checks locally and in CI.
 - [ ] Verify the documented HTTP and TCP quickstarts with the packaged binary.
 - [ ] Verify host identity and service capabilities survive an executable-only
       upgrade.
+      Run `python3 scripts/verify-upgrade.py --previous-binary <released-1.2.0>
+      --candidate-binary <packaged-candidate>` with Python 3.11+ and OpenSSL.
 - [ ] Verify stale capabilities fail after rotation and unaffected services keep
       working.
 - [ ] Review logs and diagnostics for leaked capabilities or private keys.
@@ -44,7 +51,9 @@ release notes must state that verification is pending.
 - [ ] Update `Cargo.toml` and `Cargo.lock` to the final version.
 - [ ] Confirm the final notes are in the versioned changelog entry.
 - [ ] Run the complete release gate again from a clean checkout.
-- [ ] Create and push the matching tag, for example `v1.1.0`.
+- [ ] Create and push the matching tag, for example `v1.3.0-beta.1`.
+- [ ] Confirm beta releases are marked prerelease and the stable latest-release
+      installers continue to select the stable release.
 - [ ] Confirm the GitHub Release contains every supported archive, checksum, and
       installer.
 - [ ] Download each published artifact into a clean temporary directory and
