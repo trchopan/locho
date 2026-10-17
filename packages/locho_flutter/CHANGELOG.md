@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.2
+
+- Rewrite the README as an app-developer quickstart with install, ticket setup,
+  first request, Android/iOS configuration, lifecycle guidance and troubleshooting.
+- Clarify that the SDK provides a foreground local tunnel while applications use
+  ordinary Dart HTTP clients and own authentication/storage.
+
 ## 0.1.0-beta.1
 
 - First pub.dev beta, with generated Dart bindings and Android/iOS integration.

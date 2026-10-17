@@ -1,191 +1,236 @@
-# Locho Flutter SDK — beta
+# Locho for Flutter
 
-Foreground-only Android/iOS Dart wrapper over `locho-client-native`, using pinned
-Flutter Rust Bridge **2.12.0** and its Cargokit source-build template. This is a
-source-build beta package for Android and iOS. It does not support Flutter web.
+Connect an Android or iOS Flutter app to a private HTTP API through an encrypted
+Locho tunnel. Your app uses familiar Dart HTTP clients such as `package:http` or
+Dio; the SDK provides the local tunnel.
+
+This beta is for **foreground Android and iOS apps**. Flutter Web, background
+services and automatic request replay are not supported.
 
 ## Install
 
+Add the package and an HTTP client to `pubspec.yaml`:
+
 ```yaml
 dependencies:
-  locho_flutter: 0.1.0-beta.1
+  locho_flutter: 0.1.0-beta.2
+  http: ^1.6.0
 ```
 
-Run `flutter pub get` and commit your app's lockfile. Published packages include
-the matching Locho Rust core/native sources and generated FRB bindings; no SDK
-checkout, GitHub authentication or code generation is required by consumers.
-Rust and the platform build toolchains described below are still required.
-Physical iOS runtime and broad physical-device/network acceptance remain open.
-
-## Toolchain and build
-
-Verified locally: Flutter **3.44.5**, Dart **3.12.2**, Rust **1.96.1**, Android NDK
-**28.2.13676358**, JDK **21**. Android minimum API 23; initial native ABI matrix is
-ARM64 + x86_64. iOS deployment target 13.0 is configured but unverified locally;
-full Xcode/CocoaPods and macOS CI are needed for compilation.
-
-```sh
-cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
-cargo install cargo-expand --version 1.0.127 --locked
-rustup target add aarch64-linux-android x86_64-linux-android
-```
-
-From this package:
+Then run:
 
 ```sh
 flutter pub get
-flutter_rust_bridge_codegen generate
-dart format --output=none --set-exit-if-changed lib test example/lib example/integration_test
-flutter analyze
-flutter test
-cargo test --locked --manifest-path rust/Cargo.toml
-cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 ```
 
-From `example/`:
+The package builds its native Rust library during your app build. You do not need
+a Locho checkout, GitHub credentials or Rust code-generation commands.
+
+## Requirements
+
+- Flutter 3.44.5 or newer
+- Dart 3.12.2 or newer
+- Android API 23 or newer, JDK 21 and Android NDK 28.2.13676358
+- Rust 1.96 or newer
+- iOS deployment target 13 or newer, with Xcode and CocoaPods
+
+The first native build can take several minutes while Rust dependencies compile.
+The initial Android ABI set is ARM64 and x86_64. The package is not available for
+Flutter Web or desktop Flutter targets.
+
+## How It Works
+
+```text
+Your Flutter app
+    -> http://127.0.0.1:<local-port>
+    -> Locho attachment
+    -> encrypted Locho connection
+    -> private API on your homelab
+```
+
+The Locho ticket authorizes access to one configured service. It is separate from
+your API's own login token or user authentication. Treat a ticket like a password.
+
+## Get A Ticket
+
+Configure the private API as a TCP service on the machine where it runs:
+
+```toml
+[[services]]
+name = "sample-api"
+type = "tcp"
+endpoint = "127.0.0.1:8080"
+```
+
+Start Locho and create a ticket:
 
 ```sh
-flutter pub get
-flutter build apk --debug --target-platform android-arm64,android-x64
-flutter build apk --release --target-platform android-arm64,android-x64
-flutter run -d <android-device-id>
+locho host --config locho.toml
+locho share sample-api --config locho.toml --ticket
 ```
 
-Cargokit compiles Rust automatically. Bridge has an isolated Cargo workspace/lock
-and is excluded from root CLI workspace gates; CLI builds need no Flutter tools.
-Local development core/native paths require this checkout. The distribution builder
-bundles matching core/native sources inside the published package with a locked
-Cargo graph. Internet access for registry dependencies and native source-build
-toolchains are required; consumer builds do not fetch a separate Locho Git revision.
+Copy the complete `locho1:...` value into your app. Do not put tickets in URLs,
+logs, analytics or source control. For development, the SDK also accepts an
+explicit host ID and capability instead of a ticket.
 
-Vendored Cargokit comes from the FRB 2.12 plugin template, with two local Gradle
-patches: `ExecOperations` replaces removed `Project.exec` for Gradle 9; generated
-ABI selection is restricted to ARM64/x86_64. It uses `--locked` for all modes. No
-prebuilt binaries are downloaded. Preserve its license/provenance during upgrades.
+## First Request
 
-## Public API
+The complete connection lifecycle looks like this:
 
 ```dart
+import 'package:http/http.dart' as http;
 import 'package:locho_flutter/locho_flutter.dart';
 
-final client = await LochoClient.create();
-final tunnel = await client.attach(
-  ticket: await LochoTicket.parse(ticketText),
-  connectTimeout: const Duration(seconds: 15),
-);
-try {
-  // Ordinary package:http/Dio calls to tunnel.httpBaseUri.resolve('/health').
-  // Reuse the same tunnel for the foreground screen/session.
-} finally {
-  await tunnel.close();
-  await client.close();
+Future<void> checkApi(String ticketText) async {
+  final ticket = await LochoTicket.parse(ticketText.trim());
+  final client = await LochoClient.create();
+  final api = http.Client();
+  LochoAttachment? attachment;
+
+  try {
+    attachment = await client.attach(
+      ticket: ticket,
+      connectTimeout: const Duration(seconds: 15),
+    );
+
+    // Peer connection is not API readiness. Check the API explicitly.
+    final response = await api
+        .get(attachment.httpBaseUri.resolve('/health'))
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      throw Exception('API health check failed: ${response.statusCode}');
+    }
+    print(response.body);
+  } finally {
+    api.close();
+    await attachment?.close();
+    await client.close();
+  }
 }
 ```
 
-- `start` returns after setup/bind, then `waitConnected` or status observations can
-  show peer progress. A wait timeout alone leaves the attachment running.
-- `attach` covers setup/connect with one 15-second default deadline, closes partial
-  or late results before reporting failure, and accepts up to 300 seconds. Native
-  setup is itself bounded to 15 seconds; late-start cleanup can extend return time.
-- Optional `localPort` defaults zero; optional `directAddress` is development input.
-  Always IPv4 loopback, never arbitrary bind addresses. `LochoTicket.parse` uses the
-  Rust codec; metadata provides host/service/type/relay hints, `export()` explicitly
-  returns the credential, and `toString()` redacts it. Supply either a ticket or
-  explicit `hostId`/`capability`, never both. HTTP tickets fail with
-  `unsupportedService`. Native Rust relay settings exist but are not exposed in Dart.
-- `currentStatus` contains revision/state/path/port, terminal `errorCode` and latest
-  sanitized `connectionErrorCode`; `snapshot()` refreshes it. `statuses` starts with
-  the current snapshot, then coalesces watch updates. Each subscriber has one native
-  long-poll in flight (at most one second); no unbounded event queue. Unsubscribe
-  does not close its tunnel. Calls after close retain final status.
-  Observation is capped at 16 active subscribers per attachment. Unsubscribe stops
-  new waits and finishes after its bounded in-flight bridge call, even when no
-  revision changes. Pause/resume holds bounded delivery. See the repository
-  `docs/status-observation.md` contract and scheduling limitations.
-- Peer `connected` means host identity connectivity, not service authorization or
-  application login. Explicit `/health` is separate. Wrong capability may appear as
-  HTTP socket closure, not a typed auth exception. Do not replay failed writes.
-- Errors are fixed `LochoException.code` categories. Generated bindings are internal.
-  Avoid diagnostics containing host/capability input or request headers/bodies.
-- Close is idempotent; client close owns partial starts and all attachments. Dart
-  futures cannot be cancelled: applications must retain/close client ownership when
-  screens are disposed, and generation-check late results. Abandoning a Future alone
-  is not cancellation. Native finalization is best effort, never primary cleanup.
+For a real screen or session, create the client, attachment and HTTP client once;
+reuse them for multiple requests. Do not create a new tunnel for every request.
+`attachment.httpBaseUri` is a loopback URI whose port is selected by the operating
+system by default.
 
-## Runtime and Android initialization
+## Use It In An App
 
-FRB dispatch uses its executor for FFI calls; all native operations are explicitly
-spawned onto one process-lifetime, two-worker Tokio runtime initialized once. No
-per-call runtime, nested block_on, UI-thread networking, global tracing, or signals.
-Closing a client never destroys the runtime, and a new client can be created later.
-Native handles are opaque; their Rust owner drops request best-effort cancellation.
+Keep tunnel ownership in a session/controller object rather than in a short-lived
+widget:
 
-An Android FlutterPlugin loads the Rust library and installs process-lifetime
-Application/JVM refs before Dart creates a client. It initializes both iroh system
-DNS and rustls platform certificate verification. The Java verifier artifact
-`org.rustls:rustls-platform-verifier:0.2.0` must match the Android support crate in
-`rust/Cargo.lock`; adjust both together. The bridge rejects absent context rather
-than relying on DNS fallback or panic unwinding. Never disable TLS verification.
+```dart
+final attachment = await client.attach(ticket: ticket);
+final subscription = attachment.statuses.listen((status) {
+  print('${status.state} via ${status.path} on port ${status.localPort}');
+});
 
-The example main manifest includes INTERNET. Its cleartext exception is scoped to
-`127.0.0.1`; relay traffic remains HTTPS. iOS has a local-network purpose description;
-ATS/local HTTP behavior still requires real-client/device evidence.
+// Reuse attachment.httpBaseUri for package:http or Dio requests.
 
-## Physical-device verification
-
-Start/build the sibling `locho_sdk_examples` API first (`npm ci && npm run build`).
-From the Locho repository root, with release CLI already built:
-
-```sh
-python3 scripts/flutter-device-smoke.py <android-device-id>
-python3 scripts/flutter-device-smoke.py <android-device-id> --discovery
-python3 scripts/flutter-device-smoke.py <android-device-id> --release
+await subscription.cancel();
+await attachment.close();
 ```
 
-Harness starts temporary API/Locho processes, chooses a LAN direct address, writes
-credential inputs only to a temporary mode-0600 dart-define file, executes the Dart
-integration test and cleans up. Override `LOCHO_HOST_IP`/`LOCHO_EXAMPLES_DIR` if
-needed. Device must reach the selected host UDP address. `--discovery` omits explicit
-address in the SDK; it is environment-dependent, not deterministic CI evidence.
+- `LochoState.connected` means the Locho host identity is reachable. It does not
+  prove that the service capability or your API is ready. Call `/health` yourself.
+- `LochoPath` reports whether the connection is direct, relayed or mixed when the
+  path is observable.
+- `LochoException.code` provides stable categories such as `invalidTicket`,
+  `startupTimeout`, `unsupportedPlatform`, `unsupportedService`, `closed` and
+  `resourceLimit`.
+- A wrong capability can appear to an ordinary HTTP client as a closed or invalid
+  local socket. It is not always observable as a typed authorization error.
+- Close the HTTP client, status subscription, attachment and Locho client when a
+  session ends. `close()` is safe to call more than once.
+- Failed or interrupted writes are not retried automatically. Refresh explicitly
+  before deciding whether a mutation succeeded.
 
-Flutter test/Driver cannot run non-web release integration tests in this toolchain.
-The release harness builds autonomous `lib/release_smoke.dart`, installs it via adb
-and waits for a fixed pass marker without logging inputs. Release APK uses a debug
-signing key for development, not store distribution.
+## Android Setup
 
-## Evidence — 2026-10-14 and 2026-10-15
+Add Internet permission to your app's **main** manifest, not only a debug manifest:
 
-| Check | Result |
-| --- | --- |
-| Dart analyze/tests; Rust bridge host compile/Clippy | Passed |
-| Android ARM64/x86_64 native builds | Passed |
-| Android debug APK | Passed |
-| Joy 2, Android 10/API 29, ARM64 — direct LAN attach/health/close/recreate | Passed |
-| Same device — host-ID discovery without direct override | Passed; selected network/path is environment-dependent |
-| Same device — malformed host, wrong-secret HTTP failure, timeout cleanup/port release | Passed in debug integration |
-| Same device — release attach/health/close twice | Passed |
-| Native 16 KiB ELF alignment | Checked by scripts/check-android-pages.py; physical 16 KiB OS pending |
-| emulator-5554, Android 17/API 37, arm64-v8a, 16384-byte pages — CLI-ticket debug integration | Passed 2026-10-15: ticket attach/health, close/reconnect, client recreation, invalid host, wrong secret and timeout/port cleanup |
-| Same 16 KiB emulator — CLI-ticket ARM64 release smoke | Passed 2026-10-15: build/install and two ticket attach/health/close cycles |
-| Release APK ELF/ZIP alignment | Four native libraries passed ELF LOAD alignment; zipalign -c -P 16 passed |
-| iOS simulator/device compilation | Passed hosted simulator/debug and unsigned-device/release CI through PR #91 |
-| Physical iOS, physical-device ticket acceptance, Wi-Fi/cellular and authenticated custom relay | Pending |
-| Full UI pause/resume/lock/unlock/manual network matrix | Pending; generation-based policy implemented in example |
-| External source-build consumer / standalone distribution | Android debug/release builds, alignment and 16 KiB emulator CLI-ticket runtime passed; hosted external iOS builds pending |
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+```
 
-This completes the Android attach/GET/close feasibility path, not the full platform
-G1 matrix. Tiny example is memory-only; full notes/login/remembered-session apps
-belong in `locho_sdk_examples`, sharing its API. No capability/ticket is saved.
+The SDK uses HTTPS for relay traffic. If your private API is reached through the
+local loopback HTTP address, allow cleartext traffic only for `127.0.0.1`:
 
-Ticket consumption follow-up: shared vectors pass through the real FRB library on
-macOS. CI builds a Linux native library and runs the same Dart conformance test with
-`LOCHO_TEST_LIBRARY`. The device harness supplies a CLI-generated ticket for
-its first debug attachment and both release cycles. This path passes on the 16 KiB
-ARM64 emulator; physical-device ticket acceptance remains unverified. These runs use
-a direct-address candidate and do not establish a relay path. Ticket hints and optional direct addresses are separate from
-client relay configuration. iroh does not guarantee ticket-array dialing order.
+```xml
+<application
+    android:networkSecurityConfig="@xml/network_security_config"
+    ...>
+</application>
+```
 
-Reproduce from the root after building the release CLI and reference API:
-`python3 scripts/flutter-device-smoke.py emulator-5554` and the same command with
-`--release`. Confirm the target with `adb shell getprop ro.product.cpu.abi` and
-`adb shell getconf PAGE_SIZE`. Release uses development signing, not store signing.
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
+```
+
+Do not enable cleartext traffic globally and do not disable TLS certificate
+validation.
+
+## iOS Setup
+
+Use Xcode and CocoaPods with an iOS deployment target of 13 or newer. Add a local
+network usage description to the consuming app's `Info.plist` when your setup needs
+local network access:
+
+```xml
+<key>NSLocalNetworkUsageDescription</key>
+<string>Connect to my private API through Locho.</string>
+```
+
+Signing, provisioning, App Store configuration and device permissions belong to the
+consuming app. Physical iOS runtime coverage is still limited in this beta.
+
+## Troubleshooting
+
+### `invalidTicket`
+
+Generate a new ticket with `locho share ... --ticket` and paste the complete value.
+Do not add it to a URL or edit its contents. The app may trim clipboard whitespace
+before parsing.
+
+### `startupTimeout`
+
+Check that the Locho host is running, the host can reach the configured upstream,
+and the phone can reach the host directly or through the configured relay. A peer
+connection alone does not validate the service.
+
+### `/health` fails after attachment
+
+Check the service capability, upstream address and API process separately. The SDK
+does not automatically probe or silently retry the upstream request.
+
+### Android native build fails
+
+Check Flutter, Rust, JDK and NDK versions above, then retry from a clean app build.
+The package compiles native code and needs registry/toolchain network access on a
+cold machine.
+
+## Example And Advanced Documentation
+
+- [Runnable package example](https://github.com/trchopan/locho/tree/main/packages/locho_flutter/example)
+- [Flutter package and source-build details](https://github.com/trchopan/locho/blob/main/docs/flutter-package.md)
+- [Portable ticket format](https://github.com/trchopan/locho/blob/main/docs/tickets.md)
+- [SDK release evidence and limitations](https://github.com/trchopan/locho/blob/main/docs/sdk-releases.md)
+- [Full notes app using this SDK](https://github.com/trchopan/locho_sdk_examples/tree/main/apps/flutter)
+
+The package owns the tunnel, not application accounts or credential storage. Store
+remembered tickets through your app's secure-storage policy and never store API
+passwords in the SDK.
+
+## Beta Limitations
+
+- Foreground Android and iOS only; no Flutter Web, desktop or background service.
+- No automatic request replay, cookie jar or application authentication manager.
+- QR scanning, physical iOS runtime, broad network-transition and authenticated
+  custom-relay acceptance remain separate work.
+- Native Rust source builds are required; prebuilt native binaries are not included.
