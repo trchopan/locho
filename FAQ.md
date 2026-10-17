@@ -61,8 +61,9 @@ host holds the state lock while running, then restart it to load the replacement
 
 Yes. The `1.3.0-beta.1` CLI can generate a portable ticket with
 `locho share SERVICE --config PATH --ticket`. The published `locho_web` and
-`locho_flutter` SDKs are independently versioned at `0.1.0-beta.1`. Both use TCP
-service capabilities and the existing `locho/3` protocol. Browser HTTP runs over
+`locho_flutter` SDKs are independently versioned at `0.1.0-beta.1` and
+`0.1.0-beta.2`, respectively. Both use TCP service capabilities and the existing
+`locho/3` protocol. Browser HTTP runs over
 the SDK's relay transport; Flutter uses ordinary Dart HTTP through a local loopback
 attachment. Backend user authentication and credential persistence belong to the app.
 

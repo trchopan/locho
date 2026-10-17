@@ -1,5 +1,39 @@
 # SDK beta releases
 
+## 0.1.0-beta.2 — 2026-10-17
+
+Flutter beta.2 is a documentation-focused update. The API, wire protocol, ticket
+format and native implementation remain compatible with beta.1; browser consumers
+continue using `locho_web` `0.1.0-beta.1`.
+
+| SDK | Registry | Install |
+| --- | --- | --- |
+| Flutter | [locho_flutter](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.2) | `locho_flutter: 0.1.0-beta.2` in pubspec, then `flutter pub get` |
+
+The package README now starts with the app-developer path: install, create a
+ticket, make a first `package:http` request, configure Android/iOS, manage the
+foreground lifecycle and troubleshoot common failures. Advanced source-build and
+FRB details remain linked for maintainers.
+
+### Registry integrity
+
+- pub.dev archive SHA-256:
+  `f835a7d8dd5d8ccba0799da8dd5bd4f3b294d6aced52954bb6bdc553c0c1503b`
+- Package source provenance: clean Locho commit
+  `ebd6e10dfe61dcbcbfcd625eff6f1ee65567b7bf`, wire protocol 3, ticket format 1.
+
+### Verification
+
+- Pub staging outside the checkout passed package validation with the intentional
+  exact FRB dependency warning.
+- Flutter formatting, analyze, unit tests, Rust bridge tests and Clippy passed.
+- Fresh external Android consumer from the beta.2 archive passed analyze,
+  ARM64/x86_64 debug/release APK builds and 16 KiB ELF/ZIP alignment checks.
+- Fresh external Android consumer installed from pub.dev beta.2 passed the same
+  analyze, debug/release and alignment checks.
+- Hosted Flutter CI passed Android debug/release and iOS simulator/unsigned-release
+  builds. Physical iOS runtime and broad device/network acceptance remain open.
+
 ## 0.1.0-beta.1 — 2026-10-17
 
 Both packages are publicly available. SDK versions are independent of the Locho
