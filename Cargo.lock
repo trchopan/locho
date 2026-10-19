@@ -1792,6 +1792,7 @@ name = "locho-client-native"
 version = "0.1.0"
 dependencies = [
  "iroh",
+ "libc",
  "locho-core",
  "tokio",
  "tokio-util",

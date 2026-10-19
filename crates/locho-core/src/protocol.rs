@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use n0_future::time::{sleep, Instant};
+use n0_future::time::{sleep_until, Instant};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -191,14 +191,29 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
+    relay_with_idle_policy(a, b, Some(TCP_IDLE_TIMEOUT)).await
+}
+
+/// Relay two streams with an optional application-byte idle deadline.
+///
+/// `None` disables the deadline. The legacy helper above intentionally keeps
+/// the existing five-minute behavior for SDK callers.
+pub async fn relay_with_idle_policy<A, B>(
+    a: A,
+    b: B,
+    idle_timeout: Option<std::time::Duration>,
+) -> Result<()>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
     let (mut a_reader, mut a_writer) = tokio::io::split(a);
     let (mut b_reader, mut b_writer) = tokio::io::split(b);
     let mut a_open = true;
     let mut b_open = true;
     let mut a_buffer = vec![0u8; 16 * 1024];
     let mut b_buffer = vec![0u8; 16 * 1024];
-    let idle_deadline = sleep(TCP_IDLE_TIMEOUT);
-    tokio::pin!(idle_deadline);
+    let mut last_activity = Instant::now();
 
     while a_open || b_open {
         tokio::select! {
@@ -207,7 +222,7 @@ where
                     0 => { a_open = false; b_writer.shutdown().await?; }
                     len => {
                         b_writer.write_all(&a_buffer[..len]).await.context("write to second stream")?;
-                        idle_deadline.as_mut().reset(Instant::now() + TCP_IDLE_TIMEOUT);
+                        last_activity = Instant::now();
                     }
                 }
             }
@@ -216,11 +231,17 @@ where
                     0 => { b_open = false; a_writer.shutdown().await?; }
                     len => {
                         a_writer.write_all(&b_buffer[..len]).await.context("write to first stream")?;
-                        idle_deadline.as_mut().reset(Instant::now() + TCP_IDLE_TIMEOUT);
+                        last_activity = Instant::now();
                     }
                 }
             }
-            _ = &mut idle_deadline => return Err(TunnelIdleTimeout.into())
+            _ = async {
+                if let Some(duration) = idle_timeout {
+                    sleep_until(last_activity + duration).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => return Err(TunnelIdleTimeout.into())
         }
     }
     Ok(())
@@ -437,5 +458,92 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn policy_aware_relay_supports_custom_and_disabled_idle_deadlines() {
+        let (a, b) = duplex(64);
+        let result = relay_with_idle_policy(a, b, Some(std::time::Duration::from_millis(5))).await;
+        assert!(result
+            .unwrap_err()
+            .downcast_ref::<TunnelIdleTimeout>()
+            .is_some());
+
+        let (a, b) = duplex(64);
+        let mut task = tokio::spawn(relay_with_idle_policy(a, b, None));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3600), &mut task)
+                .await
+                .is_err()
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn default_relay_expires_after_300_seconds() {
+        let (_left, a) = duplex(64);
+        let (_right, b) = duplex(64);
+        let started = tokio::time::Instant::now();
+        let error = relay_with_idle_timeout(a, b).await.unwrap_err();
+        assert!(error.downcast_ref::<TunnelIdleTimeout>().is_some());
+        assert_eq!(started.elapsed(), TCP_IDLE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bytes_reset_idle_deadline_but_half_close_does_not() {
+        use std::time::Duration;
+
+        let (mut left, a) = duplex(64);
+        let (mut right, b) = duplex(64);
+        let relay = tokio::spawn(relay_with_idle_policy(a, b, Some(Duration::from_secs(10))));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(8)).await;
+        left.write_all(b"ping").await.unwrap();
+        let mut received = [0; 4];
+        right.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"ping");
+        tokio::time::advance(Duration::from_secs(8)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !relay.is_finished(),
+            "bytes did not reset the idle deadline"
+        );
+        left.shutdown().await.unwrap();
+        assert_eq!(right.read(&mut received).await.unwrap(), 0);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            relay.is_finished(),
+            "EOF must not reset the application-byte deadline"
+        );
+        assert!(relay
+            .await
+            .unwrap()
+            .unwrap_err()
+            .downcast_ref::<TunnelIdleTimeout>()
+            .is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disabled_idle_preserves_half_close_and_late_reply() {
+        use std::time::Duration;
+
+        let (mut left, a) = duplex(64);
+        let (mut right, b) = duplex(64);
+        let relay = tokio::spawn(relay_with_idle_policy(a, b, None));
+        left.write_all(b"request").await.unwrap();
+        left.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        right.read_to_end(&mut request).await.unwrap();
+        assert_eq!(request, b"request");
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        assert!(!relay.is_finished());
+        right.write_all(b"reply").await.unwrap();
+        right.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        left.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(reply, b"reply");
+        relay.await.unwrap().unwrap();
     }
 }

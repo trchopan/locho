@@ -102,8 +102,12 @@ enum Command {
         direct_address: Option<SocketAddr>,
         #[arg(long, hide = true)]
         tcp: bool,
-        #[arg(long, default_value = "127.0.0.1:8765")]
-        listen: SocketAddr,
+        #[arg(long, conflicts_with = "listen_unix")]
+        listen: Option<SocketAddr>,
+        #[arg(long, conflicts_with = "listen")]
+        listen_unix: Option<PathBuf>,
+        #[arg(long)]
+        tcp_idle_timeout_secs: Option<u64>,
         #[arg(long)]
         http_timeout_secs: Option<u64>,
     },
@@ -197,6 +201,8 @@ async fn main() -> Result<()> {
             direct_address,
             tcp,
             listen,
+            listen_unix,
+            tcp_idle_timeout_secs,
             http_timeout_secs,
         } => {
             if let Some(config) = config {
@@ -204,13 +210,12 @@ async fn main() -> Result<()> {
                     || capability.is_some()
                     || legacy_secret.is_some()
                     || tcp
+                    || listen_unix.is_some()
+                    || tcp_idle_timeout_secs.is_some()
                     || http_timeout_secs.is_some()
-                    || listen
-                        != DEFAULT_ATTACH_LISTEN
-                            .parse()
-                            .expect("valid default listener")
+                    || listen.is_some()
                 {
-                    bail!("--config cannot be combined with positional attach arguments, --tcp, --listen, or --http-timeout-secs");
+                    bail!("--config cannot be combined with positional attach arguments, --tcp, --listen, --listen-unix, or timeout options");
                 }
                 attach::run_config(config, relay_config, direct_address).await
             } else {
@@ -218,12 +223,21 @@ async fn main() -> Result<()> {
                 let capability =
                     capability.ok_or_else(|| anyhow::anyhow!("attach requires CAPABILITY"))?;
                 let capability = normalize_capability(&capability, legacy_secret, tcp)?;
+                let listen = match listen_unix {
+                    Some(path) => attach_config::ListenerAddress::Unix(path),
+                    None => attach_config::ListenerAddress::Tcp(listen.unwrap_or_else(|| {
+                        DEFAULT_ATTACH_LISTEN
+                            .parse()
+                            .expect("valid default listener")
+                    })),
+                };
                 attach::run(
                     host_id,
                     capability,
                     relay_config,
                     direct_address,
                     listen,
+                    tcp_idle_timeout_secs,
                     http_timeout_secs,
                 )
                 .await
@@ -359,6 +373,49 @@ mod tests {
             } => assert_eq!(http_timeout_secs, Some(90)),
             _ => panic!("parsed the wrong command"),
         }
+    }
+
+    #[test]
+    fn parses_unix_listener_and_idle_timeout_for_positional_attach() {
+        let cli = Cli::try_parse_from([
+            "locho",
+            "attach",
+            "host",
+            "api:tcp:secret",
+            "--listen-unix",
+            "/tmp/api.sock",
+            "--tcp-idle-timeout-secs",
+            "0",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Attach {
+                listen,
+                listen_unix,
+                tcp_idle_timeout_secs,
+                ..
+            } => {
+                assert!(listen.is_none());
+                assert_eq!(listen_unix, Some(PathBuf::from("/tmp/api.sock")));
+                assert_eq!(tcp_idle_timeout_secs, Some(0));
+            }
+            _ => panic!("parsed the wrong command"),
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_positional_listener_flags() {
+        assert!(Cli::try_parse_from([
+            "locho",
+            "attach",
+            "host",
+            "api:tcp:secret",
+            "--listen",
+            "127.0.0.1:1",
+            "--listen-unix",
+            "/tmp/api.sock",
+        ])
+        .is_err());
     }
 
     #[test]

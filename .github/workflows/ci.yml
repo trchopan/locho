@@ -35,6 +35,16 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Python for Unix stream smoke tests
+        if: runner.os != 'Windows'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Test native Unix stream harness
+        if: runner.os != 'Windows'
+        run: python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
+
       - name: Run Unix release verification gate
         if: runner.os != 'Windows'
         run: scripts/verify-release.sh --skip-artifacts
@@ -61,6 +71,11 @@ jobs:
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Install Python for Unix stream smoke tests
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
 
       - name: Run MSRV verification
         run: scripts/verify-release.sh --skip-artifacts

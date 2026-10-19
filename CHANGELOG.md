@@ -2,6 +2,17 @@
 
 All notable changes to `locho` are documented here.
 
+## Unreleased
+
+- Adds Unix filesystem stream upstreams for TCP services and secure Unix socket
+  listeners for TCP attachments on macOS/Linux, including mixed TCP/Unix
+  multi-service attachments and configurable raw-stream idle deadlines.
+- Keeps the `locho/3` wire protocol, ticket format, HTTP behavior, and public SDK
+  defaults unchanged. Unix paths are local policy and are not carried in tickets.
+- Adds native release smoke and soak harnesses for all four TCP/Unix forwarding
+  combinations, binary/full-duplex integrity, idle policy, connection budgets,
+  recovery, listener security and cleanup, using generic fixtures rather than Herdr.
+
 ## [1.3.0-beta.1] - 2026-10-17
 
 This prerelease introduces portable service tickets and SDK integration for browser

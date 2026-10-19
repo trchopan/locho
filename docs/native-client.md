@@ -89,9 +89,11 @@ healthy peer disconnected. Backend HTTP status/body remains ordinary application
 data. Loopback Host headers, redirects/cookies and upstream authority configuration
 remain application concerns; do not disable HTTPS certificate validation.
 
-The CLI uses `forward::serve_tcp` with its own listener addresses and existing
-multi-service peer session and shared process connection budget. That low-level adapter is separate from the SDK's
-loopback-only API; CLI HTTP framing/output/signals remain native CLI adapters.
+The CLI uses the low-level forwarding adapter with its own TCP or Unix listener
+addresses, existing multi-service peer session and shared process connection
+budget. That adapter is separate from the SDK's loopback-only API; CLI HTTP
+framing/output/signals and Unix filesystem ownership remain native CLI adapters.
+The public SDK still exposes only its TCP loopback attachment API.
 
 ## Verification
 

@@ -4,6 +4,7 @@
 
 Install Rust 1.96 or newer with Cargo. The integration and release smoke tests
 also need network access for iroh discovery and relay connectivity.
+On macOS/Linux, the Unix release smoke test additionally needs Python 3.11+.
 
 Build and run the basic test suite from the repository root:
 
@@ -35,6 +36,11 @@ The integration tests cover HTTP and TCP forwarding, concurrency, restart,
 capability rotation, malformed requests, timeouts, and graceful shutdown. The
 release smoke tests exercise the ordinary release binary without the test-only
 feature.
+
+The Unix release smoke gate includes native TCP/Unix forwarding, listener
+security/lifecycle and recovery checks using generic fixtures, with no Herdr
+dependency. For the native 30–60 minute Unix soak profile, artifact descriptions
+and harness unit tests, see [the performance harness](tests/perf/README.md#native-unix-stream-smoke-and-soak-tests).
 
 The Cargo workspace contains the CLI, `crates/locho-core` and
 `crates/locho-client-native`. Default members include all three, so `cargo test`

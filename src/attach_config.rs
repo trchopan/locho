@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::{
     collections::HashSet,
     net::{IpAddr, SocketAddr},
-    path::Path,
+    path::{Component, Path, PathBuf},
     time::Duration,
 };
 
@@ -29,16 +29,28 @@ pub struct AttachConfig {
 #[serde(deny_unknown_fields)]
 pub struct AttachServiceConfig {
     pub capability: String,
-    pub listen_port: u16,
+    #[serde(default)]
+    pub listen_port: Option<u16>,
+    #[serde(default)]
+    pub listen_unix: Option<PathBuf>,
     #[serde(default)]
     pub http_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub tcp_idle_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug)]
 pub struct AttachmentConfig {
     pub capability: Capability,
-    pub listen: SocketAddr,
+    pub listen: ListenerAddress,
     pub http_timeout: Duration,
+    pub tcp_idle_timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerAddress {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
 }
 
 pub(crate) fn resolve_http_timeout(timeout_secs: Option<u64>) -> Result<Duration> {
@@ -76,6 +88,7 @@ impl AttachConfig {
     pub fn attachments(&self) -> Result<Vec<AttachmentConfig>> {
         let mut names = HashSet::new();
         let mut ports = HashSet::new();
+        let mut unix_paths = HashSet::new();
         self.services
             .iter()
             .enumerate()
@@ -86,11 +99,31 @@ impl AttachConfig {
                 if !names.insert(capability.service.clone()) {
                     bail!("duplicate attachment service {:?}", capability.service);
                 }
-                if !ports.insert(service.listen_port) {
-                    bail!("duplicate attachment listen port {}", service.listen_port);
+                if let Some(port) = service.listen_port {
+                    if !ports.insert(port) {
+                        bail!("duplicate attachment listen port {}", port);
+                    }
                 }
-                let http_timeout = match capability.service_type {
-                    ServiceType::Http => resolve_http_timeout(service.http_timeout_secs)?,
+                let (listen, http_timeout, tcp_idle_timeout) = match capability.service_type {
+                    ServiceType::Http => {
+                        if service.listen_unix.is_some() {
+                            bail!(
+                                "HTTP attachment cannot use listen_unix for service {}",
+                                index + 1
+                            )
+                        }
+                        if service.tcp_idle_timeout_secs.is_some() {
+                            bail!("TCP idle timeout is only supported for TCP attachments")
+                        }
+                        let port = service.listen_port.with_context(|| {
+                            format!("HTTP attachment service {} requires listen_port", index + 1)
+                        })?;
+                        (
+                            ListenerAddress::Tcp(SocketAddr::new(self.listen_host, port)),
+                            resolve_http_timeout(service.http_timeout_secs)?,
+                            None,
+                        )
+                    }
                     ServiceType::Tcp => {
                         if service.http_timeout_secs.is_some() {
                             bail!(
@@ -98,13 +131,45 @@ impl AttachConfig {
                                 index + 1
                             )
                         }
-                        HTTP_REQUEST_TIMEOUT
+                        let listen = match (service.listen_port, &service.listen_unix) {
+                            (Some(port), None) => {
+                                ListenerAddress::Tcp(SocketAddr::new(self.listen_host, port))
+                            }
+                            (None, Some(path)) => {
+                                crate::config::validate_unix_socket_path(
+                                    path,
+                                    &format!("attachment service {} listen_unix", index + 1),
+                                )?;
+                                ListenerAddress::Unix(normalize_unix_path(path))
+                            }
+                            (Some(_), Some(_)) => bail!(
+                                "attachment service {} must define exactly one of listen_port or listen_unix",
+                                index + 1
+                            ),
+                            (None, None) => bail!(
+                                "attachment service {} requires exactly one of listen_port or listen_unix",
+                                index + 1
+                            ),
+                        };
+                        (
+                            listen,
+                            HTTP_REQUEST_TIMEOUT,
+                            crate::config::resolve_tcp_idle_timeout(
+                                service.tcp_idle_timeout_secs,
+                            )?,
+                        )
                     }
                 };
+                if let ListenerAddress::Unix(path) = &listen {
+                    if !unix_paths.insert(path.clone()) {
+                        bail!("duplicate attachment Unix listener path {}", path.display());
+                    }
+                }
                 Ok(AttachmentConfig {
                     capability,
-                    listen: SocketAddr::new(self.listen_host, service.listen_port),
+                    listen,
                     http_timeout,
+                    tcp_idle_timeout,
                 })
             })
             .collect()
@@ -121,7 +186,7 @@ impl AttachConfig {
             bail!("attachment configuration cannot define more than {MAX_CONFIGURED_SERVICES} services");
         }
         for service in &self.services {
-            if service.listen_port == 0 {
+            if service.listen_port == Some(0) {
                 bail!("attachment listen port cannot be zero");
             }
         }
@@ -131,6 +196,19 @@ impl AttachConfig {
 
 fn default_listen_host() -> IpAddr {
     IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+}
+
+fn normalize_unix_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => normalized.push("/"),
+            Component::CurDir => {}
+            Component::Normal(value) => normalized.push(value),
+            Component::ParentDir | Component::Prefix(_) => unreachable!("validated Unix path"),
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -166,7 +244,10 @@ mod tests {
             crate::config::ServiceType::Tcp
         );
         assert_eq!(attachments[1].http_timeout, HTTP_REQUEST_TIMEOUT);
-        assert_eq!(attachments[1].listen, "127.0.0.1:5432".parse().unwrap());
+        assert_eq!(
+            attachments[1].listen,
+            ListenerAddress::Tcp("127.0.0.1:5432".parse().unwrap())
+        );
     }
 
     #[test]
@@ -256,6 +337,68 @@ mod tests {
         )
         .unwrap();
         assert!(config.validate().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_unix_tcp_listener_and_rejects_duplicate_paths() {
+        let config: AttachConfig = toml::from_str(
+            r#"
+                host_id = "aabb"
+                [[services]]
+                capability = "api:tcp:one"
+                listen_unix = "/tmp/locho-api.sock"
+                tcp_idle_timeout_secs = 0
+            "#,
+        )
+        .unwrap();
+        let attachments = config.attachments().unwrap();
+        assert_eq!(attachments[0].tcp_idle_timeout, None);
+        assert_eq!(
+            attachments[0].listen,
+            ListenerAddress::Unix("/tmp/locho-api.sock".into())
+        );
+
+        let duplicate: AttachConfig = toml::from_str(
+            r#"
+                host_id = "aabb"
+                [[services]]
+                capability = "api:tcp:one"
+                listen_unix = "/tmp/locho-api.sock"
+                [[services]]
+                capability = "database:tcp:two"
+                listen_unix = "/tmp/./locho-api.sock"
+            "#,
+        )
+        .unwrap();
+        assert!(duplicate.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_mixed_listener_fields_and_tcp_idle_on_http() {
+        let mixed: AttachConfig = toml::from_str(
+            r#"
+                host_id = "aabb"
+                [[services]]
+                capability = "api:tcp:one"
+                listen_port = 8765
+                listen_unix = "/tmp/locho-api.sock"
+            "#,
+        )
+        .unwrap();
+        assert!(mixed.validate().is_err());
+
+        let http: AttachConfig = toml::from_str(
+            r#"
+                host_id = "aabb"
+                [[services]]
+                capability = "api:http:one"
+                listen_port = 8765
+                tcp_idle_timeout_secs = 0
+            "#,
+        )
+        .unwrap();
+        assert!(http.validate().is_err());
     }
 
     #[test]

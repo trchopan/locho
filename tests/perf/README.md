@@ -1,5 +1,117 @@
 # Locho Stress Harness
 
+## Native Unix stream smoke and soak tests
+
+`unix_streams.py` tests filesystem Unix stream support using the **ordinary
+release binary**, native processes and generic byte-stream fixtures. It needs
+Python 3.11+, `ps`, and (on macOS) `lsof`. There is no Herdr dependency and no
+Docker requirement. Run it natively on both macOS and Linux: Docker Desktop
+socket tests alone would exercise its Linux VM, not macOS listener behavior.
+
+```sh
+cargo build --release
+python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
+python3 tests/perf/unix_streams.py smoke
+python3 tests/perf/unix_streams.py soak --duration 30m
+python3 tests/perf/unix_streams.py soak --duration 1h
+```
+
+To test another built binary, supply `--binary /absolute/path/to/locho` or
+`LOCHO_TEST_BINARY`. The smoke test also participates in the existing Unix
+release-smoke gate:
+
+```sh
+LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke \
+  release_binary_unix_stream_smoke -- --ignored --nocapture
+```
+
+### Smoke coverage
+
+- TCP→TCP, TCP→Unix, Unix→TCP, Unix→Unix, with mixed listeners sharing a peer.
+- Binary/checksummed frames, 0/1-byte, 16 KiB and 1 MiB payloads, fragmented
+  writes, half-close followed by a complete response, concurrent clients, slow
+  readers and simultaneous 2 MiB transfers in both directions.
+- Mode `0600`, insecure-parent rejection, existing file/directory/symlink/live
+  socket refusal, replacement-preserving cleanup and all-listener startup rollback.
+- SIGKILL stale paths are refused until explicitly removed by the harness;
+  Ctrl-C/SIGTERM clean up owned sockets, including with an active connection.
+- Wrong capabilities, unavailable/restarted Unix backend, host and attachment
+  restart, unchanged listener inode during backend/host recovery, fresh probes
+  within 30 seconds, and shared host-budget rejection at 128 active streams.
+- One-second host/attachment idle policies independently enforce expiry.
+
+The budget probe uses multiple peers because the transport's per-peer stream
+window can be smaller than the host's application budget. Foreign-owner tests
+requiring another UID are explicitly skipped, not reported as passed. Existing
+HTTP/TLS, capability rotation and HTTP timeout regressions remain covered by the
+other `release_smoke.rs` cases. Controlled-clock core tests cover the default
+300-second deadline, bytes resetting it, EOF not resetting it and disabled-idle
+half-close behavior. Native adapter unit tests supplement filesystem cases.
+
+### Soak profile and acceptance
+
+The default is **30 minutes of load after setup**; accepted durations are
+15 minutes to 1 hour. Setup, fault recovery and cleanup have separate bounds;
+an outer watchdog prevents an unbounded run. The 15-minute minimum reserves an
+uninterrupted six-minute quiet gate before fault injection.
+
+Three workers per combination maintain persistent traffic, one-connection-per-
+operation churn, periodic 1 MiB transfers and delayed readers. Each worker has
+its own identity and monotonically increasing sequence; a failed operation is
+never retried. Fixtures validate both request and response contents and retain
+bounded high-water marks across upstream restarts to detect replay/duplicates.
+Normal traffic remains below the host's connection budget.
+
+Four separate connections remain application-byte quiet for **365 seconds**
+with both endpoint idle policies disabled; they must then exchange a fresh
+frame on the same connection. A separate default-policy connection must close
+between 290 and 320 seconds. Keepalives are not application bytes. At 45%, 65%
+and 80% of the load duration, restart the Unix backend, Locho host (preserving
+state), and attachment respectively. The first two faults must not replace the
+attachment listener. Existing streams fail without replay; only fresh probes
+are retried during recovery.
+
+A run fails on corruption, replay, unexpected steady-state I/O failure, an
+unexpected process exit, failed recovery, failed quiet/default-expiry gates,
+cleanup failure, or post-drain descriptor growth greater than 16 per Locho
+process (`--max-fd-growth` overrides this allowance). Scheduled-fault failures
+are counted separately and remain visible. Classification follows the affected
+service's connection/operation epoch: an old persistent stream can discover its
+terminal EOF after fresh probes recover. There is no blanket post-fault grace
+period, and failures on fresh connections after recovery remain unexpected.
+An upstream-only fault does not excuse failures on TCP-backed services. The
+short smoke profile also runs traffic during restarts to cover this accounting.
+RSS/CPU and descriptor history are
+recorded; RSS/throughput are diagnostic rather than arbitrary pass thresholds.
+Compare identical binary/platform profiles for leak and performance trends;
+the final post-drain comparison includes process restarts, so also inspect the
+within-PID resource samples for monotonic growth.
+
+### Native artifacts and isolation
+
+Each run writes `artifacts/unix-{smoke,soak}-<timestamp>/` (override the parent
+with `--output`) containing:
+
+- `summary.json`: outcome, binary version/hash, OS/Python, operation counts,
+  fixture corruption/replay counts, bounded latency sample p50/p95/p99.
+- `timeline.jsonl`: gates, scheduled faults, recovery times, and capped failure events.
+- `metrics.jsonl` (soak): 10-second RSS/CPU/FD samples and cumulative counters;
+  byte-count deltas can be used to calculate interval throughput.
+- Bounded process logs with generated credentials and runtime paths redacted.
+
+Counters include every failure even after the 2,000-event cap; latency history
+is bounded to the latest 10,000 samples. Credentials/configs/state stay in a
+unique mode-0700 temporary directory, not the retained artifacts. Every child
+has its own run-owned process handle; cleanup never stops unrelated sessions.
+Unix listeners live below a short temporary directory rather than the checkout
+path (macOS's limit is 103 bytes). If necessary, set `TMPDIR` to an existing
+short private directory before running. Interrupts fail the run, clean up owned
+processes, and retain diagnostic artifacts; SIGKILL of the harness itself cannot
+guarantee cleanup. One-machine direct-path results are **not** WAN, relay, or
+cross-OS acceptance.
+
+## Docker TCP/HTTP stress harness
+
 This is a test-only Docker Compose harness for measuring the current checkout.
 It never uses the production Compose project, `.env`, Caddy state, or release
 artifacts. The Locho image is built from the repository source with the

@@ -544,6 +544,20 @@ fn release_binary_honors_90_second_http_timeout() {
 #[cfg(unix)]
 #[test]
 #[ignore = "requires a separately built release binary"]
+fn release_binary_unix_stream_smoke() {
+    let binary = fs::canonicalize(release_binary()).unwrap();
+    let status = Command::new("python3")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["tests/perf/unix_streams.py", "smoke", "--binary"])
+        .arg(binary)
+        .status()
+        .expect("Unix process smoke tests require Python 3.11 or newer");
+    assert!(status.success(), "native Unix stream smoke test failed");
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires a separately built release binary"]
 fn release_binary_closes_active_tcp_session_on_host_shutdown() {
     let binary = release_binary();
     let state_dir = TestDir::new();
