@@ -24,7 +24,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - run: sudo apt-get update && sudo apt-get install -y clang lld
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '24.18.0'
           cache: npm
