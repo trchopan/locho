@@ -24,7 +24,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - run: sudo apt-get update && sudo apt-get install -y clang lld
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '24.18.0'
           cache: npm
@@ -68,11 +68,11 @@ jobs:
           LOCHO_HOST_BINARY: ${{ github.workspace }}/target/release/locho
           LOCHO_N0_FIXTURE_FILE: ${{ runner.temp }}/locho-web-external-fixture.json
           LOCHO_REFERENCE_API: ${{ github.workspace }}/target/reference-api
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: locho-web-npm-package
           path: packages/locho-web/dist/artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: locho-web-wasm-proof
           path: packages/locho-web/src/generated
