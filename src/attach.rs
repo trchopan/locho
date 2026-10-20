@@ -113,14 +113,14 @@ fn transport_failure(error: anyhow::Error) -> anyhow::Error {
     anyhow::Error::new(TransportFailure(error))
 }
 
-fn is_transport_failure(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<TransportFailure>().is_some()
-}
-
 impl HttpBodyLeaseGuard {
-    fn invalidate(&self) {
+    fn invalidate_if_closed(&self) {
         if let Some(lease) = &self.lease {
-            lease.invalidate();
+            // Cancelling or failing one HTTP stream must not disconnect other
+            // services sharing this peer. The driver also observes closure.
+            if lease.connection().close_reason().is_some() {
+                lease.invalidate();
+            }
         }
     }
 
@@ -131,7 +131,7 @@ impl HttpBodyLeaseGuard {
 
 impl Drop for HttpBodyLeaseGuard {
     fn drop(&mut self) {
-        self.invalidate();
+        self.invalidate_if_closed();
     }
 }
 
@@ -674,9 +674,9 @@ async fn tunnel_request(
 ) -> Result<HttpResponse> {
     let lease = acquire_connection(connection).await?;
     let result = tunnel_request_on_lease(&lease, request).await;
-    if result.as_ref().is_err_and(|error| {
-        is_transport_failure(error) || error.downcast_ref::<HttpResponseTimeout>().is_some()
-    }) {
+    // Stream resets and per-request timeouts do not make the shared peer
+    // unusable. Only connection-wide failure warrants invalidating its lease.
+    if result.is_err() && lease.connection().close_reason().is_some() {
         lease.invalidate();
     }
     result
@@ -790,7 +790,7 @@ async fn tunnel_request_on_lease(
                     .map_err(|_| anyhow::Error::new(HttpResponseTimeout))
                     .and_then(|result| result.context("HTTP response body read failed"));
                 if read.is_err() {
-                    body_guard.invalidate();
+                    body_guard.invalidate_if_closed();
                 }
                 read?;
                 yield Frame::data(Bytes::copy_from_slice(&buffer[..count]));
@@ -806,7 +806,7 @@ async fn tunnel_request_on_lease(
                     .map_err(|_| anyhow::Error::new(HttpResponseTimeout))
                     .and_then(|result| result.context("HTTP response body read failed"));
                 if chunk.is_err() {
-                    body_guard.invalidate();
+                    body_guard.invalidate_if_closed();
                 }
                 let chunk = chunk?;
                 let Some(chunk) = chunk else { break };

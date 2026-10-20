@@ -1276,6 +1276,162 @@ fn http_attachment_closes_stalled_response_body() {
     host.stop();
 }
 
+#[cfg(unix)]
+#[test]
+fn http_stream_failures_preserve_shared_tcp_connection() {
+    let state_dir = TestDir::new();
+    let tcp_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp_address = tcp_listener.local_addr().unwrap();
+    let tcp_thread = thread::spawn(move || {
+        let (mut stream, _) = accept_with_deadline(&tcp_listener);
+        stream.set_read_timeout(Some(STARTUP_TIMEOUT)).unwrap();
+        let mut buffer = [0u8; 32];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            stream.write_all(&buffer[..count]).unwrap();
+        }
+    });
+    let http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let http_address = http_listener.local_addr().unwrap();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let cases = [
+        "cancel-fixed",
+        "cancel-chunked",
+        "reset-fixed",
+        "reset-chunked",
+        "reset-head",
+        "timeout-fixed",
+        "timeout-chunked",
+        "timeout-head",
+    ];
+    let http_thread = thread::spawn(move || {
+        for case in cases {
+            let (mut stream, _) = accept_with_deadline(&http_listener);
+            stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            let request = read_http_message(&mut stream).unwrap();
+            assert_eq!(request.path, format!("/{case}"));
+            if !case.ends_with("head") {
+                let chunk = vec![b'x'; BODY_CHUNK_LEN];
+                if case.ends_with("chunked") {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                        .unwrap();
+                    write!(stream, "{:x}\r\n", chunk.len()).unwrap();
+                    stream.write_all(&chunk).unwrap();
+                    stream.write_all(b"\r\n").unwrap();
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n")
+                        .unwrap();
+                    stream.write_all(&chunk).unwrap();
+                }
+            }
+            if !case.starts_with("reset") {
+                release_receiver.recv_timeout(STARTUP_TIMEOUT).unwrap();
+            }
+            drop(stream);
+
+            let (mut healthy, _) = accept_with_deadline(&http_listener);
+            healthy.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            let request = read_http_message(&mut healthy).unwrap();
+            assert_eq!(request.path, "/healthy");
+            healthy
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        }
+    });
+    let host_config = state_dir.path().join("host.toml");
+    fs::write(
+        &host_config,
+        format!(
+            "[[services]]\nname = \"tcp\"\ntype = \"tcp\"\nendpoint = \"{tcp_address}\"\n\n[[services]]\nname = \"api\"\ntype = \"http\"\nupstream = \"http://{http_address}\"\n"
+        ),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
+    let mut host = start_host(state_dir.path(), &host_config, &direct_address);
+    host.wait_for("locho direct-address ");
+    let tcp_command = host.wait_for_attach(state_dir.path(), &host_config, "tcp");
+    let http_command = host.wait_for_attach(state_dir.path(), &host_config, "api");
+    let tcp_parts = tcp_command.split_whitespace().collect::<Vec<_>>();
+    let http_parts = http_command.split_whitespace().collect::<Vec<_>>();
+    let tcp_port = free_port();
+    let http_port = free_port();
+    let attach_config = state_dir.path().join("attach.toml");
+    fs::write(
+        &attach_config,
+        format!(
+            "host_id = \"{}\"\ndirect_address = \"{direct_address}\"\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {tcp_port}\n\n[[services]]\ncapability = \"{}\"\nlisten_port = {http_port}\nhttp_timeout_secs = 1\n",
+            tcp_parts[2], tcp_parts[3], http_parts[3]
+        ),
+    )
+    .unwrap();
+    let mut attachment = start_config_attachment(state_dir.path(), &attach_config, &direct_address);
+    attachment.wait_for("Local proxy:");
+    attachment.wait_for("transport path: direct(");
+
+    // Never reconnect this socket: a new TCP connection could hide a peer reset.
+    let mut tcp = connect_with_retry(tcp_port);
+    tcp.write_all(b"before").unwrap();
+    let mut before = [0u8; 6];
+    tcp.read_exact(&mut before).unwrap();
+    assert_eq!(&before, b"before");
+    for case in cases {
+        if case.starts_with("cancel") {
+            let mut stream = connect_with_retry(http_port);
+            write!(
+                stream,
+                "GET /{case} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let bytes = read_until_headers(&mut stream);
+            assert!(bytes.starts_with(b"HTTP/1.1 200"));
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+            drop(stream);
+            // Wait until Hyper has dropped the unfinished response body.
+            attachment.wait_for("task failed");
+        } else if case.ends_with("head") {
+            let response = send_http_request(http_port, "GET", &format!("/{case}"), b"", false);
+            let expected_status = if case == "timeout-head" { 504 } else { 502 };
+            assert_eq!(response.status, expected_status, "{case}");
+        } else {
+            let (response, closed) =
+                send_http_request_allowing_truncated_body(http_port, &format!("/{case}"));
+            assert_eq!(response.status, 200, "{case}");
+            assert!(closed, "{case}");
+            attachment.wait_for("task failed");
+        }
+        if !case.starts_with("reset") {
+            release_sender.send(()).unwrap();
+        }
+        let response = send_http_request(http_port, "GET", "/healthy", b"", false);
+        assert_eq!(response.status, 200, "HTTP failed after {case}");
+        assert_eq!(response.body, b"ok");
+        tcp.write_all(case.as_bytes()).unwrap();
+        let mut echoed = vec![0u8; case.len()];
+        tcp.read_exact(&mut echoed)
+            .unwrap_or_else(|error| panic!("shared TCP connection lost after {case}: {error}"));
+        assert_eq!(echoed, case.as_bytes());
+    }
+    assert!(
+        !attachment
+            .output()
+            .iter()
+            .any(|line| line.contains("tunnel connection recovering")),
+        "HTTP stream failure triggered peer recovery: {:?}",
+        attachment.output()
+    );
+    drop(tcp);
+    assert!(tcp_thread.join().is_ok());
+    assert!(http_thread.join().is_ok());
+    attachment.stop();
+    host.stop();
+}
+
 struct HttpResponse {
     status: u16,
     headers: std::collections::HashMap<String, String>,
