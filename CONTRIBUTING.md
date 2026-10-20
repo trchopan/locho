@@ -19,18 +19,17 @@ Before opening a pull request, run the same source and process-level checks used
 by CI:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features -- --test-threads=1
-cargo test -p locho-core --no-default-features
-cargo build --release
-cargo build --release --features integration-test --target-dir target/integration-release
-LOCHO_TEST_BINARY=target/integration-release/release/locho cargo test --test integration --features integration-test -- --test-threads=1
-LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke -- --ignored
+scripts/verify-ci.sh
 ```
 
-On Windows, use `target\integration-release\release\locho.exe` and
-`target\release\locho.exe` for the two `LOCHO_TEST_BINARY` values.
+On Windows:
+
+```powershell
+.\scripts\Verify-CI.ps1
+```
+
+These PR checks use the debug profile. Packaged artifact smoke jobs separately
+build and test the ordinary release binary on Linux, macOS, and Windows.
 
 The integration tests cover HTTP and TCP forwarding, concurrency, restart,
 capability rotation, malformed requests, timeouts, and graceful shutdown. The
