@@ -109,7 +109,7 @@ upstream = "https://example.com"
 name = "database"
 type = "tcp"
 endpoint = "127.0.0.1:5432"
-# TCP services may instead select one absolute filesystem Unix stream socket:
+# Replace endpoint (do not combine the fields) to select a Unix stream socket:
 # unix_socket = "/home/alice/.config/herdr/herdr.sock"
 # tcp_idle_timeout_secs = 0 # omit for 300 seconds; 0 disables byte-idle expiry
 ```
@@ -119,6 +119,47 @@ Start the host with the validated configuration:
 ```sh
 locho host --config locho.toml
 ```
+
+### Unix stream sockets (macOS/Linux)
+
+TCP capabilities also authorize raw byte-stream services backed by a filesystem
+Unix socket. Listener and upstream choices are independent: TCP→TCP, TCP→Unix,
+Unix→TCP and Unix→Unix all use the same protocol and capability format.
+
+For example, replace a service's `endpoint` with `unix_socket`:
+
+```toml
+[[services]]
+name = "workspace"
+type = "tcp"
+unix_socket = "/home/alice/.config/example/api.sock"
+tcp_idle_timeout_secs = 0
+```
+
+Save this service in `locho.toml` and start (or restart) the host with that
+configuration. Prepare an existing private listener directory, then attach with the capability
+obtained privately through `locho share workspace --config locho.toml`:
+
+```sh
+mkdir -m 700 -p "$HOME/.local/run/locho"
+locho attach '<host-id>' 'workspace:tcp:<secret>' \
+  --listen-unix "$HOME/.local/run/locho/api.sock" \
+  --tcp-idle-timeout-secs 0
+```
+
+Paths must be absolute, with no tilde/environment expansion inside TOML. The
+maximum configured path is 103 bytes on macOS and 107 on Linux; keep filenames
+short (Linux directory-relative binding through `/proc/self/fd` may impose a
+shorter basename limit). Linux requires `/proc/self/fd` to be available. Windows
+rejects Unix endpoints/listeners explicitly; existing TCP attachments still work.
+HTTP capabilities do not accept Unix listeners or raw-stream idle options.
+
+Idle policy is local to each end: omitted means 300 seconds, `0` disables it,
+and positive values range from 1 to 3,153,600,000 seconds. The stricter endpoint
+wins; older peers still expire after five minutes. Transport keepalives do not
+reset this application-byte deadline. See [Unix socket security](SECURITY.md#unix-socket-attachments)
+for ancestry requirements, delegated authority and cleanup limitations. Datagram,
+abstract-socket, descriptor-passing and ancillary-data semantics are unsupported.
 
 ### Custom relays
 
@@ -444,6 +485,7 @@ listen_port = 8765
 capability = "database:tcp:<secret>"
 listen_port = 5432
 # Or, for a TCP capability:
+# Replace listen_port; exactly one listener field is required.
 # listen_unix = "/home/bob/.local/run/locho/database.sock"
 # tcp_idle_timeout_secs = 0
 ```
@@ -452,7 +494,10 @@ Unix socket paths must be absolute. Unix attachment listeners require an
 existing private parent directory owned by the effective user (for example,
 `mkdir -m 700 -p "$HOME/.local/run/locho"`), are created mode `0600`, refuse
 existing entries including stale sockets, and remove only the socket created by
-that attachment. A crash or `SIGKILL` can leave a stale path; verify it before
+that attachment when its identity still matches (best-effort against concurrent
+same-UID modifications). Listener operations use pinned directory handles; unsafe
+writable ancestry and non-root parent symlinks are refused, and macOS ACL allow
+entries in listener ancestry are conservatively rejected. A crash or `SIGKILL` can leave a stale path; verify it before
 removing it manually. Unix sockets are supported on macOS and Linux only. The
 public native, Flutter, and browser SDK APIs remain unchanged and do not expose
 Unix listener handles or browser Unix APIs.

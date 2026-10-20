@@ -18,7 +18,6 @@ import shutil
 import socket
 import stat
 import struct
-import subprocess
 import sys
 import tempfile
 import time
@@ -32,6 +31,8 @@ STARTUP_TIMEOUT = 30
 RECOVERY_TIMEOUT = 30
 LOG_LIMIT = 1024 * 1024
 MAX_EVENTS = 2000
+LOG_DRAIN_TIMEOUT = 2
+FINALIZATION_TIMEOUT = 30
 
 
 def require(condition, message):
@@ -113,6 +114,13 @@ def fault_failure(active, started_in_fault, operation_epoch, connection_epoch, c
     # only on the next operation, after fresh connections have already recovered.
     # Classify that stream's one terminal failure, never a wall-clock grace period.
     return active or started_in_fault or operation_epoch != current_epoch or connection_epoch != current_epoch
+
+
+def descriptor_growth(before, after, allowance):
+    require(before["pid"] == after["pid"], "descriptor gate must compare the same process lifetime")
+    growth = after["fds"] - before["fds"]
+    require(growth <= allowance, "same-PID descriptor growth exceeded post-drain allowance")
+    return growth
 
 
 async def exchange(reader, writer, identity, sequence, size, *, half_close=False,
@@ -296,7 +304,13 @@ class Process:
                 self.child.kill()
                 await self.child.wait()
                 raise AssertionError(f"{self.name} exceeded shutdown deadline") from None
-        await asyncio.gather(*self.pumps)
+        try:
+            results = await asyncio.wait_for(asyncio.gather(*self.pumps, return_exceptions=True), LOG_DRAIN_TIMEOUT)
+        except asyncio.TimeoutError:
+            for pump in self.pumps:
+                pump.cancel()
+            raise AssertionError(f"{self.name} log pumps exceeded drain deadline") from None
+        require(all(not isinstance(result, Exception) for result in results), "process log pump failed")
         if clean:
             require(self.child.returncode == 0, f"{self.name} did not exit successfully")
 
@@ -494,6 +508,8 @@ class Run:
                     await close(writer)
         self.event("matrix_passed")
         await self.listener_checks()
+        await self.startup_signal_check()
+        await self.client_reset_check()
         await self.idle_checks()
         await self.budget_check()
         await self.recovery_checks()
@@ -507,6 +523,50 @@ class Run:
             await close(writer)
             await self.start_attachment()
         self.event("shutdown_signals_passed")
+
+    async def startup_signal_check(self):
+        config = self.root / "startup.toml"
+        paths = [self.root / f"s{i}" for i in range(64)]
+        write_toml(config, f'host_id = "{self.host_id}"\n' + "\n".join(
+            f'[[services]]\ncapability = "startup{i}:tcp:test"\nlisten_unix = {quote(path)}\n'
+            for i, path in enumerate(paths)))
+        process = await Process(self, "startup", ["attach", "--config", str(config)]).start()
+        async with asyncio.timeout(STARTUP_TIMEOUT):
+            while not paths[0].is_socket():
+                require(process.child.returncode is None, "startup attachment exited before its first bind")
+                await asyncio.sleep(0.001)
+        bound = sum(path.is_socket() for path in paths)
+        await process.stop(signal.SIGTERM)
+        require(all(not os.path.lexists(path) for path in paths), "SIGTERM during startup left owned sockets")
+        self.event("startup_sigterm_passed", listeners_bound_when_signalled=bound)
+
+    async def client_reset_check(self):
+        # Keep a different service's stream alive while a Unix client drops an
+        # unread response. This must not invalidate the shared peer connection.
+        reader, writer = await connect(self.listeners["ut"])
+        identity = uuid.uuid4().bytes
+        try:
+            await exchange(reader, writer, identity, 1, 256)
+            for sequence in range(3):
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                client.setblocking(False)
+                try:
+                    await asyncio.get_running_loop().sock_connect(client, str(self.listeners["uu"]))
+                    token = uuid.uuid4().bytes
+                    data = payload(65536, token, sequence)
+                    await asyncio.get_running_loop().sock_sendall(
+                        client, HEADER.pack(b"LUT1", 0, token, sequence, len(data)) + data)
+                    await asyncio.sleep(0.05)  # Leave the response unread in the socket.
+                finally:
+                    client.close()
+                await asyncio.sleep(0.05)
+                await asyncio.wait_for(exchange(reader, writer, identity, sequence + 2, 256), TIMEOUT)
+            writer.write_eof()
+            await writer.drain()
+            require(await asyncio.wait_for(reader.read(1), TIMEOUT) == b"", "isolated stream did not drain")
+        finally:
+            await close(writer)
+        self.event("local_client_reset_isolation_passed")
 
     async def recovery_checks(self):
         """Short loaded recovery regression, including late EOF on old streams."""
@@ -797,12 +857,31 @@ class Run:
                        for fraction, target in ((0.45, "upstream"), (0.65, "host"), (0.8, "attachment"))]
         next_sample = 0
         completed = False
+        checkpoint_done = False
         try:
             while time.monotonic() - started < self.args.duration:
                 for task in tasks:
                     if task.done():
                         task.result()  # Surface checksum/fixture failures immediately.
                 elapsed = time.monotonic() - started
+                if not checkpoint_done and elapsed >= max(370, self.args.duration * 0.4):
+                    require(tasks[-1].done(), "quiet gate must finish before the same-PID drain checkpoint")
+                    tasks[-1].result()
+                    stop.set()
+                    results = await asyncio.wait_for(asyncio.gather(*tasks[:-1], return_exceptions=True), TIMEOUT + 5)
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+                    await asyncio.sleep(2)
+                    drained = await self.sample()
+                    for name in baseline:
+                        growth = descriptor_growth(baseline[name], drained[name], self.args.max_fd_growth)
+                        self.event("same_pid_resource_gate_passed", process=name, pid=drained[name]["pid"], fd_growth=growth)
+                    stop = asyncio.Event()
+                    quiet = tasks[-1]
+                    tasks = [asyncio.create_task(self.worker(name, i, stop))
+                             for name in self.listeners for i in range(3)] + [quiet]
+                    checkpoint_done = True
                 if fault_times and elapsed >= fault_times[0][0]:
                     _, target = fault_times.pop(0)
                     await self.fault_restart(target)
@@ -812,6 +891,7 @@ class Run:
                 await asyncio.sleep(0.2)
             require(tasks[-1].done(), "quiet gate did not finish")
             tasks[-1].result()
+            require(checkpoint_done, "same-PID resource gate did not run")
             completed = True
         finally:
             stop.set()
@@ -834,9 +914,8 @@ class Run:
             fd_growth = final[name]["fds"] - baseline[name]["fds"]
             rss_growth = (final[name]["rss_kib"] - baseline[name]["rss_kib"]) / 1024
             self.event("resource_drain", process=name, fd_growth=fd_growth, rss_growth_mib=rss_growth,
-                       note="RSS is diagnostic; compare steady-state metrics across identical runs")
-            require(fd_growth <= self.args.max_fd_growth,
-                    f"{name} descriptor growth exceeded post-drain allowance")
+                       same_pid=baseline[name]["pid"] == final[name]["pid"],
+                       note="Post-restart deltas are diagnostic; the same-PID gate ran before fault injection")
         self.event("soak_passed", elapsed=time.monotonic() - started)
 
     async def cleanup(self):
@@ -853,6 +932,64 @@ class Run:
             except Exception:
                 errors.append("fixture shutdown failed")
         return errors
+
+
+async def finalize(run, args, started, result, error):
+    cleanup_errors = []
+    try:
+        cleanup_errors = await asyncio.wait_for(run.cleanup(), FINALIZATION_TIMEOUT)
+    except Exception:
+        cleanup_errors.append("finalization cleanup deadline/failure")
+        # The cleanup timeout cannot leave a live run-owned Locho child behind.
+        waits = []
+        for process in run.processes:
+            if process.child.returncode is None:
+                process.child.kill()
+                waits.append(process.child.wait())
+            for pump in process.pumps:
+                pump.cancel()
+        if waits:
+            try:
+                await asyncio.wait_for(asyncio.gather(*waits), 3)
+            except asyncio.TimeoutError:
+                cleanup_errors.append("forced process reap deadline")
+    version = None
+    try:
+        status, output = await capture(str(run.binary), "--version", timeout=5)
+        require(status == 0, "version probe failed")
+        version = output.decode().strip()
+    except Exception:
+        cleanup_errors.append("binary version probe failed")
+    if cleanup_errors:
+        result = "failed"
+        error = error or "finalization failed"
+    summary = {"result": result, "error": error, "mode": args.mode,
+               "elapsed_seconds": time.monotonic() - started,
+               "requested_load_seconds": args.duration if args.mode == "soak" else None,
+               "max_fd_growth_allowance": args.max_fd_growth,
+               "platform": platform.platform(), "python": platform.python_version(),
+               "binary_version": version,
+               "binary_sha256": run.binary_sha256, "harness_sha256": run.harness_sha256,
+               "counts": dict(run.counts), "cleanup_errors": cleanup_errors,
+               "failure_events_recorded": run.events,
+               "upstream_messages": sum(f.messages for f in run.fixtures),
+               "duplicates": sum(f.duplicates for f in run.fixtures),
+               "fixture_errors": sum(f.errors for f in run.fixtures),
+               "interrupted_upstream_streams": sum(f.interrupted for f in run.fixtures),
+               "failure_frames": run.failure_frames,
+               "latency_sample_count": len(run.latencies),
+               "latency_sampling": "latest 10000 successful operations",
+               "transport": "explicit loopback direct-address; direct path required at readiness",
+               "scope": "single-machine native direct transport; no WAN/relay acceptance"}
+    samples = sorted(run.latencies)
+    summary["latency_seconds"] = {f"p{p}": samples[min(len(samples) - 1, int(len(samples) * p / 100))]
+                                   if samples else None for p in (50, 95, 99)}
+    try:
+        (run.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    finally:
+        # Reporting/version failures must never skip private state removal.
+        shutil.rmtree(run.root)
+    return result, error
 
 
 async def main(args):
@@ -891,35 +1028,7 @@ async def main(args):
         # A repeated interrupt must not cancel the bounded ownership cleanup.
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: None)
-        cleanup_errors = await run.cleanup()
-        if cleanup_errors:
-            result = "failed"
-        version = subprocess.run([str(run.binary), "--version"], capture_output=True, text=True,
-                                 timeout=5).stdout.strip()
-        summary = {"result": result, "error": error, "mode": args.mode,
-                   "elapsed_seconds": time.monotonic() - started,
-                   "requested_load_seconds": args.duration if args.mode == "soak" else None,
-                   "max_fd_growth_allowance": args.max_fd_growth,
-                   "platform": platform.platform(), "python": platform.python_version(),
-                   "binary_version": version,
-                   "binary_sha256": run.binary_sha256, "harness_sha256": run.harness_sha256,
-                   "counts": dict(run.counts), "cleanup_errors": cleanup_errors,
-                   "failure_events_recorded": run.events,
-                   "upstream_messages": sum(f.messages for f in run.fixtures),
-                   "duplicates": sum(f.duplicates for f in run.fixtures),
-                   "fixture_errors": sum(f.errors for f in run.fixtures),
-                   "interrupted_upstream_streams": sum(f.interrupted for f in run.fixtures),
-                   "failure_frames": run.failure_frames,
-                   "latency_sample_count": len(run.latencies),
-                   "latency_sampling": "latest 10000 successful operations",
-                   "transport": "explicit loopback direct-address; direct path required at readiness",
-                   "scope": "single-machine native direct transport; no WAN/relay acceptance"}
-        samples = sorted(run.latencies)
-        summary["latency_seconds"] = {f"p{p}": samples[min(len(samples) - 1, int(len(samples) * p / 100))]
-                                       if samples else None for p in (50, 95, 99)}
-        (run.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        # tempfile cleanup owns only this randomly created, mode-0700 directory.
-        shutil.rmtree(run.root)
+        result, error = await finalize(run, args, started, result, error)
     print(f"Unix {args.mode}: {result}" + (f" ({error})" if error else ""), flush=True)
     return 0 if result == "passed" else 1
 

@@ -211,6 +211,9 @@ async fn run_attachments(
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
+    // Register handlers synchronously before creating any endpoint/listener.
+    // Constructing an async ctrl_c future alone does not install its handler.
+    let mut shutdown_signal = ShutdownSignal::install()?;
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {
         Some(address) => Some(address),
@@ -219,15 +222,22 @@ async fn run_attachments(
             .transpose()
             .context("invalid LOCHO_TEST_DIRECT_ADDR")?,
     };
-    let endpoint = relay::endpoint_builder(relay_settings.as_ref())
-        .bind()
-        .await?;
+    let endpoint = tokio::select! {
+        biased;
+        _ = shutdown_signal.recv() => return Ok(()),
+        result = relay::endpoint_builder(relay_settings.as_ref()).bind() => result?,
+    };
     let endpoint_addr = direct_address
         .map(|address| EndpointAddr::new(node_id).with_ip_addr(address))
         .unwrap_or_else(|| EndpointAddr::new(node_id));
     let mut listeners = Vec::with_capacity(attachments.len());
     for attachment in &attachments {
-        let listener = bind_listener(&attachment.listen).await.with_context(|| {
+        let listener = tokio::select! {
+            biased;
+            _ = shutdown_signal.recv() => return Ok(()),
+            result = bind_listener(&attachment.listen) => result,
+        }
+        .with_context(|| {
             format!(
                 "bind listener for service {:?}",
                 attachment.capability.service
@@ -239,6 +249,12 @@ async fn run_attachments(
             attachment.http_timeout,
             attachment.tcp_idle_timeout,
         ));
+        tokio::task::yield_now().await;
+    }
+    tokio::select! {
+        biased;
+        _ = shutdown_signal.recv() => return Ok(()),
+        _ = std::future::ready(()) => {},
     }
     let listeners = listeners
         .into_iter()
@@ -271,7 +287,6 @@ async fn run_attachments(
     std::io::stdout().flush()?;
     let (connection_state, driver) = PeerSession::start(endpoint, endpoint_addr);
     let shutdown = CancellationToken::new();
-    let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut supervisor = tokio::spawn(driver.run());
     let mut status = connection_state.subscribe();
     let reporter = tokio::spawn(async move {
@@ -363,7 +378,7 @@ async fn run_attachments(
                     Err(error) => Err(error.into()),
                 };
             }
-            _ = &mut shutdown_signal => {
+            _ = shutdown_signal.recv() => {
                 warn!("shutdown requested");
                 break Ok(());
             }
@@ -535,20 +550,37 @@ async fn run_unix_listener(
     Ok(())
 }
 
-async fn wait_for_shutdown_signal() {
+struct ShutdownSignal {
     #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate.recv() => {}
-        }
-    }
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
     #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+    interrupt: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
+}
+
+impl ShutdownSignal {
+    fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+            #[cfg(unix)]
+            terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            #[cfg(not(unix))]
+            interrupt: Box::pin(tokio::signal::ctrl_c()),
+        })
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.interrupt.recv() => {},
+            _ = self.terminate.recv() => {},
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.interrupt.as_mut().await;
+        }
     }
 }
 

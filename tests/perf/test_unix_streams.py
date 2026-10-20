@@ -1,15 +1,18 @@
 import asyncio
+import json
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 import uuid
+from unittest.mock import patch
 
 from unix_streams import (
     Fixture, HEADER, LOG_LIMIT, MAX_EVENTS, MAX_PAYLOAD, Process, Run, connect, close, duration,
-    duplex_exchange, exchange, fault_failure, payload, short_root, write_toml,
+    descriptor_growth, duplex_exchange, exchange, fault_failure, finalize, payload, short_root, write_toml,
 )
 
 
@@ -78,6 +81,14 @@ class FixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_descriptor_gate_rejects_cross_pid_comparisons_and_leaks(self):
+        before = {"pid": 10, "fds": 20}
+        with self.assertRaises(AssertionError):
+            descriptor_growth(before, {"pid": 11, "fds": 5}, 16)
+        with self.assertRaises(AssertionError):
+            descriptor_growth(before, {"pid": 10, "fds": 40}, 16)
+        self.assertEqual(descriptor_growth(before, {"pid": 10, "fds": 24}, 16), 4)
+
     def test_fault_accounting_follows_connection_epoch_not_a_grace_window(self):
         # An old persistent connection fails after fresh probes have recovered.
         self.assertTrue(fault_failure(False, False, 1, 0, 1))
@@ -154,6 +165,56 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         await process.wait_for("ready")
         await process.stop()
         self.assertEqual(process.child.returncode, 0)
+
+    async def test_stalled_log_pump_has_a_drain_deadline(self):
+        process = await Process(self.run, "stall", ["-c", "pass"]).start()
+        await asyncio.wait_for(process.child.wait(), 5)
+        process.pumps.append(asyncio.create_task(asyncio.Event().wait()))
+        with patch("unix_streams.LOG_DRAIN_TIMEOUT", 0.01):
+            with self.assertRaisesRegex(AssertionError, "log pumps"):
+                await process.stop()
+        self.assertTrue(all(pump.done() for pump in process.pumps))
+
+
+class FinalizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_deadline_force_kills_and_reaps_only_owned_children(self):
+        with tempfile.TemporaryDirectory() as output:
+            args = SimpleNamespace(binary=sys.executable, output=output, mode="smoke", duration=900,
+                                   max_fd_growth=16)
+            run = Run(args)
+            source = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                      "print('ready', flush=True); time.sleep(60)")
+            process = await Process(run, "ignore-term", ["-c", source]).start()
+            await process.wait_for("ready")
+            with patch("unix_streams.FINALIZATION_TIMEOUT", 0.01):
+                result, _ = await finalize(run, args, time.monotonic(), "passed", None)
+            self.assertEqual(result, "failed")
+            self.assertIsNotNone(process.child.returncode)
+            self.assertFalse(run.root.exists())
+
+    async def test_failed_version_probe_keeps_failed_summary_and_removes_private_state(self):
+        with tempfile.TemporaryDirectory() as output:
+            args = SimpleNamespace(binary=sys.executable, output=output, mode="smoke", duration=900,
+                                   max_fd_growth=16)
+            run = Run(args)
+            root = run.root
+            with patch("unix_streams.capture", side_effect=asyncio.TimeoutError):
+                result, _ = await finalize(run, args, time.monotonic(), "passed", None)
+            self.assertEqual(result, "failed")
+            self.assertFalse(root.exists())
+            summary = json.loads((run.output / "summary.json").read_text())
+            self.assertEqual(summary["result"], "failed")
+            self.assertIn("binary version probe failed", summary["cleanup_errors"])
+
+    async def test_failed_report_write_still_removes_private_state(self):
+        with tempfile.TemporaryDirectory() as output:
+            args = SimpleNamespace(binary=sys.executable, output=output, mode="smoke", duration=900,
+                                   max_fd_growth=16)
+            run = Run(args)
+            with patch.object(Path, "write_text", side_effect=OSError("test report failure")):
+                with self.assertRaises(OSError):
+                    await finalize(run, args, time.monotonic(), "passed", None)
+            self.assertFalse(run.root.exists())
 
 
 if __name__ == "__main__":

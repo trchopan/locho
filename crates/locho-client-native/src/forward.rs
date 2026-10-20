@@ -184,7 +184,12 @@ async fn forward_connection(
     };
     if let Err(error) = relay_with_idle_policy(local, remote, idle_timeout).await {
         if error.downcast_ref::<TunnelIdleTimeout>().is_none() {
-            lease.invalidate();
+            // A local reset or a remote per-stream rejection is not evidence
+            // that the shared peer connection is broken. Its driver observes
+            // connection-wide failures independently.
+            if lease.connection().close_reason().is_some() {
+                lease.invalidate();
+            }
             // Do not forward arbitrary I/O error text into SDK diagnostics.
             error!(service = %capability.service, "stream tunnel forwarding failed");
         }

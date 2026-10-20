@@ -4,6 +4,13 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+- Anchors Unix listener operations to verified directory handles, rejects unsafe
+  ancestry, installs attachment shutdown handlers before startup, and isolates
+  local client resets from shared-peer recovery. Root/same-UID filesystem races
+  remain an explicit trust boundary.
+- Keeps idle expiry and reverse-direction forwarding active under backpressure;
+  adds same-PID resource-drain and harness-finalization regression checks.
+
 - Adds Unix filesystem stream upstreams for TCP services and secure Unix socket
   listeners for TCP attachments on macOS/Linux, including mixed TCP/Unix
   multi-service attachments and configurable raw-stream idle deadlines.

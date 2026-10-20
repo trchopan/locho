@@ -207,50 +207,172 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let (mut a_reader, mut a_writer) = tokio::io::split(a);
-    let (mut b_reader, mut b_writer) = tokio::io::split(b);
-    let mut a_open = true;
-    let mut b_open = true;
-    let mut a_buffer = vec![0u8; 16 * 1024];
-    let mut b_buffer = vec![0u8; 16 * 1024];
-    let mut last_activity = Instant::now();
-
-    while a_open || b_open {
+    let activity = std::sync::Mutex::new(Instant::now());
+    let mut a = ActivityStream {
+        inner: a,
+        activity: &activity,
+    };
+    let mut b = ActivityStream {
+        inner: b,
+        activity: &activity,
+    };
+    // Keep one copy future alive throughout: cancelling/recreating a copy on
+    // activity would discard partially written buffers and corrupt the stream.
+    let copy = tokio::io::copy_bidirectional_with_sizes(&mut a, &mut b, 16 * 1024, 16 * 1024);
+    tokio::pin!(copy);
+    loop {
+        let last_activity = *activity.lock().expect("relay activity lock poisoned");
         tokio::select! {
-            result = a_reader.read(&mut a_buffer), if a_open => {
-                match result.context("read from first stream")? {
-                    0 => { a_open = false; b_writer.shutdown().await?; }
-                    len => {
-                        b_writer.write_all(&a_buffer[..len]).await.context("write to second stream")?;
-                        last_activity = Instant::now();
-                    }
-                }
-            }
-            result = b_reader.read(&mut b_buffer), if b_open => {
-                match result.context("read from second stream")? {
-                    0 => { b_open = false; a_writer.shutdown().await?; }
-                    len => {
-                        a_writer.write_all(&b_buffer[..len]).await.context("write to first stream")?;
-                        last_activity = Instant::now();
-                    }
-                }
-            }
+            result = &mut copy => return result.map(|_| ()).context("relay streams"),
             _ = async {
                 if let Some(duration) = idle_timeout {
                     sleep_until(last_activity + duration).await;
                 } else {
                     std::future::pending::<()>().await;
                 }
-            } => return Err(TunnelIdleTimeout.into())
+            } => {
+                if idle_timeout.is_some_and(|duration| {
+                    Instant::now().duration_since(*activity.lock().expect("relay activity lock poisoned")) >= duration
+                }) {
+                    return Err(TunnelIdleTimeout.into());
+                }
+            }
         }
     }
-    Ok(())
+}
+
+struct ActivityStream<'a, T> {
+    inner: T,
+    activity: &'a std::sync::Mutex<Instant>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for ActivityStream<'_, T> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buffer);
+        if buffer.filled().len() > before {
+            *self.activity.lock().expect("relay activity lock poisoned") = Instant::now();
+        }
+        result
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for ActivityStream<'_, T> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, bytes);
+        if matches!(result, std::task::Poll::Ready(Ok(count)) if count > 0) {
+            *self.activity.lock().expect("relay activity lock poisoned") = Instant::now();
+        }
+        result
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::duplex;
+
+    #[tokio::test(start_paused = true)]
+    async fn blocked_write_still_expires() {
+        use std::time::Duration;
+        let (mut left, a) = duplex(64);
+        let (_right, b) = duplex(64);
+        let writer = tokio::spawn(async move { left.write_all(&vec![7; 128 * 1024]).await });
+        let relay = relay_with_idle_policy(a, b, Some(Duration::from_secs(10)));
+        let error = tokio::time::timeout(Duration::from_secs(11), relay)
+            .await
+            .expect("blocked writes must not block idle expiry")
+            .unwrap_err();
+        assert!(error.downcast_ref::<TunnelIdleTimeout>().is_some());
+        writer.abort();
+        let _ = writer.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn blocked_shutdown_still_expires() {
+        use std::{
+            pin::Pin,
+            task::{Context, Poll},
+            time::Duration,
+        };
+        struct PendingShutdown;
+        impl AsyncWrite for PendingShutdown {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                bytes: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Poll::Ready(Ok(bytes.len()))
+            }
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Pending
+            }
+        }
+        let (mut left, a) = duplex(64);
+        let (_right, read) = duplex(64);
+        left.shutdown().await.unwrap();
+        let relay = relay_with_idle_policy(
+            a,
+            tokio::io::join(read, PendingShutdown),
+            Some(Duration::from_secs(10)),
+        );
+        let error = tokio::time::timeout(Duration::from_secs(11), relay)
+            .await
+            .expect("blocked shutdown must not prevent expiry")
+            .unwrap_err();
+        assert!(error.downcast_ref::<TunnelIdleTimeout>().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn blocked_direction_does_not_block_reverse_traffic() {
+        use std::time::Duration;
+        let (left, a) = duplex(64);
+        let (mut right, b) = duplex(64);
+        let (mut left_read, mut left_write) = tokio::io::split(left);
+        let writer = tokio::spawn(async move { left_write.write_all(&vec![7; 128 * 1024]).await });
+        let relay = tokio::spawn(relay_with_idle_policy(a, b, None));
+        tokio::task::yield_now().await;
+        right.write_all(b"pong").await.unwrap();
+        let mut reply = [0; 4];
+        tokio::time::timeout(Duration::from_secs(1), left_read.read_exact(&mut reply))
+            .await
+            .expect("reverse traffic stalled behind a blocked write")
+            .unwrap();
+        assert_eq!(&reply, b"pong");
+        writer.abort();
+        relay.abort();
+        let _ = writer.await;
+        let _ = relay.await;
+    }
 
     #[tokio::test]
     async fn tcp_request_matches_existing_wire_vector() {

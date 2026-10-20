@@ -35,6 +35,8 @@ LOCHO_TEST_BINARY=target/release/locho cargo test --test release_smoke \
   socket refusal, replacement-preserving cleanup and all-listener startup rollback.
 - SIGKILL stale paths are refused until explicitly removed by the harness;
   Ctrl-C/SIGTERM clean up owned sockets, including with an active connection.
+- SIGTERM during partial multi-listener startup and abrupt local Unix client
+  reset without disconnecting another service on the shared peer.
 - Wrong capabilities, unavailable/restarted Unix backend, host and attachment
   restart, unchanged listener inode during backend/host recovery, fresh probes
   within 30 seconds, and shared host-budget rejection at 128 active streams.
@@ -74,7 +76,10 @@ are retried during recovery.
 A run fails on corruption, replay, unexpected steady-state I/O failure, an
 unexpected process exit, failed recovery, failed quiet/default-expiry gates,
 cleanup failure, or post-drain descriptor growth greater than 16 per Locho
-process (`--max-fd-growth` overrides this allowance). Scheduled-fault failures
+process (`--max-fd-growth` overrides this allowance). Before any scheduled
+restart, workers drain and descriptors are compared against the **same PID**
+baseline; traffic then resumes. This checkpoint occurs after the quiet gate,
+at the later of 370 seconds or 40% of load duration. Scheduled-fault failures
 are counted separately and remain visible. Classification follows the affected
 service's connection/operation epoch: an old persistent stream can discover its
 terminal EOF after fresh probes recover. There is no blanket post-fault grace
@@ -84,8 +89,8 @@ short smoke profile also runs traffic during restarts to cover this accounting.
 RSS/CPU and descriptor history are
 recorded; RSS/throughput are diagnostic rather than arbitrary pass thresholds.
 Compare identical binary/platform profiles for leak and performance trends;
-the final post-drain comparison includes process restarts, so also inspect the
-within-PID resource samples for monotonic growth.
+the final post-restart deltas are diagnostic only and cannot satisfy the
+same-PID descriptor gate. Inspect within-PID RSS samples for monotonic growth.
 
 ### Native artifacts and isolation
 
@@ -109,6 +114,12 @@ short private directory before running. Interrupts fail the run, clean up owned
 processes, and retain diagnostic artifacts; SIGKILL of the harness itself cannot
 guarantee cleanup. One-machine direct-path results are **not** WAN, relay, or
 cross-OS acceptance.
+
+Finalization has a separate 30-second cleanup budget, a three-second forced-reap
+fallback and a five-second best-effort version probe. Log pumps drain for at most
+two seconds. Version-probe failure still writes a failed summary; report-writing
+failure still removes private runtime state. OS/filesystem hangs in synchronous
+operations cannot be bounded by an asyncio timer.
 
 ## Docker TCP/HTTP stress harness
 

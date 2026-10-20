@@ -94,6 +94,9 @@ pub fn validate_unix_socket_path(path: &Path, what: &str) -> Result<()> {
         bail!("{what} must not contain '..' path traversal")
     }
     let bytes = path.as_os_str().as_bytes();
+    if bytes.ends_with(b"/") || bytes.ends_with(b"/.") {
+        bail!("{what} must not end with a directory separator or '/.'")
+    }
     if bytes.contains(&0) {
         bail!("{what} must not contain a NUL byte")
     }
@@ -495,6 +498,15 @@ mod tests {
         }
         assert!(resolve_tcp_idle_timeout(Some(MAX_TCP_IDLE_TIMEOUT_SECS + 1)).is_err());
         assert!(resolve_tcp_idle_timeout(Some(u64::MAX)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_paths_reject_directory_suffixes() {
+        for path in ["/private/socket/", "/private/socket/."] {
+            assert!(validate_unix_socket_path(Path::new(path), "unix_socket").is_err());
+        }
+        assert!(validate_unix_socket_path(Path::new("/private/./socket"), "unix_socket").is_ok());
     }
 
     #[cfg(not(unix))]

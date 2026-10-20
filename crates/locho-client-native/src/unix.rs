@@ -4,19 +4,18 @@
 
 use std::{
     io,
-    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
 use tokio::net::UnixListener;
-
-const SOCKET_MODE: u32 = 0o600;
+mod filesystem;
+use filesystem::{Identity, Parent};
 
 /// A Unix listener that removes only the socket created by this value.
 pub struct UnixListenerGuard {
     listener: Option<UnixListener>,
     path: PathBuf,
-    device: u64,
-    inode: u64,
+    parent: Parent,
+    identity: Identity,
 }
 
 impl UnixListenerGuard {
@@ -38,29 +37,15 @@ impl Drop for UnixListenerGuard {
     fn drop(&mut self) {
         // Close the descriptor before checking/removing the directory entry.
         self.listener.take();
-        let Ok(metadata) = std::fs::symlink_metadata(&self.path) else {
-            return;
-        };
-        if metadata.dev() == self.device && metadata.ino() == self.inode {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        self.parent.unlink_owned(self.identity);
     }
 }
 
 pub fn bind_unix(path: &Path) -> io::Result<UnixListenerGuard> {
     validate_path(path)?;
-    validate_private_parent(path)?;
-    if std::fs::symlink_metadata(path).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!(
-                "Unix socket path {} already exists; verify and remove a stale socket explicitly",
-                path.display()
-            ),
-        ));
-    }
-
-    let listener = UnixListener::bind(path).map_err(|error| {
+    let parent = Parent::open(path)?;
+    parent.require_absent()?;
+    let listener = parent.bind().map_err(|error| {
         if error.kind() == io::ErrorKind::AddrInUse {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -73,41 +58,17 @@ pub fn bind_unix(path: &Path) -> io::Result<UnixListenerGuard> {
             error
         }
     })?;
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() => metadata,
-        Ok(_) => {
-            drop(listener);
-            return Err(io::Error::other(
-                "Unix listener path was replaced during bind",
-            ));
-        }
-        Err(error) => {
-            drop(listener);
-            return Err(error);
-        }
-    };
+    let identity = parent.identity()?;
     let guard = UnixListenerGuard {
-        listener: Some(listener),
+        listener: None,
         path: path.to_owned(),
-        device: metadata.dev(),
-        inode: metadata.ino(),
+        parent,
+        identity,
     };
-    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(SOCKET_MODE))
-    {
-        drop(guard);
-        return Err(error);
-    }
-    let final_metadata = std::fs::symlink_metadata(path)?;
-    if final_metadata.dev() != guard.device
-        || final_metadata.ino() != guard.inode
-        || !final_metadata.file_type().is_socket()
-    {
-        drop(guard);
-        return Err(io::Error::other(
-            "Unix listener path changed during permission setup",
-        ));
-    }
-    // Keep the guard alive while the caller owns the listener.
+    guard.parent.chmod_socket(identity)?;
+    listener.set_nonblocking(true)?;
+    let mut guard = guard;
+    guard.listener = Some(UnixListener::from_std(listener)?);
     Ok(guard)
 }
 
@@ -130,6 +91,12 @@ fn validate_path(path: &Path) -> io::Result<()> {
     }
     use std::os::unix::ffi::OsStrExt;
     let bytes = path.as_os_str().as_bytes();
+    if bytes.ends_with(b"/") || bytes.ends_with(b"/.") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Unix socket path must not end with a directory separator or '/.'",
+        ));
+    }
     #[cfg(target_os = "macos")]
     const MAX_PATH_BYTES: usize = 103;
     #[cfg(not(target_os = "macos"))]
@@ -143,71 +110,10 @@ fn validate_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_private_parent(path: &Path) -> io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Unix socket has no parent directory",
-        )
-    })?;
-    // geteuid has no pointer or process-global mutation requirements.
-    let effective_uid = unsafe { libc::geteuid() };
-    let mut current = PathBuf::new();
-    for component in parent.components() {
-        match component {
-            Component::RootDir => current.push("/"),
-            Component::Normal(value) => current.push(value),
-            Component::CurDir => {}
-            Component::ParentDir | Component::Prefix(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Unix socket parent contains an invalid path component",
-                ))
-            }
-        }
-        let component_metadata = std::fs::symlink_metadata(&current)?;
-        if component_metadata.file_type().is_symlink()
-            && component_metadata.uid() != effective_uid
-            && component_metadata.uid() != 0
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "Unix socket parent {} contains a foreign symlink",
-                    current.display()
-                ),
-            ));
-        }
-    }
-    // Resolve existing parent components so platform-managed aliases such as
-    // macOS /tmp -> /private/tmp work. The final socket entry is still checked
-    // with symlink_metadata and is never followed when deciding ownership or
-    // whether an existing path may be used.
-    let resolved_parent = std::fs::canonicalize(parent)?;
-    let metadata = std::fs::symlink_metadata(&resolved_parent)?;
-    if !metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            format!("Unix socket parent {} is not a directory", parent.display()),
-        ));
-    }
-    // The parent is deliberately checked before bind. A 0700 directory owned by
-    // the effective user prevents another user from racing the bind/chmod window.
-    if metadata.uid() != effective_uid || metadata.mode() & 0o077 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "Unix socket parent {} must be owned by the effective user and mode 0700",
-                resolved_parent.display()
-            ),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -227,9 +133,15 @@ mod tests {
     async fn binds_mode_0600_and_removes_owned_socket() {
         let directory = test_directory();
         let path = directory.join("s");
+        let cwd = std::env::current_dir().unwrap();
         let listener = bind_unix(&path).unwrap();
+        assert_eq!(
+            std::env::current_dir().unwrap(),
+            cwd,
+            "binding must not change the process cwd"
+        );
         let metadata = std::fs::symlink_metadata(&path).unwrap();
-        assert_eq!(metadata.mode() & 0o777, SOCKET_MODE);
+        assert_eq!(metadata.mode() & 0o777, 0o600);
         drop(listener);
         assert!(!path.exists());
         std::fs::remove_dir(directory).unwrap();
@@ -331,6 +243,8 @@ mod tests {
             "relative.sock".into(),
             directory.join("../s"),
             directory.join("s".repeat(108)),
+            directory.join("s/"),
+            directory.join("s/."),
         ] {
             assert_eq!(
                 bind_unix(&path).err().unwrap().kind(),
@@ -338,5 +252,107 @@ mod tests {
             );
         }
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn pinned_parent_survives_path_substitution_during_bind_and_cleanup() {
+        let root = test_directory();
+        let original = root.join("p");
+        let moved = root.join("m");
+        let other = root.join("o");
+        for path in [&original, &other] {
+            std::fs::create_dir(path).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = original.join("s");
+        let parent = Parent::open(&path).unwrap();
+        parent.require_absent().unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        std::os::unix::fs::symlink(&other, &original).unwrap();
+        let listener = parent.bind().unwrap();
+        let identity = parent.identity().unwrap();
+        parent.chmod_socket(identity).unwrap();
+        assert!(moved.join("s").exists());
+        assert!(!other.join("s").exists());
+        std::fs::write(other.join("s"), b"keep").unwrap();
+        drop(listener);
+        parent.unlink_owned(identity);
+        assert!(!moved.join("s").exists());
+        assert_eq!(std::fs::read(other.join("s")).unwrap(), b"keep");
+        std::fs::remove_file(original).unwrap();
+        std::fs::remove_file(other.join("s")).unwrap();
+        std::fs::remove_dir(other).unwrap();
+        std::fs::remove_dir(moved).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn substitution_before_chmod_never_changes_symlink_target() {
+        let root = test_directory();
+        let path = root.join("s");
+        let parent = Parent::open(&path).unwrap();
+        let listener = parent.bind().unwrap();
+        let identity = parent.identity().unwrap();
+        std::fs::rename(&path, root.join("old")).unwrap();
+        let target = root.join("target");
+        std::fs::write(&target, b"keep").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(parent.chmod_socket(identity).is_err());
+        parent.unlink_owned(identity);
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::metadata(&target).unwrap().mode() & 0o777, 0o640);
+        drop(listener);
+        for path in [&path, &target, &root.join("old")] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_entry_created_between_preflight_and_bind_and_unsafe_ancestry() {
+        let root = test_directory();
+        let path = root.join("s");
+        let parent = Parent::open(&path).unwrap();
+        parent.require_absent().unwrap();
+        std::fs::write(&path, b"keep").unwrap();
+        assert!(parent.bind().is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        std::fs::remove_file(path).unwrap();
+        let private = root.join("p");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(Parent::open(&private.join("s")).is_err());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir(private).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejects_acl_grants_even_when_parent_mode_is_private() {
+        let root = test_directory();
+        let status = std::process::Command::new("/bin/chmod")
+            .args(["+a", "everyone allow search"])
+            .arg(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let rejected = Parent::open(&root.join("s")).is_err();
+        let status = std::process::Command::new("/bin/chmod")
+            .args(["-a", "everyone allow search"])
+            .arg(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::remove_dir(root).unwrap();
+        assert!(
+            rejected,
+            "extended ACL allow entries must not bypass private-directory checks"
+        );
     }
 }
