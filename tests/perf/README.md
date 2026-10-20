@@ -1,6 +1,6 @@
 # Locho Stress Harness
 
-## Native Unix stream smoke and soak tests
+## Native Unix stream smoke, stress and soak tests
 
 `unix_streams.py` tests filesystem Unix stream support using the **ordinary
 release binary**, native processes and generic byte-stream fixtures. It needs
@@ -12,6 +12,7 @@ socket tests alone would exercise its Linux VM, not macOS listener behavior.
 cargo build --release
 python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
 python3 tests/perf/unix_streams.py smoke
+python3 tests/perf/unix_streams.py stress --duration 5m
 python3 tests/perf/unix_streams.py soak --duration 30m
 python3 tests/perf/unix_streams.py soak --duration 1h
 ```
@@ -49,6 +50,30 @@ HTTP/TLS, capability rotation and HTTP timeout regressions remain covered by the
 other `release_smoke.rs` cases. Controlled-clock core tests cover the default
 300-second deadline, bytes resetting it, EOF not resetting it and disabled-idle
 half-close behavior. Native adapter unit tests supplement filesystem cases.
+
+### Stress profile and acceptance
+
+The stress profile ramps concurrent workers per forwarding combination through
+4, 8, 16 and 32 by default over a five-minute load budget. Override the matrix
+or use one level when isolating a result:
+
+```sh
+python3 tests/perf/unix_streams.py stress --duration 5m --levels 4,8,16,32
+python3 tests/perf/unix_streams.py stress --duration 2m --concurrency 16
+```
+
+Each level exercises TCP→TCP, TCP→Unix, Unix→TCP and Unix→Unix with persistent
+connections, churn, fragmented/slow transfers and periodic 1 MiB payloads.
+Stress fails on corruption, replay, unexpected I/O failures, worker/process
+failure, cleanup failure or descriptor growth above `--max-fd-growth`. It
+records throughput and p50/p95/p99 latency plus RSS/CPU/FD samples; those
+performance values are diagnostic and should be compared across identical
+machine/platform runs. Fault restarts and long idle-expiry gates belong to the
+soak profile.
+
+The default stress duration is five minutes; accepted stress durations are one
+minute to one hour. Artifacts use the
+`artifacts/unix-stress-<timestamp>/` profile name.
 
 ### Soak profile and acceptance
 
@@ -94,13 +119,13 @@ same-PID descriptor gate. Inspect within-PID RSS samples for monotonic growth.
 
 ### Native artifacts and isolation
 
-Each run writes `artifacts/unix-{smoke,soak}-<timestamp>/` (override the parent
+Each run writes `artifacts/unix-{smoke,stress,soak}-<timestamp>/` (override the parent
 with `--output`) containing:
 
 - `summary.json`: outcome, binary version/hash, OS/Python, operation counts,
   fixture corruption/replay counts, bounded latency sample p50/p95/p99.
 - `timeline.jsonl`: gates, scheduled faults, recovery times, and capped failure events.
-- `metrics.jsonl` (soak): 10-second RSS/CPU/FD samples and cumulative counters;
+- `metrics.jsonl` (stress/soak): RSS/CPU/FD samples and cumulative counters;
   byte-count deltas can be used to calculate interval throughput.
 - Bounded process logs with generated credentials and runtime paths redacted.
 

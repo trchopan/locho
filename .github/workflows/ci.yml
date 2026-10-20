@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
+    inputs:
+      stress_duration:
+        description: Native Unix stress duration (for example, 5m)
+        required: true
+        default: 5m
 
 permissions:
   contents: read
@@ -53,6 +58,46 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\scripts\Verify-Release.ps1 -SkipArtifacts
+
+  native-stress:
+    name: Native Unix stress (${{ matrix.os }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run native Unix stress profile
+        env:
+          LOCHO_STRESS_DURATION: ${{ github.event.inputs.stress_duration || '5m' }}
+        run: python3 tests/perf/unix_streams.py stress --binary target/release/locho --duration "$LOCHO_STRESS_DURATION"
+
+      - name: Upload stress artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unix-stress-${{ matrix.os }}
+          path: artifacts/unix-stress-*
+          if-no-files-found: warn
 
   msrv:
     name: Minimum supported Rust
