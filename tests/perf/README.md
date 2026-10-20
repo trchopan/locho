@@ -11,6 +11,7 @@ socket tests alone would exercise its Linux VM, not macOS listener behavior.
 ```sh
 cargo build --release
 python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
+python3 -m unittest discover -s tests/perf/loadgen -p test_loadgen.py -v
 python3 tests/perf/unix_streams.py smoke
 python3 tests/perf/unix_streams.py stress --duration 5m
 python3 tests/perf/unix_streams.py soak --duration 30m
@@ -126,6 +127,7 @@ with `--output`) containing:
   fixture corruption/replay counts, bounded latency sample p50/p95/p99.
 - `timeline.jsonl`: gates, scheduled faults, recovery times, and capped failure events.
 - `metrics.jsonl` (stress/soak): RSS/CPU/FD samples and cumulative counters;
+  stress samples are taken during active phases as well as at phase boundaries;
   byte-count deltas can be used to calculate interval throughput.
 - Bounded process logs with generated credentials and runtime paths redacted.
 
@@ -193,12 +195,15 @@ and temporary runtime state even after an interrupted run. The artifact
 directory is retained for analysis.
 
 The load generator records successful operations, failures with reasons,
-timeouts, connection resets, throughput, and p50/p95/p99 latency. HTTP request
-and response sizes, and TCP message sizes, are configurable. Events are streamed
-to JSONL and latency samples are bounded so long runs do not retain every
-operation in memory. Container statistics are sampled every five seconds by the
-collector, including restart count and exit status. No throughput threshold is
-imposed; compare runs using the same machine and commit.
+timeouts, connection resets, validation failures, throughput, and p50/p95/p99
+latency. HTTP responses are checked against the deterministic fixture body, not
+just their status and size; POST fixtures also consume and validate the request
+body before responding. HTTP request and response sizes, and TCP message sizes,
+are configurable. Events are streamed to JSONL and latency samples are bounded
+so long runs do not retain every operation in memory. Container statistics are
+sampled every five seconds by the collector, including restart count and exit
+status. No throughput threshold is imposed; compare runs using the same machine
+and commit.
 
 The soak runner accepts `--http-timeout-secs` and applies that value to both the
 host and HTTP attachment. Use a short value only with a deliberately delayed
@@ -223,11 +228,13 @@ The duration is the total wall-clock budget and cannot exceed 1 hour. Soak
 durations shorter than 6 minutes are rejected because the run reserves time for
 setup, warmup, cooldown, and three sequential 30-second recovery probes. Soak
 artifacts are written to `artifacts/soak-<UTC timestamp>-<pid>/`. Recovery
-results are in `timeline.jsonl`; transient failures during a restart remain in
-the load-generator events. Successful operations are sampled and interval
-summaries are emitted every 10 seconds by default, keeping long-run artifacts
-bounded. Failure events are capped per load-generator process while interval
-counts continue to include every failure. Override this with
+results are in `timeline.jsonl`; transient connection failures during a restart
+are allowed only for the recovery load and remain in the load-generator events.
+Response corruption, unexpected status codes, and other validation failures
+still fail the run. Successful operations are sampled and interval summaries
+are emitted every 10 seconds by default, keeping long-run artifacts bounded.
+Failure events are capped per load-generator process while interval counts
+continue to include every failure. Override this with
 `--success-sample-rate` and `--interval` when needed. Compose does not simulate
 macOS suspend/resume, so perform the lid-close/open check separately on the M1
 Pro.

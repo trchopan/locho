@@ -12,6 +12,10 @@ on:
         description: Native Unix stress duration (for example, 5m)
         required: true
         default: 5m
+      soak_duration:
+        description: Native Unix soak duration (for example, 15m)
+        required: true
+        default: 15m
 
 permissions:
   contents: read
@@ -46,9 +50,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Test native Unix stream harness
+      - name: Test performance harnesses
         if: runner.os != 'Windows'
-        run: python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
+        run: |
+          python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
+          python3 -m unittest discover -s tests/perf/loadgen -p test_loadgen.py -v
 
       - name: Run Unix release verification gate
         if: runner.os != 'Windows'
@@ -59,6 +65,14 @@ jobs:
         shell: pwsh
         run: .\scripts\Verify-Release.ps1 -SkipArtifacts
 
+      - name: Upload native smoke artifacts
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unix-smoke-${{ matrix.os }}
+          path: artifacts/unix-smoke-*
+          if-no-files-found: warn
+
   native-stress:
     name: Native Unix stress (${{ matrix.os }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -67,7 +81,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 75
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -97,6 +111,46 @@ jobs:
         with:
           name: unix-stress-${{ matrix.os }}
           path: artifacts/unix-stress-*
+          if-no-files-found: warn
+
+  native-soak:
+    name: Native Unix soak (${{ matrix.os }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run native Unix soak profile
+        env:
+          LOCHO_SOAK_DURATION: ${{ github.event.inputs.soak_duration || '15m' }}
+        run: python3 tests/perf/unix_streams.py soak --binary target/release/locho --duration "$LOCHO_SOAK_DURATION"
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unix-soak-${{ matrix.os }}
+          path: artifacts/unix-soak-*
           if-no-files-found: warn
 
   msrv:

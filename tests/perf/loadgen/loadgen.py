@@ -6,6 +6,14 @@ import time
 
 MAX_LATENCY_SAMPLES = 100_000
 MAX_FAILURE_EVENTS = 1_000
+TRANSIENT_ERRORS = (
+    asyncio.TimeoutError,
+    ConnectionAbortedError,
+    ConnectionRefusedError,
+    ConnectionResetError,
+    BrokenPipeError,
+    asyncio.IncompleteReadError,
+)
 
 
 def percentile(values, p):
@@ -13,6 +21,26 @@ def percentile(values, p):
         return 0
     values = sorted(values)
     return values[min(len(values) - 1, max(0, int(len(values) * p / 100)))]
+
+
+async def close_stream(stream):
+    """Close a stream, including streams opened by a failed operation."""
+    if stream is None:
+        return
+    writer = stream[1]
+    writer.close()
+    wait_closed = getattr(writer, "wait_closed", None)
+    if wait_closed is not None:
+        try:
+            await asyncio.wait_for(wait_closed(), 2)
+        except (OSError, asyncio.TimeoutError):
+            pass
+
+
+def expected_http_body(method, response_size):
+    path = f"/?size={response_size}"
+    metadata = json.dumps({"method": method, "path": path, "size": response_size}).encode()
+    return (metadata + b"x" * response_size)[:response_size]
 
 
 async def read_http_response(reader):
@@ -44,48 +72,63 @@ async def read_http_response(reader):
 
 async def http_once(request_size, response_size, timeout, stream=None):
     started = time.perf_counter()
-    if stream is None:
-        stream = await asyncio.wait_for(asyncio.open_connection("locho_client_http", 8765), timeout)
-    reader, writer = stream
-    payload = b"r" * request_size
-    method = "POST" if request_size else "GET"
-    request = (
-        f"{method} /?size={response_size} HTTP/1.1\r\n"
-        "Host: locho_client_http\r\n"
-        f"Content-Length: {len(payload)}\r\n"
-        "Connection: keep-alive\r\n\r\n"
-    ).encode() + payload
-    writer.write(request)
-    await asyncio.wait_for(writer.drain(), timeout)
-    status, body = await asyncio.wait_for(read_http_response(reader), timeout)
-    if status != 200:
-        raise RuntimeError(f"unexpected HTTP status {status}")
-    if len(body) != response_size:
-        raise RuntimeError(f"unexpected HTTP body size {len(body)} != {response_size}")
-    return time.perf_counter() - started, stream
+    try:
+        if stream is None:
+            stream = await asyncio.wait_for(asyncio.open_connection("locho_client_http", 8765), timeout)
+        reader, writer = stream
+        payload = b"r" * request_size
+        method = "POST" if request_size else "GET"
+        request = (
+            f"{method} /?size={response_size} HTTP/1.1\r\n"
+            "Host: locho_client_http\r\n"
+            f"Content-Length: {len(payload)}\r\n"
+            "Connection: keep-alive\r\n\r\n"
+        ).encode() + payload
+        writer.write(request)
+        await asyncio.wait_for(writer.drain(), timeout)
+        status, body = await asyncio.wait_for(read_http_response(reader), timeout)
+        if status != 200:
+            raise RuntimeError(f"unexpected HTTP status {status}")
+        expected = expected_http_body(method, response_size)
+        if body != expected:
+            raise RuntimeError("unexpected HTTP response body")
+        return time.perf_counter() - started, stream
+    except BaseException:
+        await close_stream(stream)
+        raise
 
 
 async def tcp_once(size, timeout, stream=None):
     started = time.perf_counter()
-    owns_stream = stream is None
-    if stream is None:
-        stream = await asyncio.wait_for(asyncio.open_connection("locho_client_tcp", 9876), timeout)
-    reader, writer = stream
-    payload = b"l" * size
-    writer.write(payload)
-    await asyncio.wait_for(writer.drain(), timeout)
-    received = await asyncio.wait_for(reader.readexactly(size), timeout)
-    if received != payload:
-        raise RuntimeError("TCP echo mismatch")
-    return time.perf_counter() - started, stream
+    try:
+        if stream is None:
+            stream = await asyncio.wait_for(asyncio.open_connection("locho_client_tcp", 9876), timeout)
+        reader, writer = stream
+        payload = b"l" * size
+        writer.write(payload)
+        await asyncio.wait_for(writer.drain(), timeout)
+        received = await asyncio.wait_for(reader.readexactly(size), timeout)
+        if received != payload:
+            raise RuntimeError("TCP echo mismatch")
+        return time.perf_counter() - started, stream
+    except BaseException:
+        await close_stream(stream)
+        raise
 
 
 async def main(args):
     deadline = time.monotonic() + args.duration
     lock = asyncio.Lock()
     latencies = []
-    counts = {"success": 0, "failure": 0, "timeout": 0, "reset": 0}
-    interval_counts = {"success": 0, "failure": 0, "timeout": 0, "reset": 0}
+    counts = {
+        "success": 0,
+        "failure": 0,
+        "timeout": 0,
+        "reset": 0,
+        "transient_failure": 0,
+        "validation_failure": 0,
+    }
+    interval_counts = {key: 0 for key in counts}
     interval_latencies = []
     events = 0
     failure_events = 0
@@ -138,66 +181,60 @@ async def main(args):
         async def worker():
             stream = None
             connected_at = None
-            while time.monotonic() < deadline:
-                try:
-                    if args.protocol == "http":
-                        latency, stream = await http_once(args.request_size, args.size, args.timeout, stream)
-                    else:
-                        latency, stream = await tcp_once(args.size, args.timeout, stream)
-                    if connected_at is None:
-                        connected_at = time.monotonic()
-                    latency_ms = latency * 1000
-                    async with lock:
-                        counts["success"] += 1
-                        interval_counts["success"] += 1
-                        if len(interval_latencies) < 10_000:
-                            interval_latencies.append(latency_ms)
-                        if len(latencies) < MAX_LATENCY_SAMPLES:
-                            latencies.append(latency_ms)
-                        sample_success = counts["success"] % args.success_sample_rate == 0
-                    if sample_success:
-                        await record({"ts": time.time(), "ok": True, "latency_ms": latency_ms})
-                    if (
-                        args.churn_interval
-                        and connected_at is not None
-                        and time.monotonic() - connected_at >= args.churn_interval
-                    ):
-                        stream[1].close()
+            try:
+                while time.monotonic() < deadline:
+                    try:
+                        if args.protocol == "http":
+                            latency, stream = await http_once(args.request_size, args.size, args.timeout, stream)
+                        else:
+                            latency, stream = await tcp_once(args.size, args.timeout, stream)
+                        if connected_at is None:
+                            connected_at = time.monotonic()
+                        latency_ms = latency * 1000
+                        async with lock:
+                            counts["success"] += 1
+                            interval_counts["success"] += 1
+                            if len(interval_latencies) < 10_000:
+                                interval_latencies.append(latency_ms)
+                            if len(latencies) < MAX_LATENCY_SAMPLES:
+                                latencies.append(latency_ms)
+                            sample_success = counts["success"] % args.success_sample_rate == 0
+                        if sample_success:
+                            await record({"ts": time.time(), "ok": True, "latency_ms": latency_ms})
+                        if (
+                            args.churn_interval
+                            and connected_at is not None
+                            and time.monotonic() - connected_at >= args.churn_interval
+                        ):
+                            await close_stream(stream)
+                            stream = None
+                            connected_at = None
+                    except Exception as error:
+                        transient = isinstance(error, TRANSIENT_ERRORS)
+                        reason = "timeout" if isinstance(error, asyncio.TimeoutError) else type(error).__name__
+                        category = "transient" if transient else "validation"
+                        await close_stream(stream)
                         stream = None
                         connected_at = None
-                except asyncio.TimeoutError:
-                    if stream is not None:
-                        stream[1].close()
-                        stream = None
-                        connected_at = None
-                    async with lock:
-                        counts["failure"] += 1
-                        counts["timeout"] += 1
-                        interval_counts["failure"] += 1
-                        interval_counts["timeout"] += 1
-                    await record_failure({"ts": time.time(), "ok": False, "reason": "timeout"})
-                except (ConnectionResetError, BrokenPipeError, ConnectionRefusedError) as error:
-                    if stream is not None:
-                        stream[1].close()
-                        stream = None
-                        connected_at = None
-                    async with lock:
-                        counts["failure"] += 1
-                        counts["reset"] += 1
-                        interval_counts["failure"] += 1
-                        interval_counts["reset"] += 1
-                    await record_failure({"ts": time.time(), "ok": False, "reason": type(error).__name__})
-                except Exception as error:
-                    if stream is not None:
-                        stream[1].close()
-                        stream = None
-                        connected_at = None
-                    async with lock:
-                        counts["failure"] += 1
-                        interval_counts["failure"] += 1
-                    await record_failure({"ts": time.time(), "ok": False, "reason": str(error)})
-            if stream is not None:
-                stream[1].close()
+                        async with lock:
+                            counts["failure"] += 1
+                            interval_counts["failure"] += 1
+                            counts[f"{category}_failure"] += 1
+                            interval_counts[f"{category}_failure"] += 1
+                            if isinstance(error, asyncio.TimeoutError):
+                                counts["timeout"] += 1
+                                interval_counts["timeout"] += 1
+                            elif transient:
+                                counts["reset"] += 1
+                                interval_counts["reset"] += 1
+                        await record_failure({
+                            "ts": time.time(),
+                            "ok": False,
+                            "category": category,
+                            "reason": reason if transient else str(error),
+                        })
+            finally:
+                await close_stream(stream)
 
         reporter = asyncio.create_task(interval_reporter())
         await asyncio.gather(*(worker() for _ in range(args.concurrency)))
@@ -232,7 +269,11 @@ async def main(args):
     with open(args.output, "w") as output:
         json.dump(summary, output, indent=2)
     print(json.dumps(summary), flush=True)
-    return 0 if counts["failure"] == 0 else 1
+    allow_transient = getattr(args, "allow_transient_failures", False)
+    failed = counts["validation_failure"] > 0 or (
+        counts["transient_failure"] > 0 and not allow_transient
+    )
+    return 1 if failed else 0
 
 
 def parse_args():
@@ -246,6 +287,11 @@ def parse_args():
     parser.add_argument("--churn-interval", type=float, default=0)
     parser.add_argument("--success-sample-rate", type=int, default=1)
     parser.add_argument("--interval", type=float, default=10)
+    parser.add_argument(
+        "--allow-transient-failures",
+        action="store_true",
+        help="allow connection failures caused by an expected restart; validation failures still fail",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--events", required=True)
     args = parser.parse_args()

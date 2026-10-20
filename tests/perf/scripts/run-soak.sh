@@ -219,27 +219,29 @@ steady=$((remaining - warmup - cooldown - recovery))
 }
 
 run_loadgen() {
-  protocol=$1; duration=$2; label=$3; concurrency=$4; size=$5
+  protocol=$1; duration=$2; label=$3; concurrency=$4; size=$5; allow_transient=${6:-0}
   request_args=""
   [ "$protocol" = http ] && request_args="--request-size $HTTP_REQUEST_SIZE"
+  transient_args=""
+  [ "$allow_transient" -eq 1 ] && transient_args="--allow-transient-failures"
   $COMPOSE exec -T loadgen python /opt/loadgen/loadgen.py \
     --protocol "$protocol" --duration "$duration" --concurrency "$concurrency" \
     --size "$size" $request_args --churn-interval "$CHURN_INTERVAL" \
     --success-sample-rate "$SUCCESS_SAMPLE_RATE" --interval "$INTERVAL_SECONDS" \
+    $transient_args \
     --output "/run/locho/$label-$protocol.json" --events "/run/locho/$label-$protocol.jsonl" \
     > "$RUNTIME/loadgen/$label-$protocol.stdout" 2>&1
 }
 
 start_traffic() {
-  duration=$1; label=$2
-  run_loadgen http "$duration" "$label" "$HTTP_CONCURRENCY" "$HTTP_SIZE" &
+  duration=$1; label=$2; allow_http=${3:-0}; allow_tcp=${4:-0}
+  run_loadgen http "$duration" "$label" "$HTTP_CONCURRENCY" "$HTTP_SIZE" "$allow_http" &
   LOADGEN_PIDS="$LOADGEN_PIDS $!"
-  run_loadgen tcp "$duration" "$label" "$TCP_CONCURRENCY" "$TCP_SIZE" &
+  run_loadgen tcp "$duration" "$label" "$TCP_CONCURRENCY" "$TCP_SIZE" "$allow_tcp" &
   LOADGEN_PIDS="$LOADGEN_PIDS $!"
 }
 
 wait_traffic() {
-  mode=$1
   failed=0
   set +e
   for pid in $LOADGEN_PIDS; do
@@ -247,7 +249,10 @@ wait_traffic() {
   done
   set -e
   LOADGEN_PIDS=""
-  if [ "$mode" = strict ] && [ "$failed" -ne 0 ]; then
+  # Recovery traffic may contain transient connection failures, but the
+  # loadgen still exits non-zero for response corruption, bad status codes,
+  # and any other validation failure.
+  if [ "$failed" -ne 0 ]; then
     SOAK_FAILURE=1
   fi
 }
@@ -304,18 +309,23 @@ recover() {
 }
 
 start_traffic "$warmup" warmup
-wait_traffic strict
+wait_traffic
 start_traffic "$steady" steady
-wait_traffic strict
+wait_traffic
 RECOVERY_DEADLINE=$(( $(date +%s) + recovery ))
 recovery_traffic=$((recovery - recovery_overhead)); [ "$recovery_traffic" -lt 1 ] && recovery_traffic=1
-start_traffic "$recovery_traffic" recovery
+recovery_phase=$((recovery_traffic / 3)); [ "$recovery_phase" -lt 1 ] && recovery_phase=1
+start_traffic "$recovery_phase" recovery-host 1 1
 if ! recover locho_host http tcp; then SOAK_FAILURE=1; fi
+wait_traffic
+start_traffic "$recovery_phase" recovery-http 1 0
 if ! recover locho_client_http http tcp; then SOAK_FAILURE=1; fi
+wait_traffic
+start_traffic "$recovery_phase" recovery-tcp 0 1
 if ! recover locho_client_tcp tcp http; then SOAK_FAILURE=1; fi
-wait_traffic allow
+wait_traffic
 start_traffic "$cooldown" cooldown
-wait_traffic strict
+wait_traffic
 
 : > "$RUN/loadgen-events.jsonl"
 for events in "$RUNTIME/loadgen"/*.jsonl; do
@@ -336,7 +346,8 @@ for path in glob.glob(run + "/runtime/loadgen/*.json"):
         summaries.append(json.load(open(path)))
     except (OSError, json.JSONDecodeError):
         pass
-counts = {key: sum(item.get("counts", {}).get(key, 0) for item in summaries) for key in ("success", "failure", "timeout", "reset")}
+counts = {key: sum(item.get("counts", {}).get(key, 0) for item in summaries)
+          for key in ("success", "failure", "timeout", "reset", "transient_failure", "validation_failure")}
 with open(run + "/loadgen-summary.json", "w") as output:
     json.dump({"duration_seconds": duration, "runs": len(summaries), "counts": counts, "summaries": summaries}, output, indent=2)
 PY

@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self):
+    def _respond(self):
         size = 1024
         try:
             size = max(0, min(int(self.path.split("size=")[1].split("&")[0]), 32 * 1024 * 1024))
@@ -23,7 +23,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    do_POST = do_GET
+    def do_GET(self):
+        self._respond()
+
+    def do_POST(self):
+        try:
+            request_size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400, "invalid Content-Length")
+            return
+        body = self.rfile.read(request_size)
+        if len(body) != request_size or body != b"r" * request_size:
+            self.send_error(400, "invalid request body")
+            return
+        self._respond()
 
     def log_message(self, fmt, *args):
         if os.environ.get("UPSTREAM_QUIET") != "1":
