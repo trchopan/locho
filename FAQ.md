@@ -42,7 +42,9 @@ Capability A cannot be used to attach the database service.
 
 The host loads this model from a TOML file using `locho host --config`. Service
 names must be unique and safe, HTTP services require HTTPS `upstream` URLs, and
-TCP services require an explicit `endpoint`.
+TCP services require exactly one `endpoint` or absolute `unix_socket`. Unix
+upstreams are filesystem stream sockets on macOS/Linux; they are not a new
+capability or wire type.
 
 Use `locho share <service> --config PATH` to generate a complete attach command.
 The capability token includes the service name and type, for example
@@ -78,7 +80,8 @@ authenticated browser relays are unsupported in this beta. See
 
 Yes. A single host process can expose multiple explicitly configured HTTP and
 TCP services. Each service has its own name, endpoint, lifecycle, and
-attachment capability.
+attachment capability. Attachments may mix TCP listeners and Unix listeners
+for different TCP capabilities.
 
 ## Can multiple machines attach simultaneously?
 
@@ -124,8 +127,8 @@ upstream timeout.
 
 ## How are TCP services used?
 
-A TCP service is attached to a local TCP listener. Native clients then connect
-to that local port:
+A TCP service is attached to a local TCP listener by default. Native clients
+then connect to that local port:
 
 ```bash
 psql --host 127.0.0.1 --port 5432
@@ -134,13 +137,20 @@ psql --host 127.0.0.1 --port 5432
 Start the TCP attachment with `locho attach HOST_ID SERVICE:tcp:SECRET
 --listen 127.0.0.1:5432`.
 
+For a Unix listener, prepare a private mode-0700 parent directory and use
+`--listen-unix /absolute/path/socket`. In a multi-service attachment, use
+`listen_unix` instead of `listen_port`. Existing paths, including stale sockets,
+are refused rather than removed automatically; a crash or SIGKILL may require
+explicit stale-path cleanup.
+
 locho forwards the selected TCP service only. It does not provide arbitrary IP
 connectivity or a way to reach other ports on the host.
 
 TCP connections have a 10-second upstream connection timeout, a 5-minute idle
-timeout, and a limit of 128 active connections per host and attachment process.
-EOF and half-close behavior is propagated between the local listener and the
-configured endpoint.
+timeout by default, and a limit of 128 active connections per host and
+attachment process. `tcp_idle_timeout_secs = 0` disables byte-idle expiry;
+both sides must opt out for indefinite silence. EOF and half-close behavior is
+propagated between the local listener and the configured endpoint.
 
 ## What happens when a process is stopped?
 
@@ -149,7 +159,7 @@ connections. The process waits up to 10 seconds for active tasks to finish
 before forcing termination. Tunnel handshakes have a 10-second timeout, HTTP
 upstream request/response operations use the configured timeout, which defaults
 to 60 seconds, HTTP attachment response guards default to 60 seconds, and TCP
-sessions have a 5-minute idle timeout.
+sessions have a 5-minute idle timeout unless the raw-stream policy disables it.
 
 ## Does locho create a VPN?
 

@@ -1,4 +1,4 @@
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const enabled = process.env.LOCHO_N0_INTEGRATION === '1';
@@ -26,6 +26,20 @@ function fixture() {
   return JSON.parse(readFileSync(fixtureFile, 'utf8'));
 }
 
+async function expectBrowserDiscovery(page: Page, url: string) {
+  await expect.poll(
+    async () => page.evaluate(async (discoveryUrl) => {
+      try {
+        const response = await fetch(discoveryUrl, { cache: 'no-store' });
+        return response.status;
+      } catch {
+        return 0;
+      }
+    }, url),
+    { timeout: 15_000, intervals: [500, 1_000, 2_000] },
+  ).toBe(200);
+}
+
 test.describe('official N0 relay integration', () => {
   test.skip(!enabled, 'N0 integration is enabled only by the controlled CI fixture');
 
@@ -37,6 +51,9 @@ test.describe('official N0 relay integration', () => {
       const hint = addressing === 'discovery' ? ''
         : addressing === 'stale' ? 'https://127.0.0.1:1/' : relay.toString();
       await page.goto('./');
+      if (addressing === 'discovery' || addressing === 'stale') {
+        await expectBrowserDiscovery(page, values.discoveryUrl);
+      }
       await page.locator('#host').fill(values.hostId);
       await page.locator('#peerRelay').fill(hint);
       await page.locator('#capability').fill(values.capability);

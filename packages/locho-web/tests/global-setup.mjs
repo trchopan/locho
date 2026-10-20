@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const BODY = 'locho-n0-browser-health\n';
 const SERVICE = 'sample-api';
+const N0_PKARR_URL = 'https://dns.iroh.link/pkarr';
+const Z32_SYMBOLS = 'ybndrfg8ejkmcpqxot1uwisza345h769';
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -60,6 +62,46 @@ async function runCommand(binary, args, env) {
     maxBuffer: 1024 * 1024,
     timeout: 20_000,
   });
+}
+
+function endpointIdToZ32(endpointId) {
+  if (!/^[0-9a-f]{64}$/i.test(endpointId)) {
+    throw new Error('N0 fixture host ID is not a 32-byte hexadecimal endpoint ID');
+  }
+  const bytes = Buffer.from(endpointId, 'hex');
+  let value = 0;
+  let bits = 0;
+  let encoded = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      encoded += Z32_SYMBOLS[(value >>> bits) & 31];
+    }
+  }
+  if (bits > 0) encoded += Z32_SYMBOLS[(value << (5 - bits)) & 31];
+  return encoded;
+}
+
+async function waitForBrowserDiscovery(hostId) {
+  const url = `${N0_PKARR_URL}/${endpointIdToZ32(hostId)}`;
+  let lastStatus = 'unavailable';
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(5_000), cache: 'no-store' });
+      lastStatus = `HTTP ${response.status}`;
+      if (response.ok) {
+        await response.arrayBuffer();
+        console.log('[N0 fixture] browser discovery record is available');
+        return url;
+      }
+    } catch (error) {
+      lastStatus = error instanceof Error ? error.name : 'request failed';
+    }
+    await sleep(5_000);
+  }
+  throw new Error(`N0 browser discovery record did not become ready (${lastStatus})`);
 }
 
 async function waitForRelay(binary, hostId, env) {
@@ -222,6 +264,7 @@ export default async function globalSetup() {
       throw new Error('unexpected share output for N0 fixture');
     }
     const peerRelayUrl = await waitForRelay(binary, hostId, env);
+    const discoveryUrl = await waitForBrowserDiscovery(hostId);
     const ticket = await runCommand(binary, ['share', SERVICE, '--config', configPath, '--ticket', '--peer-relay-url', peerRelayUrl], env);
     const notesTicket = notesApp ? (await runCommand(binary, ['share', 'notes', '--config', configPath, '--ticket', '--peer-relay-url', peerRelayUrl], env)).stdout.trim() : undefined;
     const unavailable = await runCommand(binary, ['secret', 'unavailable', '--config', configPath], env);
@@ -236,6 +279,7 @@ export default async function globalSetup() {
         expectedPath: 'relay',
         hostId,
         peerRelayUrl,
+        discoveryUrl,
         controlUrl: `http://127.0.0.1:${controlPort}`,
         unavailableCapability: unavailable.stdout.trim(),
       }),

@@ -9,8 +9,10 @@ remain open; native Rust tests alone do not establish mobile runtime support.
 ## Usage
 
 The caller supplies a persistent Tokio runtime with I/O and time enabled. The
-library creates no runtime, reads no files/environment variables, installs no
-signals, and does not initialize global tracing.
+public `Client` API creates no runtime, reads no configuration files/environment
+variables, installs no signals, and does not initialize global tracing. The CLI's
+low-level Unix adapter performs explicit filesystem operations; it is not part
+of the public loopback attachment API.
 
 ```rust,no_run
 use locho_client_native::{Client, ClientError, TcpOptions};
@@ -89,9 +91,15 @@ healthy peer disconnected. Backend HTTP status/body remains ordinary application
 data. Loopback Host headers, redirects/cookies and upstream authority configuration
 remain application concerns; do not disable HTTPS certificate validation.
 
-The CLI uses `forward::serve_tcp` with its own listener addresses and existing
-multi-service peer session and shared process connection budget. That low-level adapter is separate from the SDK's
-loopback-only API; CLI HTTP framing/output/signals remain native CLI adapters.
+The CLI uses the low-level forwarding adapter with its own TCP or Unix listener
+addresses, existing multi-service peer session and shared process connection
+budget. That adapter is separate from the SDK's loopback-only API. HTTP framing,
+output and signals remain CLI concerns; Unix filesystem ownership lives in the
+low-level native adapter.
+Unix ownership uses pinned parent-directory handles. Root/same-UID processes are
+trusted; concurrent same-UID replacement cannot be made atomic portably. See
+[Unix listener security](../SECURITY.md#unix-socket-attachments).
+The public SDK still exposes only its TCP loopback attachment API.
 
 ## Verification
 

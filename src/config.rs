@@ -4,6 +4,7 @@ use std::{
     collections::HashSet,
     net::SocketAddr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use url::Url;
 
@@ -20,6 +21,97 @@ pub struct ServiceConfig {
     pub upstream_timeout_secs: Option<u64>,
     pub ca_cert: Option<PathBuf>,
     pub endpoint: Option<SocketAddr>,
+    #[serde(default)]
+    pub unix_socket: Option<PathBuf>,
+    #[serde(default)]
+    pub tcp_idle_timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEndpoint {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+impl std::fmt::Display for StreamEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(address) => write!(formatter, "tcp://{address}"),
+            Self::Unix(path) => write!(formatter, "unix://{}", path.display()),
+        }
+    }
+}
+
+impl ServiceConfig {
+    pub fn stream_endpoint(&self) -> Option<StreamEndpoint> {
+        match (self.endpoint, &self.unix_socket) {
+            (Some(endpoint), None) => Some(StreamEndpoint::Tcp(endpoint)),
+            (None, Some(path)) => Some(StreamEndpoint::Unix(path.clone())),
+            _ => None,
+        }
+    }
+}
+
+pub const MAX_TCP_IDLE_TIMEOUT_SECS: u64 = 60 * 60 * 24 * 365 * 100;
+
+pub fn resolve_tcp_idle_timeout(timeout_secs: Option<u64>) -> Result<Option<Duration>> {
+    match timeout_secs {
+        None => Ok(Some(crate::protocol::TCP_IDLE_TIMEOUT)),
+        Some(0) => Ok(None),
+        Some(seconds) if seconds <= MAX_TCP_IDLE_TIMEOUT_SECS => {
+            Ok(Some(Duration::from_secs(seconds)))
+        }
+        Some(seconds) => bail!(
+            "TCP idle timeout must be 0 or between 1 and {} seconds (got {})",
+            MAX_TCP_IDLE_TIMEOUT_SECS,
+            seconds
+        ),
+    }
+}
+
+#[cfg(not(unix))]
+pub fn validate_unix_socket_path(_path: &Path, what: &str) -> Result<()> {
+    bail!("{what} is not supported on this platform; use a TCP endpoint")
+}
+
+#[cfg(unix)]
+pub fn validate_unix_socket_path(path: &Path, what: &str) -> Result<()> {
+    use std::{os::unix::ffi::OsStrExt, path::Component};
+
+    if !path.is_absolute() {
+        bail!("{what} must be an absolute filesystem path")
+    }
+    if path.as_os_str().is_empty() {
+        bail!("{what} cannot be empty")
+    }
+    if path.file_name().is_none() {
+        bail!("{what} must name a socket, not a directory")
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!("{what} must not contain '..' path traversal")
+    }
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.ends_with(b"/") || bytes.ends_with(b"/.") {
+        bail!("{what} must not end with a directory separator or '/.'")
+    }
+    if bytes.contains(&0) {
+        bail!("{what} must not contain a NUL byte")
+    }
+    #[cfg(target_os = "macos")]
+    const MAX_PATH_BYTES: usize = 103;
+    #[cfg(not(target_os = "macos"))]
+    const MAX_PATH_BYTES: usize = 107;
+    if bytes.len() > MAX_PATH_BYTES {
+        bail!(
+            "{what} is too long for a Unix socket path ({} bytes; maximum {})",
+            bytes.len(),
+            MAX_PATH_BYTES
+        )
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,8 +146,17 @@ impl Config {
 
             match service.service_type {
                 ServiceType::Http => {
-                    if service.endpoint.is_some() {
-                        bail!("HTTP service {:?} cannot define endpoint", service.name)
+                    if service.endpoint.is_some() || service.unix_socket.is_some() {
+                        bail!(
+                            "HTTP service {:?} cannot define endpoint or unix_socket",
+                            service.name
+                        )
+                    }
+                    if service.tcp_idle_timeout_secs.is_some() {
+                        bail!(
+                            "HTTP service {:?} cannot define tcp_idle_timeout_secs",
+                            service.name
+                        )
                     }
                     let upstream = service.upstream.as_ref().with_context(|| {
                         format!("HTTP service {:?} requires upstream", service.name)
@@ -109,8 +210,11 @@ impl Config {
                             service.name
                         )
                     }
-                    if service.endpoint.is_none() {
-                        bail!("TCP service {:?} requires endpoint", service.name)
+                    if service.endpoint.is_some() == service.unix_socket.is_some() {
+                        bail!(
+                            "TCP service {:?} requires exactly one of endpoint or unix_socket",
+                            service.name
+                        )
                     }
                     if service
                         .endpoint
@@ -121,6 +225,13 @@ impl Config {
                             service.name
                         )
                     }
+                    if let Some(path) = &service.unix_socket {
+                        validate_unix_socket_path(
+                            path,
+                            &format!("TCP service {:?} unix_socket", service.name),
+                        )?;
+                    }
+                    resolve_tcp_idle_timeout(service.tcp_idle_timeout_secs)?;
                 }
             }
         }
@@ -140,6 +251,8 @@ mod tests {
             upstream_timeout_secs: None,
             ca_cert: None,
             endpoint: None,
+            unix_socket: None,
+            tcp_idle_timeout_secs: None,
         }
     }
 
@@ -155,6 +268,8 @@ mod tests {
                     upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: Some("127.0.0.1:5432".parse().unwrap()),
+                    unix_socket: None,
+                    tcp_idle_timeout_secs: None,
                 },
             ],
         };
@@ -181,6 +296,8 @@ mod tests {
                 upstream_timeout_secs: None,
                 ca_cert: None,
                 endpoint: None,
+                unix_socket: None,
+                tcp_idle_timeout_secs: None,
             }],
         };
         assert!(config.validate().is_err());
@@ -236,6 +353,8 @@ mod tests {
                 upstream_timeout_secs: None,
                 ca_cert: None,
                 endpoint: Some("127.0.0.1:0".parse().unwrap()),
+                unix_socket: None,
+                tcp_idle_timeout_secs: None,
             }],
         };
         assert!(config.validate().is_err());
@@ -273,8 +392,127 @@ mod tests {
                 upstream_timeout_secs: Some(90),
                 ca_cert: None,
                 endpoint: Some("127.0.0.1:5432".parse().unwrap()),
+                unix_socket: None,
+                tcp_idle_timeout_secs: Some(90),
             }],
         };
         assert!(config.validate().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_unix_tcp_service_and_idle_policy() {
+        let config = Config {
+            services: vec![ServiceConfig {
+                name: "herdr".into(),
+                service_type: ServiceType::Tcp,
+                upstream: None,
+                upstream_timeout_secs: None,
+                ca_cert: None,
+                endpoint: None,
+                unix_socket: Some("/tmp/herdr.sock".into()),
+                tcp_idle_timeout_secs: Some(0),
+            }],
+        };
+        assert!(config.validate().is_ok());
+        assert_eq!(
+            config.services[0].stream_endpoint(),
+            Some(StreamEndpoint::Unix("/tmp/herdr.sock".into()))
+        );
+        assert_eq!(resolve_tcp_idle_timeout(Some(0)).unwrap(), None);
+        assert_eq!(
+            resolve_tcp_idle_timeout(Some(30)).unwrap(),
+            Some(Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_unix_endpoint_combinations_and_idle_values() {
+        let mut service = ServiceConfig {
+            name: "database".into(),
+            service_type: ServiceType::Tcp,
+            upstream: None,
+            upstream_timeout_secs: None,
+            ca_cert: None,
+            endpoint: Some("127.0.0.1:5432".parse().unwrap()),
+            unix_socket: Some("/tmp/database.sock".into()),
+            tcp_idle_timeout_secs: None,
+        };
+        assert!(Config {
+            services: vec![service.clone()]
+        }
+        .validate()
+        .is_err());
+        service.endpoint = None;
+        service.unix_socket = None;
+        assert!(Config {
+            services: vec![service.clone()]
+        }
+        .validate()
+        .is_err());
+        service.unix_socket = Some("relative.sock".into());
+        assert!(Config {
+            services: vec![service.clone()]
+        }
+        .validate()
+        .is_err());
+        service.unix_socket = Some("/tmp/database.sock".into());
+        service.tcp_idle_timeout_secs = Some(MAX_TCP_IDLE_TIMEOUT_SECS + 1);
+        assert!(Config {
+            services: vec![service]
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_unix_fields_on_http_services() {
+        let mut service = http("api");
+        service.unix_socket = Some("/tmp/api.sock".into());
+        assert!(Config {
+            services: vec![service]
+        }
+        .validate()
+        .is_err());
+        let mut service = http("api");
+        service.tcp_idle_timeout_secs = Some(0);
+        assert!(Config {
+            services: vec![service]
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn tcp_idle_policy_defaults_and_boundaries() {
+        assert_eq!(
+            resolve_tcp_idle_timeout(None).unwrap(),
+            Some(crate::protocol::TCP_IDLE_TIMEOUT)
+        );
+        assert_eq!(resolve_tcp_idle_timeout(Some(0)).unwrap(), None);
+        for seconds in [1, MAX_TCP_IDLE_TIMEOUT_SECS] {
+            assert_eq!(
+                resolve_tcp_idle_timeout(Some(seconds)).unwrap(),
+                Some(Duration::from_secs(seconds))
+            );
+        }
+        assert!(resolve_tcp_idle_timeout(Some(MAX_TCP_IDLE_TIMEOUT_SECS + 1)).is_err());
+        assert!(resolve_tcp_idle_timeout(Some(u64::MAX)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_paths_reject_directory_suffixes() {
+        for path in ["/private/socket/", "/private/socket/."] {
+            assert!(validate_unix_socket_path(Path::new(path), "unix_socket").is_err());
+        }
+        assert!(validate_unix_socket_path(Path::new("/private/./socket"), "unix_socket").is_ok());
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn unix_paths_report_unsupported_platform_explicitly() {
+        let error = validate_unix_socket_path(Path::new("/unix.sock"), "unix_socket").unwrap_err();
+        assert!(error.to_string().contains("not supported"));
     }
 }

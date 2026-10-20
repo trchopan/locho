@@ -1,6 +1,6 @@
 use crate::{
     auth,
-    config::{Config, ServiceType},
+    config::{Config, ServiceType, StreamEndpoint},
     http_utils,
     protocol::*,
     relay,
@@ -16,6 +16,8 @@ use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -24,6 +26,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
+
+trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+type BoxedStream = Box<dyn AsyncStream>;
 
 pub async fn run(
     config_path: PathBuf,
@@ -469,7 +476,7 @@ where
         );
         return write_error(&mut writer, 403).await;
     }
-    let endpoint = match (&service.service_type, service.endpoint) {
+    let endpoint = match (&service.service_type, service.stream_endpoint()) {
         (ServiceType::Tcp, Some(endpoint)) => endpoint,
         _ => {
             warn!(
@@ -494,11 +501,11 @@ where
     let upstream = if connect_timeout.is_zero() {
         timeout(
             connect_timeout,
-            std::future::pending::<Result<TcpStream, std::io::Error>>(),
+            std::future::pending::<Result<BoxedStream, std::io::Error>>(),
         )
         .await
     } else {
-        timeout(connect_timeout, TcpStream::connect(endpoint)).await
+        timeout(connect_timeout, connect_upstream(&endpoint)).await
     };
     let upstream = match upstream {
         Ok(Ok(stream)) => stream,
@@ -506,7 +513,7 @@ where
             error!(
                 service = %service.name,
                 client_id = %client_id,
-                %endpoint,
+                endpoint = %endpoint,
                 %error,
                 "TCP upstream unavailable"
             );
@@ -516,7 +523,7 @@ where
             error!(
                 service = %service.name,
                 client_id = %client_id,
-                %endpoint,
+                endpoint = %endpoint,
                 "TCP upstream connection timed out"
             );
             return write_error(&mut writer, 504).await;
@@ -534,7 +541,12 @@ where
     .await?;
     write_body(&mut writer, &[]).await?;
     let tunnel = tokio::io::join(reader, writer);
-    let result = relay_with_idle_timeout(tunnel, upstream).await;
+    let result = relay_with_idle_policy(
+        tunnel,
+        upstream,
+        crate::config::resolve_tcp_idle_timeout(service.tcp_idle_timeout_secs)?,
+    )
+    .await;
     if let Err(error) = &result {
         if error.downcast_ref::<TunnelIdleTimeout>().is_none() {
             error!(
@@ -546,6 +558,30 @@ where
         }
     }
     result
+}
+
+async fn connect_upstream(endpoint: &StreamEndpoint) -> std::io::Result<BoxedStream> {
+    match endpoint {
+        StreamEndpoint::Tcp(address) => TcpStream::connect(*address)
+            .await
+            .map(|stream| Box::new(stream) as BoxedStream),
+        StreamEndpoint::Unix(path) => {
+            #[cfg(unix)]
+            {
+                UnixStream::connect(path)
+                    .await
+                    .map(|stream| Box::new(stream) as BoxedStream)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Unix upstreams are not supported on Windows",
+                ))
+            }
+        }
+    }
 }
 
 fn test_tcp_connect_timeout() -> std::time::Duration {
@@ -837,6 +873,8 @@ mod tests {
                     upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: None,
+                    unix_socket: None,
+                    tcp_idle_timeout_secs: None,
                 }],
             },
             secrets: HashMap::from([("api".into(), "correct".into())]),
@@ -872,6 +910,8 @@ mod tests {
                     upstream_timeout_secs: None,
                     ca_cert: None,
                     endpoint: Some(endpoint),
+                    unix_socket: None,
+                    tcp_idle_timeout_secs: None,
                 }],
             },
             secrets: HashMap::from([("database".into(), "correct".into())]),

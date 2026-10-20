@@ -25,6 +25,44 @@ use tracing::{error, info, warn};
 
 const MAX_TOTAL_CONNECTIONS: usize = 512;
 
+enum BoundListener {
+    Tcp(TcpListener),
+    #[cfg(unix)]
+    Unix(locho_client_native::unix::UnixListenerGuard),
+}
+
+impl BoundListener {
+    fn description(&self) -> Result<String> {
+        match self {
+            Self::Tcp(listener) => Ok(listener.local_addr()?.to_string()),
+            #[cfg(unix)]
+            Self::Unix(listener) => Ok(listener.path().display().to_string()),
+        }
+    }
+}
+
+async fn bind_listener(address: &attach_config::ListenerAddress) -> Result<BoundListener> {
+    match address {
+        attach_config::ListenerAddress::Tcp(address) => {
+            Ok(BoundListener::Tcp(TcpListener::bind(*address).await?))
+        }
+        attach_config::ListenerAddress::Unix(path) => {
+            #[cfg(unix)]
+            {
+                Ok(BoundListener::Unix(
+                    locho_client_native::unix::bind_unix(path)
+                        .with_context(|| format!("bind Unix listener {}", path.display()))?,
+                ))
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                anyhow::bail!("Unix listeners are not supported on Windows; use --listen")
+            }
+        }
+    }
+}
+
 type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
 type HttpResponse = Response<StreamBody<HttpStream>>;
 
@@ -102,10 +140,19 @@ pub async fn run(
     capability: String,
     relay_config_path: Option<std::path::PathBuf>,
     direct_address: Option<SocketAddr>,
-    listen: SocketAddr,
+    listen: attach_config::ListenerAddress,
+    tcp_idle_timeout_secs: Option<u64>,
     http_timeout_secs: Option<u64>,
 ) -> Result<()> {
     let capability = crate::capability::parse(&capability)?;
+    if matches!(capability.service_type, crate::config::ServiceType::Http)
+        && !matches!(&listen, attach_config::ListenerAddress::Tcp(_))
+    {
+        anyhow::bail!("Unix listeners are only supported for TCP attachments")
+    }
+    if let attach_config::ListenerAddress::Unix(path) = &listen {
+        crate::config::validate_unix_socket_path(path, "--listen-unix")?;
+    }
     let http_timeout = match capability.service_type {
         crate::config::ServiceType::Http => attach_config::resolve_http_timeout(http_timeout_secs)?,
         crate::config::ServiceType::Tcp => {
@@ -115,12 +162,24 @@ pub async fn run(
             HTTP_REQUEST_TIMEOUT
         }
     };
+    let tcp_idle_timeout = match capability.service_type {
+        crate::config::ServiceType::Http => {
+            if tcp_idle_timeout_secs.is_some() {
+                anyhow::bail!("--tcp-idle-timeout-secs is only supported for TCP attachments")
+            }
+            None
+        }
+        crate::config::ServiceType::Tcp => {
+            crate::config::resolve_tcp_idle_timeout(tcp_idle_timeout_secs)?
+        }
+    };
     run_attachments(
         host_id,
         vec![attach_config::AttachmentConfig {
             capability,
             listen,
             http_timeout,
+            tcp_idle_timeout,
         }],
         relay::load(relay_config_path.as_deref())?,
         direct_address,
@@ -152,6 +211,9 @@ async fn run_attachments(
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
+    // Register handlers synchronously before creating any endpoint/listener.
+    // Constructing an async ctrl_c future alone does not install its handler.
+    let mut shutdown_signal = ShutdownSignal::install()?;
     #[cfg(feature = "integration-test")]
     let direct_address = match direct_address {
         Some(address) => Some(address),
@@ -160,40 +222,60 @@ async fn run_attachments(
             .transpose()
             .context("invalid LOCHO_TEST_DIRECT_ADDR")?,
     };
-    let endpoint = relay::endpoint_builder(relay_settings.as_ref())
-        .bind()
-        .await?;
+    let endpoint = tokio::select! {
+        biased;
+        _ = shutdown_signal.recv() => return Ok(()),
+        result = relay::endpoint_builder(relay_settings.as_ref()).bind() => result?,
+    };
     let endpoint_addr = direct_address
         .map(|address| EndpointAddr::new(node_id).with_ip_addr(address))
         .unwrap_or_else(|| EndpointAddr::new(node_id));
     let mut listeners = Vec::with_capacity(attachments.len());
     for attachment in &attachments {
+        let listener = tokio::select! {
+            biased;
+            _ = shutdown_signal.recv() => return Ok(()),
+            result = bind_listener(&attachment.listen) => result,
+        }
+        .with_context(|| {
+            format!(
+                "bind listener for service {:?}",
+                attachment.capability.service
+            )
+        })?;
         listeners.push((
-            TcpListener::bind(attachment.listen)
-                .await
-                .with_context(|| {
-                    format!(
-                        "bind listener for service {:?}",
-                        attachment.capability.service
-                    )
-                })?,
+            listener,
             attachment.capability.clone(),
             attachment.http_timeout,
+            attachment.tcp_idle_timeout,
         ));
+        tokio::task::yield_now().await;
+    }
+    tokio::select! {
+        biased;
+        _ = shutdown_signal.recv() => return Ok(()),
+        _ = std::future::ready(()) => {},
     }
     let listeners = listeners
         .into_iter()
-        .map(|(listener, capability, http_timeout)| {
-            let listen = listener.local_addr()?;
-            Ok((listener, capability, listen, http_timeout))
+        .map(|(listener, capability, http_timeout, tcp_idle_timeout)| {
+            let listen = listener.description()?;
+            Ok((listener, capability, listen, http_timeout, tcp_idle_timeout))
         })
         .collect::<Result<Vec<_>>>()?;
-    for (_, capability, listen, _) in &listeners {
+    for (_, capability, listen, _, _) in &listeners {
         if matches!(capability.service_type, crate::config::ServiceType::Tcp) {
-            println!(
-                "locho attached\n\nService: {}\nLocal TCP listener: {}",
-                capability.service, listen
-            );
+            if listen.starts_with('/') {
+                println!(
+                    "locho attached\n\nService: {}\nLocal Unix socket: {}",
+                    capability.service, listen
+                );
+            } else {
+                println!(
+                    "locho attached\n\nService: {}\nLocal TCP listener: {}",
+                    capability.service, listen
+                );
+            }
         } else {
             println!(
                 "locho attached\n\nService: {}\nLocal proxy:\nhttp://{}\n\nTry:\ncurl http://{}/",
@@ -230,38 +312,60 @@ async fn run_attachments(
     });
     let total_connections = std::sync::Arc::new(Semaphore::new(MAX_TOTAL_CONNECTIONS));
     let mut listener_tasks = JoinSet::new();
-    for (listener, capability, _listen, http_timeout) in listeners {
+    for (listener, capability, _listen, http_timeout, tcp_idle_timeout) in listeners {
         let connection = connection_state.clone();
         let service = capability.service.clone();
         let secret = capability.secret.clone();
         let total_connections = total_connections.clone();
         let shutdown = shutdown.clone();
-        let tcp = matches!(capability.service_type, crate::config::ServiceType::Tcp);
-        if tcp {
-            listener_tasks.spawn(async move {
-                run_tcp_listener(
-                    listener,
-                    connection,
-                    service,
-                    secret,
-                    total_connections,
-                    shutdown,
-                )
-                .await
-            });
-        } else {
-            listener_tasks.spawn(async move {
-                run_http_listener(
-                    listener,
-                    connection,
-                    service,
-                    secret,
-                    total_connections,
-                    http_timeout,
-                    shutdown,
-                )
-                .await
-            });
+        match (listener, capability.service_type) {
+            (BoundListener::Tcp(listener), crate::config::ServiceType::Tcp) => {
+                listener_tasks.spawn(async move {
+                    run_tcp_listener(
+                        listener,
+                        connection,
+                        service,
+                        secret,
+                        total_connections,
+                        shutdown,
+                        tcp_idle_timeout,
+                    )
+                    .await
+                });
+            }
+            #[cfg(unix)]
+            (BoundListener::Unix(listener), crate::config::ServiceType::Tcp) => {
+                listener_tasks.spawn(async move {
+                    run_unix_listener(
+                        listener,
+                        connection,
+                        service,
+                        secret,
+                        total_connections,
+                        shutdown,
+                        tcp_idle_timeout,
+                    )
+                    .await
+                });
+            }
+            (BoundListener::Tcp(listener), crate::config::ServiceType::Http) => {
+                listener_tasks.spawn(async move {
+                    run_http_listener(
+                        listener,
+                        connection,
+                        service,
+                        secret,
+                        total_connections,
+                        http_timeout,
+                        shutdown,
+                    )
+                    .await
+                });
+            }
+            #[cfg(unix)]
+            (BoundListener::Unix(_), crate::config::ServiceType::Http) => {
+                unreachable!("HTTP Unix listeners rejected during configuration")
+            }
         }
     }
     let mut supervisor_finished = false;
@@ -274,10 +378,8 @@ async fn run_attachments(
                     Err(error) => Err(error.into()),
                 };
             }
-            signal = tokio::signal::ctrl_c() => {
-                if signal.is_ok() {
-                    warn!("shutdown requested");
-                }
+            _ = shutdown_signal.recv() => {
+                warn!("shutdown requested");
                 break Ok(());
             }
             completed = listener_tasks.join_next(), if !listener_tasks.is_empty() => {
@@ -402,27 +504,84 @@ async fn run_tcp_listener(
     secret: String,
     total_connections: std::sync::Arc<Semaphore>,
     shutdown: CancellationToken,
+    idle_timeout: Option<std::time::Duration>,
 ) -> Result<()> {
-    println!(
-        "locho attached\n\nService: {}\nLocal TCP listener: {}",
-        service,
-        listener.local_addr()?
-    );
-    std::io::stdout().flush()?;
     let capability = crate::capability::Capability {
         service,
         service_type: crate::config::ServiceType::Tcp,
         secret,
     };
-    locho_client_native::forward::serve_tcp(
+    locho_client_native::forward::serve_tcp_with_idle_timeout(
         listener,
         connection,
         capability,
         total_connections,
         shutdown,
+        idle_timeout,
     )
     .await?;
     Ok(())
+}
+
+#[cfg(unix)]
+async fn run_unix_listener(
+    listener: locho_client_native::unix::UnixListenerGuard,
+    connection: ConnectionState,
+    service: String,
+    secret: String,
+    total_connections: std::sync::Arc<Semaphore>,
+    shutdown: CancellationToken,
+    idle_timeout: Option<std::time::Duration>,
+) -> Result<()> {
+    let capability = crate::capability::Capability {
+        service,
+        service_type: crate::config::ServiceType::Tcp,
+        secret,
+    };
+    locho_client_native::forward::serve_unix(
+        listener,
+        connection,
+        capability,
+        total_connections,
+        shutdown,
+        idle_timeout,
+    )
+    .await?;
+    Ok(())
+}
+
+struct ShutdownSignal {
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(not(unix))]
+    interrupt: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
+}
+
+impl ShutdownSignal {
+    fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+            #[cfg(unix)]
+            terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            #[cfg(not(unix))]
+            interrupt: Box::pin(tokio::signal::ctrl_c()),
+        })
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.interrupt.recv() => {},
+            _ = self.terminate.recv() => {},
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.interrupt.as_mut().await;
+        }
+    }
 }
 
 async fn acquire_connection(state: ConnectionState) -> Result<ConnectionLease> {
