@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: Format, lint, and test
@@ -56,22 +60,14 @@ jobs:
           python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
           python3 -m unittest discover -s tests/perf/loadgen -p test_loadgen.py -v
 
-      - name: Run Unix release verification gate
+      - name: Run Unix CI verification gate
         if: runner.os != 'Windows'
-        run: scripts/verify-release.sh --skip-artifacts
+        run: scripts/verify-ci.sh
 
-      - name: Run Windows release verification gate
+      - name: Run Windows CI verification gate
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\scripts\Verify-Release.ps1 -SkipArtifacts
-
-      - name: Upload native smoke artifacts
-        if: always() && runner.os != 'Windows'
-        uses: actions/upload-artifact@v7
-        with:
-          name: unix-smoke-${{ matrix.os }}
-          path: artifacts/unix-smoke-*
-          if-no-files-found: warn
+        run: .\scripts\Verify-CI.ps1
 
   native-stress:
     name: Native Unix stress (${{ matrix.os }})
@@ -171,13 +167,8 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Python for Unix stream smoke tests
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.11'
-
       - name: Run MSRV verification
-        run: scripts/verify-release.sh --skip-artifacts
+        run: scripts/verify-ci.sh
 
   artifact-smoke:
     name: Packaged artifact smoke (${{ matrix.os }})
@@ -349,6 +340,14 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Install cargo-deny
+        id: cargo-deny-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.20.2-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build cargo-deny
+        if: steps.cargo-deny-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-deny --locked --version 0.20.2
 
       - name: Check dependencies
