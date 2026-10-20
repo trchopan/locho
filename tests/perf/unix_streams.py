@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native, ordinary-release Unix/TCP smoke and soak tests (Python 3.11+).
+"""Native, ordinary-release Unix/TCP smoke, stress and soak tests (Python 3.11+).
 
 No Herdr, Docker, third-party Python modules, or application message retries.
 Only resources created in this run's private directory/process tree are owned.
@@ -49,6 +49,18 @@ def duration(value):
     if result <= 0:
         raise argparse.ArgumentTypeError("duration must be positive")
     return result
+
+
+def stress_levels(value):
+    try:
+        levels = [int(part) for part in value.replace(",", " ").split()]
+    except ValueError:
+        raise argparse.ArgumentTypeError("stress levels must be positive integers") from None
+    if not levels or any(level <= 0 for level in levels):
+        raise argparse.ArgumentTypeError("stress levels must be positive integers")
+    if any(level > 128 for level in levels):
+        raise argparse.ArgumentTypeError("stress levels must not exceed 128 workers per combination")
+    return levels
 
 
 def short_root():
@@ -590,6 +602,70 @@ class Run:
         require(self.counts["unexpected_failures"] == 0, "unexpected I/O failure during loaded smoke recovery")
         self.event("loaded_recovery_passed")
 
+    async def stress_phase(self, concurrency, phase, phase_duration):
+        baseline_failures = self.counts["unexpected_failures"]
+        stop = asyncio.Event()
+        tasks = [asyncio.create_task(self.worker(name, index, stop, stress=True))
+                 for name in self.listeners for index in range(concurrency)]
+        started = time.monotonic()
+        failure = None
+        try:
+            while time.monotonic() - started < phase_duration:
+                require(self.host.child.returncode is None and self.attachment.child.returncode is None,
+                        f"process exited during stress phase {phase}")
+                for task in tasks:
+                    if task.done():
+                        task.result()
+                await asyncio.sleep(0.2)
+        except BaseException as exception:
+            failure = exception
+        finally:
+            stop.set()
+            try:
+                results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), TIMEOUT + 5)
+            except asyncio.TimeoutError:
+                raise AssertionError(f"stress phase {phase} workers did not drain") from None
+            if failure is None:
+                for result in results:
+                    if isinstance(result, BaseException):
+                        failure = result
+                        break
+        if failure is not None:
+            raise failure
+        require(self.counts["unexpected_failures"] == baseline_failures,
+                f"unexpected operation failure at stress phase {phase}")
+        await asyncio.sleep(1)
+        sample = await self.sample()
+        self.event("stress_phase_passed", phase=phase, concurrency=concurrency,
+                   elapsed=time.monotonic() - started,
+                   successful_operations=sum(self.counts[f"{name}.success"] for name in self.listeners),
+                   processes={name: {key: value for key, value in record.items()
+                                     if key in ("pid", "rss_kib", "fds")}
+                              for name, record in sample.items()})
+
+    async def stress(self):
+        levels = self.args.stress_levels
+        baseline = await self.sample()
+        warmup = max(5, min(30, self.args.duration // 10))
+        remaining = self.args.duration - warmup * 2
+        require(remaining >= len(levels), "stress duration is too short for the requested levels")
+        phase_duration = remaining // len(levels)
+        await self.stress_phase(levels[0], "warmup", warmup)
+        for phase, level in enumerate(levels, 1):
+            await self.stress_phase(level, phase, phase_duration)
+        await self.stress_phase(levels[0], "cooldown", warmup)
+        await self.probe_all()
+        await asyncio.sleep(2)
+        final = await self.sample()
+        for name in baseline:
+            growth = descriptor_growth(baseline[name], final[name], self.args.max_fd_growth)
+            self.event("stress_resource_gate_passed", process=name, pid=final[name]["pid"],
+                       fd_growth=growth)
+        require(self.counts["unexpected_failures"] == 0,
+                "unexpected steady-state operation failures during stress")
+        self.event("stress_passed", duration=self.args.duration, levels=levels,
+                   elapsed=self.args.duration)
+
     async def budget_check(self):
         connections = []
         processes = []
@@ -771,7 +847,7 @@ class Run:
         require(290 <= elapsed <= 320, "default 300-second idle expiry out of bounds")
         self.event("default_idle_passed", elapsed=elapsed)
 
-    async def worker(self, name, index, stop):
+    async def worker(self, name, index, stop, *, stress=False):
         key = f"{name}:load-{index}"
         identity = self.identities.setdefault(key, uuid.uuid4().bytes)
         reader = writer = None
@@ -788,13 +864,20 @@ class Run:
                             connection_generation = self.fault_epochs[name]
                             reader, writer = await connect(self.listeners[name])
                         self.sequence[key] += 1
-                        size = (1024 * 1024 if index == 0 and self.sequence[key] % 20 == 0 else 4096)
-                        await exchange(reader, writer, identity, self.sequence[key], size,
-                                       slow=index == 1 and self.sequence[key] % 20 == 0)
+                        if stress:
+                            size = (1024 * 1024
+                                    if index % 4 == 0 and self.sequence[key] % 10 == 0
+                                    else 4096)
+                            slow = index % 4 == 1 and self.sequence[key] % 10 == 0
+                        else:
+                            size = (1024 * 1024 if index == 0 and self.sequence[key] % 20 == 0 else 4096)
+                            slow = index == 1 and self.sequence[key] % 20 == 0
+                        await exchange(reader, writer, identity, self.sequence[key], size, slow=slow)
                     self.counts[f"{name}.success"] += 1
                     self.counts["bytes"] += size * 2
                     self.latencies.append(time.monotonic() - started)
-                    if index == 2 or time.monotonic() - last_churn > 60:
+                    churn = index % 4 == 3 if stress else index == 2
+                    if churn or time.monotonic() - last_churn > (15 if stress else 60):
                         writer.write_eof()
                         await writer.drain()
                         await asyncio.wait_for(reader.read(1), TIMEOUT)
@@ -812,7 +895,7 @@ class Run:
                     if writer:
                         await close(writer)
                     reader = writer = None
-                await asyncio.sleep(0.1 if index == 2 else 0.05)
+                await asyncio.sleep(0.02 if stress else (0.1 if index == 2 else 0.05))
         finally:
             if writer:
                 try:
@@ -963,9 +1046,16 @@ async def finalize(run, args, started, result, error):
     if cleanup_errors:
         result = "failed"
         error = error or "finalization failed"
+    successes = sum(value for key, value in run.counts.items() if key.endswith(".success"))
     summary = {"result": result, "error": error, "mode": args.mode,
                "elapsed_seconds": time.monotonic() - started,
-               "requested_load_seconds": args.duration if args.mode == "soak" else None,
+               "requested_load_seconds": args.duration if args.mode in ("stress", "soak") else None,
+               "stress_levels": getattr(args, "stress_levels", None),
+               "successful_operations": successes,
+               "throughput_operations_per_second": successes / args.duration
+               if args.mode in ("stress", "soak") else None,
+               "throughput_bytes_per_second": run.counts["bytes"] / args.duration
+               if args.mode in ("stress", "soak") else None,
                "max_fd_growth_allowance": args.max_fd_growth,
                "platform": platform.platform(), "python": platform.python_version(),
                "binary_version": version,
@@ -1004,9 +1094,14 @@ async def main(args):
     error = None
     try:
         # Includes setup, faults and cleanup budget; no unbounded harness hang.
-        async with asyncio.timeout((args.duration if args.mode == "soak" else 240) + 120):
+        async with asyncio.timeout((args.duration if args.mode in ("stress", "soak") else 240) + 120):
             await run.setup()
-            await (run.smoke() if args.mode == "smoke" else run.soak())
+            if args.mode == "smoke":
+                await run.smoke()
+            elif args.mode == "stress":
+                await run.stress()
+            else:
+                await run.soak()
             require(all(fixture.duplicates == 0 and fixture.errors == 0 for fixture in run.fixtures),
                     "fixture detected corruption or replay")
             await run.attachment.stop()
@@ -1035,9 +1130,14 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("smoke", "soak"))
+    parser.add_argument("mode", choices=("smoke", "stress", "soak"))
     parser.add_argument("--binary", default=os.environ.get("LOCHO_TEST_BINARY", "target/release/locho"))
-    parser.add_argument("--duration", type=duration, default=1800, help="soak load duration, 15m–1h")
+    parser.add_argument("--duration", type=duration, default=None,
+                        help="stress duration defaults to 5m; soak duration defaults to 30m")
+    parser.add_argument("--levels", type=stress_levels, default=[4, 8, 16, 32],
+                        help="stress workers per forwarding combination, comma-separated")
+    parser.add_argument("--concurrency", type=int,
+                        help="stress shorthand for one workers-per-combination level")
     parser.add_argument("--output", default="artifacts")
     parser.add_argument("--max-fd-growth", type=int, default=16,
                         help="allowed post-drain descriptor increase per Locho process")
@@ -1046,7 +1146,17 @@ if __name__ == "__main__":
         parser.error("native Unix sockets require macOS or Linux")
     if sys.version_info < (3, 11):
         parser.error("Python 3.11 or newer is required")
-    if args.mode == "soak" and not 900 <= args.duration <= 3600:
+    if args.duration is None:
+        args.duration = 300 if args.mode == "stress" else 1800
+    if args.mode == "stress":
+        if not 60 <= args.duration <= 3600:
+            parser.error("stress duration must be 1m–1h")
+        if args.concurrency is not None:
+            if not 1 <= args.concurrency <= 128:
+                parser.error("--concurrency must be between 1 and 128")
+            args.levels = [args.concurrency]
+        args.stress_levels = args.levels
+    elif args.mode == "soak" and not 900 <= args.duration <= 3600:
         parser.error("soak duration must be 15m–1h to cover quiet expiry and recovery gates")
     if args.max_fd_growth < 0:
         parser.error("--max-fd-growth must be non-negative")

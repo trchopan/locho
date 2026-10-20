@@ -10,6 +10,9 @@ All notable changes to `locho` are documented here.
   remain an explicit trust boundary.
 - Keeps idle expiry and reverse-direction forwarding active under backpressure;
   adds same-PID resource-drain and harness-finalization regression checks.
+- Adds a native Unix/TCP stress profile with ramped concurrency across all four
+  forwarding combinations, latency/resource artifacts, and strict corruption,
+  replay, failure and descriptor-growth gates.
 
 - Adds Unix filesystem stream upstreams for TCP services and secure Unix socket
   listeners for TCP attachments on macOS/Linux, including mixed TCP/Unix

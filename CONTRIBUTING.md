@@ -39,8 +39,8 @@ feature.
 
 The Unix release smoke gate includes native TCP/Unix forwarding, listener
 security/lifecycle and recovery checks using generic fixtures, with no Herdr
-dependency. For the native 30–60 minute Unix soak profile, artifact descriptions
-and harness unit tests, see [the performance harness](tests/perf/README.md#native-unix-stream-smoke-and-soak-tests).
+dependency. For the native Unix stress/soak profiles, artifact descriptions and
+harness unit tests, see [the performance harness](tests/perf/README.md#native-unix-stream-smoke-stress-and-soak-tests).
 
 The Cargo workspace contains the CLI, `crates/locho-core` and
 `crates/locho-client-native`. Default members include all three, so `cargo test`

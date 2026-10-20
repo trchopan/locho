@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -12,7 +13,8 @@ from unittest.mock import patch
 
 from unix_streams import (
     Fixture, HEADER, LOG_LIMIT, MAX_EVENTS, MAX_PAYLOAD, Process, Run, connect, close, duration,
-    descriptor_growth, duplex_exchange, exchange, fault_failure, finalize, payload, short_root, write_toml,
+    descriptor_growth, duplex_exchange, exchange, fault_failure, finalize, payload, short_root,
+    stress_levels, write_toml,
 )
 
 
@@ -107,6 +109,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(payload(1024, identity, 1), payload(1024, identity, 1))
         self.assertNotEqual(payload(1024, identity, 1), payload(1024, identity, 2))
         self.assertEqual(MAX_EVENTS, 2000)
+
+    def test_stress_levels_accept_comma_or_space_separated_values(self):
+        self.assertEqual(stress_levels("4, 8 16"), [4, 8, 16])
+        with self.assertRaises(argparse.ArgumentTypeError):
+            stress_levels("0,4")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            stress_levels("129")
 
     def test_private_config_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as root:
