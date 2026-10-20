@@ -220,7 +220,7 @@ async fn handle_connection(
                     let services = Arc::clone(&services);
                     let client_id = client_id.clone();
                     streams.spawn(async move {
-                        handle_stream(send, recv, services, client_id).await
+                        handle_peer_stream(send, recv, services, client_id).await
                     });
                 }
                 Err(_) => break,
@@ -237,6 +237,29 @@ async fn handle_connection(
     connection.close(0u32.into(), b"locho shutdown");
     streams.abort_all();
     while streams.join_next().await.is_some() {}
+}
+
+// Observe STOP_SENDING even while an upstream is silent. Otherwise a cancelled
+// response retains its upstream request until another write or the full timeout.
+async fn handle_peer_stream(
+    send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
+    services: Arc<HostServices>,
+    client_id: String,
+) -> Result<()> {
+    let stopped = send.stopped();
+    let cancelled = async move {
+        // Successful delivery of a finished send half is not cancellation:
+        // TCP's reverse direction may still be receiving application data.
+        if let Ok(None) = stopped.await {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = cancelled => Ok(()),
+        result = handle_stream(send, recv, services, client_id) => result,
+    }
 }
 
 struct HostServices {
@@ -797,7 +820,11 @@ impl<T> AbortOnDrop<T> {
     }
 
     async fn join(&mut self) -> Result<T, tokio::task::JoinError> {
-        self.0.take().expect("join handle already consumed").await
+        // Keep ownership while awaiting so cancellation of the parent still
+        // aborts the upload task instead of detaching it.
+        let result = self.0.as_mut().expect("join handle already consumed").await;
+        self.0.take();
+        result
     }
 
     async fn abort(&mut self) {
@@ -898,6 +925,214 @@ mod tests {
             http_request_timeout(Some(90)),
             std::time::Duration::from_secs(90)
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_upload_join_does_not_detach_task() {
+        struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for NotifyOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.take().unwrap().send(());
+            }
+        }
+        let (dropped, finished) = tokio::sync::oneshot::channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _notify = NotifyOnDrop(Some(dropped));
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let abort = task.abort_handle();
+        let mut task = AbortOnDrop::new(task);
+        ready.await.unwrap();
+        assert!(timeout(Duration::from_millis(20), task.join())
+            .await
+            .is_err());
+        drop(task);
+        let result = timeout(Duration::from_secs(2), finished).await;
+        abort.abort();
+        result.expect("cancelled upload was detached").unwrap();
+    }
+
+    async fn peer_pair() -> (
+        iroh::Endpoint,
+        iroh::Endpoint,
+        iroh::endpoint::Connection,
+        iroh::endpoint::Connection,
+    ) {
+        use iroh::{endpoint::presets, Endpoint, EndpointAddr, RelayMode};
+
+        let server = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let client = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let port = server
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .unwrap()
+            .port();
+        let target = EndpointAddr::new(server.id()).with_ip_addr(([127, 0, 0, 1], port).into());
+        let (outgoing, incoming) = tokio::join!(client.connect(target, ALPN), async {
+            server.accept().await.unwrap().await.unwrap()
+        });
+        let outgoing = outgoing.unwrap();
+        (client, server, outgoing, incoming)
+    }
+
+    #[tokio::test]
+    async fn peer_send_half_close_preserves_reverse_tcp_traffic() {
+        let (client, server, outgoing, incoming) = peer_pair().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = tcp_services(listener.local_addr().unwrap());
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // Close only the upstream's sending half, before receiving data.
+            socket.shutdown().await.unwrap();
+            let mut bytes = Vec::new();
+            socket.read_to_end(&mut bytes).await.unwrap();
+            assert_eq!(bytes, b"after-half-close");
+        });
+        let (mut send, mut recv) = outgoing.open_bi().await.unwrap();
+        write_json_head(
+            &mut send,
+            &StreamRequestHead::Tcp(TcpRequestHead {
+                version: PROTOCOL_VERSION,
+                service: "database".into(),
+                secret_proof: auth::secret_proof("correct"),
+            }),
+        )
+        .await
+        .unwrap();
+        let (host_send, host_recv) = incoming.accept_bi().await.unwrap();
+        // A separate handle observes acknowledgement of the graceful FIN.
+        let delivered = host_send.stopped();
+        let handler = tokio::spawn(handle_peer_stream(
+            host_send,
+            host_recv,
+            config,
+            "test-client".into(),
+        ));
+        let head: LochoResponseHead = read_json_head(&mut recv, MAX_HEAD_LEN).await.unwrap();
+        assert_eq!(head.status, 200);
+        let mut byte = [0u8; 1];
+        assert_eq!(recv.read(&mut byte).await.unwrap(), None);
+        assert_eq!(
+            timeout(Duration::from_secs(5), delivered)
+                .await
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        // Let the cancellation watcher observe the FIN acknowledgement first.
+        tokio::task::yield_now().await;
+        send.write_all(b"after-half-close").await.unwrap();
+        send.finish().unwrap();
+        timeout(Duration::from_secs(5), upstream)
+            .await
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(5), handler)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        client.close().await;
+        server.close().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_peer_response_releases_silent_upstream_without_closing_peer() {
+        let (client, server, outgoing, incoming) = peer_pair().await;
+
+        for after_headers in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream = listener.local_addr().unwrap();
+            let mut config = services();
+            Arc::get_mut(&mut config).unwrap().config.services[0].upstream =
+                Some(Url::parse(&format!("http://{upstream}")).unwrap());
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let upstream_task = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                }
+                if after_headers {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\nx")
+                        .await
+                        .unwrap();
+                }
+                started.send(()).unwrap();
+                // A silent upstream must see EOF promptly, not at the 60s timeout.
+                let mut byte = [0u8; 1];
+                assert_eq!(socket.read(&mut byte).await.unwrap(), 0);
+            });
+            let (mut send, mut recv) = outgoing.open_bi().await.unwrap();
+            write_json_head(
+                &mut send,
+                &StreamRequestHead::Http(request("api", &auth::secret_proof("correct"))),
+            )
+            .await
+            .unwrap();
+            send.finish().unwrap();
+            let (host_send, host_recv) = incoming.accept_bi().await.unwrap();
+            let handler = tokio::spawn(handle_peer_stream(
+                host_send,
+                host_recv,
+                config.clone(),
+                "test-client".into(),
+            ));
+            timeout(Duration::from_secs(5), ready)
+                .await
+                .unwrap()
+                .unwrap();
+            if after_headers {
+                let head: LochoResponseHead =
+                    read_json_head(&mut recv, MAX_HEAD_LEN).await.unwrap();
+                assert_eq!(head.status, 200);
+                let mut byte = [0u8; 1];
+                recv.read_exact(&mut byte).await.unwrap();
+            }
+            recv.stop(0u32.into()).unwrap();
+            timeout(Duration::from_secs(2), handler)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            timeout(Duration::from_secs(2), upstream_task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(incoming.close_reason().is_none());
+
+            // A different request on the exact same peer still completes.
+            let (mut send, mut recv) = outgoing.open_bi().await.unwrap();
+            write_json_head(&mut send, &StreamRequestHead::Http(request("api", "wrong")))
+                .await
+                .unwrap();
+            send.finish().unwrap();
+            let (host_send, host_recv) = incoming.accept_bi().await.unwrap();
+            let handler = tokio::spawn(handle_peer_stream(
+                host_send,
+                host_recv,
+                config,
+                "test-client".into(),
+            ));
+            let head: LochoResponseHead = read_json_head(&mut recv, MAX_HEAD_LEN).await.unwrap();
+            assert_eq!(head.status, 403);
+            handler.await.unwrap().unwrap();
+        }
+        client.close().await;
+        server.close().await;
     }
 
     fn tcp_services(endpoint: std::net::SocketAddr) -> Arc<HostServices> {
