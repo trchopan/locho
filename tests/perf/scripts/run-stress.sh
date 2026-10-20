@@ -170,7 +170,8 @@ python3 - "$RUN" "$DURATION" <<'PY'
 import glob, json, sys
 run, duration = sys.argv[1], int(sys.argv[2])
 summaries = [json.load(open(path)) for path in glob.glob(run + "/summary-*.json")]
-counts = {key: sum(item["counts"].get(key, 0) for item in summaries) for key in ("success", "failure", "timeout", "reset")}
+counts = {key: sum(item["counts"].get(key, 0) for item in summaries)
+          for key in ("success", "failure", "timeout", "reset", "transient_failure", "validation_failure")}
 with open(run + "/loadgen-summary.json", "w") as output:
     json.dump({"duration_seconds": duration, "phases": len(summaries), "counts": counts}, output, indent=2)
 PY

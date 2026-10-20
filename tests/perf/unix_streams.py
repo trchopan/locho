@@ -355,6 +355,7 @@ class Run:
         self.attachment = None
         self.sequence = collections.Counter()
         self.identities = {}
+        self.measured_load_seconds = None
 
     def event(self, name, **fields):
         if name == "operation_failed":
@@ -604,10 +605,13 @@ class Run:
 
     async def stress_phase(self, concurrency, phase, phase_duration):
         baseline_failures = self.counts["unexpected_failures"]
+        baseline_successes = sum(self.counts[f"{name}.success"] for name in self.listeners)
+        baseline_bytes = self.counts["bytes"]
         stop = asyncio.Event()
         tasks = [asyncio.create_task(self.worker(name, index, stop, stress=True))
                  for name in self.listeners for index in range(concurrency)]
         started = time.monotonic()
+        next_sample = 0
         failure = None
         try:
             while time.monotonic() - started < phase_duration:
@@ -616,6 +620,10 @@ class Run:
                 for task in tasks:
                     if task.done():
                         task.result()
+                elapsed = time.monotonic() - started
+                if elapsed >= next_sample:
+                    await self.sample()
+                    next_sample = elapsed + 10
                 await asyncio.sleep(0.2)
         except BaseException as exception:
             failure = exception
@@ -638,7 +646,11 @@ class Run:
         sample = await self.sample()
         self.event("stress_phase_passed", phase=phase, concurrency=concurrency,
                    elapsed=time.monotonic() - started,
-                   successful_operations=sum(self.counts[f"{name}.success"] for name in self.listeners),
+                   successful_operations=(
+                       sum(self.counts[f"{name}.success"] for name in self.listeners)
+                       - baseline_successes
+                   ),
+                   bytes=self.counts["bytes"] - baseline_bytes,
                    processes={name: {key: value for key, value in record.items()
                                      if key in ("pid", "rss_kib", "fds")}
                               for name, record in sample.items()})
@@ -646,6 +658,7 @@ class Run:
     async def stress(self):
         levels = self.args.stress_levels
         baseline = await self.sample()
+        started = time.monotonic()
         warmup = max(5, min(30, self.args.duration // 10))
         remaining = self.args.duration - warmup * 2
         require(remaining >= len(levels), "stress duration is too short for the requested levels")
@@ -654,6 +667,7 @@ class Run:
         for phase, level in enumerate(levels, 1):
             await self.stress_phase(level, phase, phase_duration)
         await self.stress_phase(levels[0], "cooldown", warmup)
+        load_finished = time.monotonic()
         await self.probe_all()
         await asyncio.sleep(2)
         final = await self.sample()
@@ -663,8 +677,9 @@ class Run:
                        fd_growth=growth)
         require(self.counts["unexpected_failures"] == 0,
                 "unexpected steady-state operation failures during stress")
+        self.measured_load_seconds = load_finished - started
         self.event("stress_passed", duration=self.args.duration, levels=levels,
-                   elapsed=self.args.duration)
+                   elapsed=self.measured_load_seconds)
 
     async def budget_check(self):
         connections = []
@@ -935,6 +950,7 @@ class Run:
                  for name in self.listeners for i in range(3)]
         tasks.append(asyncio.create_task(self.quiet_gate()))
         started = time.monotonic()
+        self.measured_load_seconds = None
         # No faults can invalidate the six-minute quiet gate.
         fault_times = [(self.args.duration * fraction, target)
                        for fraction, target in ((0.45, "upstream"), (0.65, "host"), (0.8, "attachment"))]
@@ -989,6 +1005,7 @@ class Run:
                             raise result
             except asyncio.TimeoutError:
                 raise AssertionError("soak workers did not drain within deadline") from None
+        self.measured_load_seconds = time.monotonic() - started
         require(self.counts["unexpected_failures"] == 0, "unexpected steady-state operation failures")
         await self.probe_all()
         await asyncio.sleep(2)
@@ -1047,15 +1064,17 @@ async def finalize(run, args, started, result, error):
         result = "failed"
         error = error or "finalization failed"
     successes = sum(value for key, value in run.counts.items() if key.endswith(".success"))
+    measured_load_seconds = run.measured_load_seconds
     summary = {"result": result, "error": error, "mode": args.mode,
                "elapsed_seconds": time.monotonic() - started,
                "requested_load_seconds": args.duration if args.mode in ("stress", "soak") else None,
+               "measured_load_seconds": measured_load_seconds,
                "stress_levels": getattr(args, "stress_levels", None),
                "successful_operations": successes,
-               "throughput_operations_per_second": successes / args.duration
-               if args.mode in ("stress", "soak") else None,
-               "throughput_bytes_per_second": run.counts["bytes"] / args.duration
-               if args.mode in ("stress", "soak") else None,
+               "throughput_operations_per_second": successes / measured_load_seconds
+               if measured_load_seconds and args.mode in ("stress", "soak") else None,
+               "throughput_bytes_per_second": run.counts["bytes"] / measured_load_seconds
+               if measured_load_seconds and args.mode in ("stress", "soak") else None,
                "max_fd_growth_allowance": args.max_fd_growth,
                "platform": platform.platform(), "python": platform.python_version(),
                "binary_version": version,
