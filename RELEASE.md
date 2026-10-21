@@ -7,7 +7,7 @@ same checks locally and in CI.
 ## Release Candidate
 
 For the current beta, record candidate-specific results and remaining gates in
-[1.3.0-beta.1 evidence](docs/release-1.3.0-beta.1.md). SDK package versions are
+[1.3.0-beta.2 evidence](docs/release-1.3.0-beta.2.md). SDK package versions are
 independent of the CLI version; metadata-only CLI changes may require manual
 dispatch of the browser and Flutter workflows against the candidate branch.
 
@@ -51,7 +51,7 @@ release notes must state that verification is pending.
 - [ ] Update `Cargo.toml` and `Cargo.lock` to the final version.
 - [ ] Confirm the final notes are in the versioned changelog entry.
 - [ ] Run the complete release gate again from a clean checkout.
-- [ ] Create and push the matching tag, for example `v1.3.0-beta.1`.
+- [ ] Create and push the matching tag, for example `v1.3.0-beta.2`.
 - [ ] Confirm beta releases are marked prerelease and the stable latest-release
       installers continue to select the stable release.
 - [ ] Confirm the GitHub Release contains every supported archive, checksum, and

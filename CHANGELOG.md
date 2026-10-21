@@ -4,8 +4,22 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+## [1.3.0-beta.2] - 2026-10-21
+
+This prerelease adds native Unix stream forwarding and hardens shared peer
+sessions. It is intended for beta testing; `1.2.0` remains the stable release.
+
 - Updates iroh to 1.4.0 across CLI and SDK source builds, including relay receive
   correctness fixes and the updated QUIC transport dependency.
+- Updates TLS certificate verification and root-trust dependencies to address
+  security advisories.
+- Isolates HTTP upstream failures and truncated responses from other streams on
+  the same peer session; hardens stream cancellation, half-close and cleanup so
+  one failed request does not disconnect unrelated services.
+- Aligns the host QUIC stream window with its 128-connection TCP budget, avoiding
+  handshake stalls above 100 concurrent streams on a shared peer.
+- Retries transient browser discovery failures within the existing startup budget,
+  without replaying application HTTP requests or extending timeouts.
 - Anchors Unix listener operations to verified directory handles, rejects unsafe
   ancestry, installs attachment shutdown handlers before startup, and isolates
   local client resets from shared-peer recovery. Root/same-UID filesystem races
@@ -19,11 +33,29 @@ All notable changes to `locho` are documented here.
 - Adds Unix filesystem stream upstreams for TCP services and secure Unix socket
   listeners for TCP attachments on macOS/Linux, including mixed TCP/Unix
   multi-service attachments and configurable raw-stream idle deadlines.
-- Keeps the `locho/3` wire protocol, ticket format, HTTP behavior, and public SDK
+- Keeps the `locho/3` wire protocol, ticket format, HTTP API, and public SDK
   defaults unchanged. Unix paths are local policy and are not carried in tickets.
 - Adds native release smoke and soak harnesses for all four TCP/Unix forwarding
   combinations, binary/full-duplex integrity, idle policy, connection budgets,
   recovery, listener security and cleanup, using generic fixtures rather than Herdr.
+
+No host-state or capability migration is required. Unix paths remain local policy;
+Unix listeners and upstreams are supported on macOS/Linux, not Windows. Existing
+TCP forwarding remains supported on all distributed platforms. Raw TCP/Unix streams
+default to a 300-second application-byte idle timeout; set `tcp_idle_timeout_secs`
+to `0` to disable it.
+
+Browser stale-address discovery can still intermittently time out over public N0
+relays. This was reproduced with iroh 1.2.0, 1.3.0 and 1.4.0; the dependency upgrade
+is not a demonstrated fix. Physical iOS, broad physical-device/mobile-browser and
+real network-transition acceptance remain open. CLI HTTP WebSocket upgrades remain
+unsupported. Linux ARM64 native verification remains pending; cross-builds do not
+establish native runtime acceptance.
+
+The independently published `locho_web` and `locho_flutter` packages remain at
+`0.1.0-beta.2`; this CLI release does not republish them or update their bundled
+implementation. See [candidate evidence](docs/release-1.3.0-beta.2.md) for remaining
+gates and target-specific limitations.
 
 ## [1.3.0-beta.1] - 2026-10-17
 

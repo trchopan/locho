@@ -162,6 +162,57 @@ impl Drop for ProcessOutput {
 
 #[cfg(feature = "integration-test")]
 #[test]
+fn one_peer_supports_the_full_tcp_connection_budget() {
+    let state_dir = TestDir::new();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream.local_addr().unwrap();
+    let (release, released) = mpsc::channel();
+    let upstream_thread = thread::spawn(move || {
+        let mut streams = Vec::new();
+        for _ in 0..locho_core::protocol::MAX_TCP_CONNECTIONS {
+            let (mut stream, _) = accept_with_deadline(&upstream);
+            stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            stream.write_all(&byte).unwrap();
+            streams.push(stream);
+        }
+        let _ = released.recv_timeout(STARTUP_TIMEOUT);
+    });
+    let config = state_dir.path().join("host.toml");
+    fs::write(
+        &config,
+        format!("[[services]]\nname = \"database\"\ntype = \"tcp\"\nendpoint = \"{upstream_address}\"\n"),
+    )
+    .unwrap();
+    let direct_address = format!("127.0.0.1:{}", free_udp_port());
+    let host = start_host(state_dir.path(), &config, &direct_address);
+    let attach_command = host.wait_for_attach(state_dir.path(), &config, "database");
+    let port = free_port();
+    let _attachment =
+        start_ready_attachment(state_dir.path(), &attach_command, port, &direct_address);
+    // Retain every authorized stream: opening stream 101 must not wait for one
+    // of the first 100 to close under the transport's default stream window.
+    let mut streams = Vec::new();
+    for index in 0..locho_core::protocol::MAX_TCP_CONNECTIONS {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+        stream.write_all(&[index as u8]).unwrap();
+        let mut byte = [0];
+        stream
+            .read_exact(&mut byte)
+            .unwrap_or_else(|error| panic!("stream {} failed: {error}", index + 1));
+        assert_eq!(byte, [index as u8]);
+        streams.push(stream);
+    }
+    release.send(()).unwrap();
+    upstream_thread.join().unwrap();
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
 fn tcp_attachment_supports_concurrency_restart_and_rotation() {
     let state_dir = TestDir::new();
     let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();

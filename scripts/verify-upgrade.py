@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 
 
 class RehearsalFailure(Exception):
@@ -146,7 +147,9 @@ def main():
     parser.add_argument("--candidate-binary", type=Path, required=True)
     args = parser.parse_args()
     previous, candidate = args.previous_binary.resolve(), args.candidate_binary.resolve()
-    for binary, version in [(previous, "1.2.0"), (candidate, "1.3.0-beta.1")]:
+    with (Path(__file__).resolve().parent.parent / "Cargo.toml").open("rb") as manifest:
+        candidate_version = tomllib.load(manifest)["package"]["version"]
+    for binary, version in [(previous, "1.2.0"), (candidate, candidate_version)]:
         output = run([str(binary), "--version"])
         require(re.fullmatch(rf"locho {re.escape(version)} \(commit [0-9a-f]{{40}}, clean\)", output),
                 "Binary version or clean release provenance mismatch")

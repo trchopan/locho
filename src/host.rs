@@ -51,6 +51,13 @@ pub async fn run(
     };
     let mut endpoint_builder = relay::endpoint_builder(relay_settings.as_ref())
         .alpns(vec![ALPN.to_vec()])
+        // The transport defaults to 100 bidirectional streams. Admit the full
+        // host TCP budget on one shared peer instead of stalling stream 101.
+        .transport_config(
+            iroh::endpoint::QuicTransportConfig::builder()
+                .max_concurrent_bidi_streams((MAX_TCP_CONNECTIONS as u32).into())
+                .build(),
+        )
         .secret_key(host_secret_key);
     if let Some(address) = bind_address {
         let address = validate_bind_address(address)?;
