@@ -66,6 +66,38 @@ test.describe('official N0 relay integration', () => {
     });
   }
 
+  test('stale relay hints recover from a transient discovery failure without replaying HTTP', async ({ page, request }, testInfo) => {
+    const values = fixture();
+    const authority = `discovery-retry-${testInfo.project.name}`;
+    let lookups = 0;
+    await page.route(values.discoveryUrl, async (route) => {
+      lookups += 1;
+      if (lookups <= 2) {
+        await route.fulfill({ status: 503, body: 'temporary discovery failure' });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.goto('./lifecycle.html');
+    await page.waitForFunction(() => Boolean((window as any).lochoProof));
+    const result = await page.evaluate(async (values) => {
+      const { LochoClient } = (window as any).lochoProof;
+      const client = await LochoClient.connect({
+        hostId: values.hostId, peerRelayUrl: 'https://127.0.0.1:1/',
+      });
+      try {
+        const response = await client.health(values.capability, values.authority);
+        return { status: response.status, body: (await response.text()).trim() };
+      } finally {
+        await client.close();
+      }
+    }, { ...values, authority });
+    expect(lookups).toBeGreaterThanOrEqual(3);
+    expect(result).toEqual({ status: 200, body: values.expectedBody });
+    const counts = await (await request.get(`${values.controlUrl}/?authority=${authority}`)).json();
+    expect(counts.requests).toBe(1);
+  });
+
   test('rejects a wrong capability', async ({ page }) => {
     const values = fixture();
     await page.goto('./');
