@@ -61,11 +61,11 @@ host holds the state lock while running, then restart it to load the replacement
 
 ## Can browser and Flutter apps connect without a client CLI?
 
-Yes. The `1.3.0-beta.1` CLI can generate a portable ticket with
+Yes. The `1.3.0-beta.2` CLI can generate a portable ticket with
 `locho share SERVICE --config PATH --ticket`. The published `locho_web` and
-`locho_flutter` SDKs are independently versioned at `0.1.0-beta.1` and
-`0.1.0-beta.2`, respectively. Both use TCP service capabilities and the existing
-`locho/3` protocol. Browser HTTP runs over
+`locho_flutter` SDKs are independently versioned at `0.1.0-beta.2`.
+This CLI release does not republish those packages. Both use TCP service
+capabilities and the existing `locho/3` protocol. Browser HTTP runs over
 the SDK's relay transport; Flutter uses ordinary Dart HTTP through a local loopback
 attachment. Backend user authentication and credential persistence belong to the app.
 
@@ -74,7 +74,9 @@ Tickets contain bearer credentials and are not encrypted invitations. Peer
 separately. Flutter is foreground-only. Physical iOS, full physical/mobile-browser
 and real network-transition acceptance remain open. Browser managed WebSockets and
 authenticated browser relays are unsupported in this beta. See
-[SDK releases](docs/sdk-releases.md) and [beta evidence](docs/release-1.3.0-beta.1.md).
+[SDK releases](docs/sdk-releases.md) and [beta evidence](docs/release-1.3.0-beta.2.md).
+Browser discovery with stale relay hints can still intermittently time out over
+public N0 relays; the iroh 1.4.0 upgrade is not a demonstrated fix.
 
 ## Can one host expose multiple services?
 
