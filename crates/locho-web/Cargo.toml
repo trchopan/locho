@@ -18,7 +18,7 @@ httparse = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
-iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"] }
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }
 ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 n0-future = "0.3"
 tokio = { version = "1", features = ["io-util", "sync", "macros"] }
