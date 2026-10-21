@@ -4,6 +4,8 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+- Updates iroh to 1.4.0 across CLI and SDK source builds, including relay receive
+  correctness fixes and the updated QUIC transport dependency.
 - Anchors Unix listener operations to verified directory handles, rejects unsafe
   ancestry, installs attachment shutdown handlers before startup, and isolates
   local client resets from shared-peer recovery. Root/same-UID filesystem races

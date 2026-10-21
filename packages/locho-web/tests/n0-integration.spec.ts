@@ -66,9 +66,53 @@ test.describe('official N0 relay integration', () => {
     });
   }
 
+  for (const discoveryDelayMs of [0, 750]) {
+    test(`concurrent stale-hint clients complete their first HTTP request (discovery delay ${discoveryDelayMs}ms)`, async ({ page, request }, testInfo) => {
+      const values = fixture();
+      const authority = `stale-first-${discoveryDelayMs}-${testInfo.project.name}-${testInfo.repeatEachIndex}`;
+      if (discoveryDelayMs > 0) {
+        await page.route(values.discoveryUrl, async (route) => {
+          // Delay only address discovery: use the real signed record and relay,
+          // without retrying connections or replaying an application request.
+          await new Promise((resolve) => setTimeout(resolve, discoveryDelayMs));
+          await route.continue();
+        });
+      }
+      await page.goto('./lifecycle.html');
+      await page.waitForFunction(() => Boolean((window as any).lochoProof));
+      const results = await page.evaluate(async (values) => {
+        const { LochoClient } = (window as any).lochoProof;
+        return Promise.all([0, 1].map(async (index) => {
+          let client;
+          let stage = 'connect';
+          try {
+            client = await LochoClient.connect({
+              hostId: values.hostId, peerRelayUrl: 'https://127.0.0.1:1/',
+            });
+            stage = 'health';
+            const response = await client.health(values.capability, `${values.authority}-${index}`);
+            return { status: response.status, body: (await response.text()).trim(), path: client.status.path };
+          } catch (error) {
+            // Keep failure diagnostics useful without exposing credentials or URLs.
+            return { stage, errorCode: (error as { code?: string }).code ?? 'internal', status: client?.status };
+          } finally {
+            await client?.close();
+          }
+        }));
+      }, { ...values, authority });
+      expect(results).toEqual([0, 1].map(() => ({
+        status: 200, body: values.expectedBody, path: values.expectedPath,
+      })));
+      for (const index of [0, 1]) {
+        const counts = await (await request.get(`${values.controlUrl}/?authority=${authority}-${index}`)).json();
+        expect(counts.requests).toBe(1);
+      }
+    });
+  }
+
   test('stale relay hints recover from a transient discovery failure without replaying HTTP', async ({ page, request }, testInfo) => {
     const values = fixture();
-    const authority = `discovery-retry-${testInfo.project.name}`;
+    const authority = `discovery-retry-${testInfo.project.name}-${testInfo.repeatEachIndex}`;
     let lookups = 0;
     await page.route(values.discoveryUrl, async (route) => {
       lookups += 1;
