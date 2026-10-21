@@ -8,6 +8,7 @@ use iroh::{
     Endpoint, EndpointId, RelayUrl, TransportAddr,
 };
 use n0_future::{boxed::BoxStream, StreamExt};
+use std::{sync::Arc, time::Duration};
 
 pub fn relay_url(relay: RelayUrl) -> RelayUrl {
     let mut url = url::Url::from(relay);
@@ -28,7 +29,7 @@ impl AddressLookupBuilder for BrowserLookup {
         endpoint: &Endpoint,
     ) -> Result<impl AddressLookup, AddressLookupBuilderError> {
         let resolver = PkarrResolver::n0_dns().into_address_lookup(endpoint)?;
-        Ok(NormalizedLookup(resolver))
+        Ok(NormalizedLookup(RetryingLookup(Arc::new(resolver))))
     }
 }
 
@@ -61,6 +62,37 @@ impl<T: AddressLookup> AddressLookup for NormalizedLookup<T> {
     }
 }
 
+/// Retry read-only discovery, not QUIC connections or application requests.
+/// A stale hint otherwise consumes the full dial timeout before lookup retries,
+/// leaving very little of the browser's startup budget for a healthy relay.
+#[derive(Debug)]
+struct RetryingLookup<T>(Arc<T>);
+
+impl<T: AddressLookup + 'static> AddressLookup for RetryingLookup<T> {
+    fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<Result<Item, Error>>> {
+        let lookup = self.0.clone();
+        let first = lookup.resolve(endpoint_id)?;
+        Some(Box::pin(n0_future::stream::unfold(
+            (lookup, first, 0u8),
+            move |(lookup, mut stream, mut retries)| async move {
+                loop {
+                    let result = stream.next().await?;
+                    if result.is_err() && retries < 2 {
+                        retries += 1;
+                        n0_future::time::sleep(Duration::from_millis(250 * u64::from(retries)))
+                            .await;
+                        if let Some(next) = lookup.resolve(endpoint_id) {
+                            stream = next;
+                            continue;
+                        }
+                    }
+                    return Some((result, (lookup, stream, retries)));
+                }
+            },
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +120,71 @@ mod tests {
             Some(Box::pin(n0_future::stream::once_future(
                 std::future::ready(Ok(self.0.clone())),
             )))
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingLookup {
+        attempts: std::sync::atomic::AtomicUsize,
+        failures: usize,
+        item: Item,
+    }
+
+    impl AddressLookup for FailingLookup {
+        fn resolve(&self, _: EndpointId) -> Option<BoxStream<Result<Item, Error>>> {
+            let attempt = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let result = if attempt < self.failures {
+                Err(Error::from_err(
+                    "fixture",
+                    std::io::Error::other("temporary lookup failure"),
+                ))
+            } else {
+                Ok(self.item.clone())
+            };
+            Some(Box::pin(n0_future::stream::once_future(
+                std::future::ready(result),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_retries_are_bounded_and_preserve_verified_items() {
+        let id: EndpointId = "f24993f3f0b8fdc751f622fece94da6687e0c30b93301abbbbd28c7508118a0b"
+            .parse()
+            .unwrap();
+        for failures in [0, 2, 3] {
+            let inner = Arc::new(FailingLookup {
+                attempts: std::sync::atomic::AtomicUsize::new(0),
+                failures,
+                item: Item::new(
+                    EndpointInfo::new(id)
+                        .with_relay_url("https://relay.example.org./".parse().unwrap()),
+                    "fixture",
+                    Some(42),
+                ),
+            });
+            let lookup = NormalizedLookup(RetryingLookup(inner.clone()));
+            let mut stream = lookup.resolve(id).unwrap();
+            let result = stream.next().await.unwrap();
+            if failures == 3 {
+                assert!(result.is_err());
+            } else {
+                let item = result.unwrap();
+                assert_eq!(item.endpoint_id(), id);
+                assert_eq!(item.provenance(), "fixture");
+                assert_eq!(item.last_updated(), Some(42));
+                assert_eq!(
+                    item.relay_urls().next().unwrap().as_str(),
+                    "https://relay.example.org/"
+                );
+            }
+            assert!(stream.next().await.is_none());
+            assert_eq!(
+                inner.attempts.load(std::sync::atomic::Ordering::SeqCst),
+                (failures + 1).min(3)
+            );
         }
     }
 

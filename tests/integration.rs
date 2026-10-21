@@ -1330,7 +1330,7 @@ fn http_stream_failures_preserve_shared_tcp_connection() {
                     stream.write_all(&chunk).unwrap();
                 }
             }
-            if !case.starts_with("reset") {
+            if case != "reset-head" {
                 release_receiver.recv_timeout(STARTUP_TIMEOUT).unwrap();
             }
             drop(stream);
@@ -1399,8 +1399,18 @@ fn http_stream_failures_preserve_shared_tcp_connection() {
             let expected_status = if case == "timeout-head" { 504 } else { 502 };
             assert_eq!(response.status, expected_status, "{case}");
         } else {
-            let (response, closed) =
-                send_http_request_allowing_truncated_body(http_port, &format!("/{case}"));
+            let (response, closed) = send_http_request_allowing_truncated_body_after_headers(
+                http_port,
+                &format!("/{case}"),
+                || {
+                    // Do not truncate the upstream until Hyper has delivered
+                    // the response head. Otherwise it may fail the connection
+                    // before the client observes any HTTP status at all.
+                    if case.starts_with("reset") {
+                        release_sender.send(()).unwrap();
+                    }
+                },
+            );
             assert_eq!(response.status, 200, "{case}");
             assert!(closed, "{case}");
             attachment.wait_for("task failed");
@@ -1665,6 +1675,15 @@ fn read_http_response(stream: &mut TcpStream, head_only: bool) -> HttpResponse {
 
 #[cfg(unix)]
 fn send_http_request_allowing_truncated_body(port: u16, path: &str) -> (HttpResponse, bool) {
+    send_http_request_allowing_truncated_body_after_headers(port, path, || {})
+}
+
+#[cfg(unix)]
+fn send_http_request_allowing_truncated_body_after_headers(
+    port: u16,
+    path: &str,
+    after_headers: impl FnOnce(),
+) -> (HttpResponse, bool) {
     let mut stream = connect_with_retry(port);
     write!(
         stream,
@@ -1686,6 +1705,7 @@ fn send_http_request_allowing_truncated_body(port: u16, path: &str) -> (HttpResp
             true,
         );
     };
+    after_headers();
     let header_text = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
     let mut lines = header_text.split("\r\n");
     let status = lines

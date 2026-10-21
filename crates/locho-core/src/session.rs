@@ -298,6 +298,7 @@ impl ConnectionLease {
             let mut stream = ServiceStream {
                 send,
                 recv,
+                send_finished: false,
                 _permit: permit,
             };
             authorize_tcp(&mut stream.send, &mut stream.recv, capability).await?;
@@ -309,19 +310,25 @@ impl ConnectionLease {
             _ = cancel.cancelled() => Err(SessionError::Cancelled),
             result = timeout(deadline, operation) => {
                 let result = result.map_err(|_| SessionError::Timeout(ErrorStage::Handshake))?;
-                if matches!(result, Err(SessionError::Transport(_))) { self.invalidate(); }
+                // STOP_SENDING during a handshake is a stream-local failure,
+                // not evidence that unrelated services need reconnecting.
+                if result.is_err() && self.connection.close_reason().is_some() {
+                    self.invalidate();
+                }
                 result
             }
         }
     }
 }
 
-/// Authorized service I/O. Drop cancels both stream halves and releases capacity.
+/// Authorized service I/O. Drop cancels unfinished I/O and releases capacity.
+/// A gracefully shut down send half retains its buffered data for delivery.
 /// Application code must not replay interrupted requests. This stream is neither
 /// an HTTP response nor a proof of backend user authentication.
 pub struct ServiceStream {
     send: iroh::endpoint::SendStream,
     recv: iroh::endpoint::RecvStream,
+    send_finished: bool,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -352,12 +359,18 @@ impl tokio::io::AsyncWrite for ServiceStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut self.send), cx)
+        let result = tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut self.send), cx);
+        if matches!(result, std::task::Poll::Ready(Ok(()))) {
+            self.send_finished = true;
+        }
+        result
     }
 }
 impl Drop for ServiceStream {
     fn drop(&mut self) {
-        let _ = self.send.reset(0u32.into());
+        if !self.send_finished {
+            let _ = self.send.reset(0u32.into());
+        }
         let _ = self.recv.stop(0u32.into());
     }
 }
@@ -535,8 +548,9 @@ impl SessionDriver {
                         if changed.is_err() || invalidation.borrow().is_none() { break; }
                     }
                     update = paths.next() => {
-                        let Some(update) = update else { break; };
-                        if update.is_empty() { break; }
+                        let Some(_) = update else { break; };
+                        // Path snapshots are advisory. Let QUIC recover from
+                        // temporary path loss until it declares closure.
                         self.path(&connection);
                     }
                 }
@@ -659,6 +673,17 @@ mod tests {
         Connection,
     ) {
         let server = endpoint(true).await;
+        connected_to(server).await
+    }
+
+    async fn connected_to(
+        server: Endpoint,
+    ) -> (
+        PeerSession,
+        tokio::task::JoinHandle<()>,
+        Endpoint,
+        Connection,
+    ) {
         let (session, driver) = PeerSession::start(endpoint(false).await, address(&server));
         let task = tokio::spawn(driver.run());
         let connection = timeout(Duration::from_secs(5), async {
@@ -690,6 +715,129 @@ mod tests {
         .unwrap();
         send.finish().unwrap();
         let _ = send.stopped().await;
+    }
+
+    #[tokio::test]
+    async fn stopped_handshake_write_preserves_existing_stream() {
+        let server = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .alpns(vec![ALPN.to_vec()])
+            .transport_config(
+                iroh::endpoint::QuicTransportConfig::builder()
+                    .stream_receive_window(4u32.into())
+                    .build(),
+            )
+            .bind()
+            .await
+            .unwrap();
+        let (session, driver, server, connection) = connected_to(server).await;
+        let capability = capability::parse("api:tcp:private-secret").unwrap();
+        let peer = connection.clone();
+        let serving = tokio::spawn(async move {
+            let (mut send, mut recv) = peer.accept_bi().await.unwrap();
+            let _: StreamRequestHead = read_json_head(&mut recv, MAX_HEAD_LEN).await.unwrap();
+            write_json_head(
+                &mut send,
+                &LochoResponseHead {
+                    version: PROTOCOL_VERSION,
+                    status: 200,
+                    headers: vec![],
+                    body_len: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+            let (mut rejected_send, mut rejected_recv) = peer.accept_bi().await.unwrap();
+            // The four-byte receive window blocks the handshake JSON write.
+            rejected_recv.stop(1u32.into()).unwrap();
+            rejected_send.reset(1u32.into()).unwrap();
+            let mut ping = [0u8; 4];
+            recv.read_exact(&mut ping).await.unwrap();
+            assert_eq!(&ping, b"ping");
+            send.write_all(b"pong").await.unwrap();
+            send.finish().unwrap();
+            send.stopped().await.unwrap();
+        });
+        let mut existing = session
+            .open_tcp(
+                &capability,
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let error = session
+            .open_tcp(
+                &capability,
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .err();
+        assert_eq!(error, Some(SessionError::Transport(ErrorStage::Handshake)));
+        // Even before the driver gets scheduled, the active lease must remain.
+        assert!(session.owner.connections.borrow().is_some());
+        assert!(connection.close_reason().is_none());
+        existing.write_all(b"ping").await.unwrap();
+        let mut pong = [0u8; 4];
+        existing.read_exact(&mut pong).await.unwrap();
+        assert_eq!(&pong, b"pong");
+        serving.await.unwrap();
+        drop(existing);
+        session.close().await.unwrap();
+        driver.await.unwrap();
+        server.close().await;
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_delivers_buffered_data_after_drop() {
+        let (session, driver, server, connection) = connected().await;
+        let capability = capability::parse("api:tcp:private-secret").unwrap();
+        let payload = vec![42u8; 1024 * 1024];
+        let expected = payload.clone();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(async move {
+            let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+            let _: StreamRequestHead = read_json_head(&mut recv, MAX_HEAD_LEN).await.unwrap();
+            write_json_head(
+                &mut send,
+                &LochoResponseHead {
+                    version: PROTOCOL_VERSION,
+                    status: 200,
+                    headers: vec![],
+                    body_len: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+            send.finish().unwrap();
+            released.await.unwrap();
+            let received = recv.read_to_end(expected.len()).await.unwrap();
+            assert_eq!(received, expected);
+        });
+        let mut stream = session
+            .open_tcp(
+                &capability,
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        // The remote half closes first, as it can during bidirectional relay.
+        let mut byte = [0u8; 1];
+        assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
+        stream.write_all(&payload).await.unwrap();
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        release.send(()).unwrap();
+        timeout(Duration::from_secs(5), serving)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.owner.streams.available_permits(), 512);
+        session.close().await.unwrap();
+        driver.await.unwrap();
+        server.close().await;
     }
 
     #[tokio::test]
