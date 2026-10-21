@@ -16,6 +16,8 @@ sessions. It is intended for beta testing; `1.2.0` remains the stable release.
 - Isolates HTTP upstream failures and truncated responses from other streams on
   the same peer session; hardens stream cancellation, half-close and cleanup so
   one failed request does not disconnect unrelated services.
+- Aligns the host QUIC stream window with its 128-connection TCP budget, avoiding
+  handshake stalls above 100 concurrent streams on a shared peer.
 - Retries transient browser discovery failures within the existing startup budget,
   without replaying application HTTP requests or extending timeouts.
 - Anchors Unix listener operations to verified directory handles, rejects unsafe

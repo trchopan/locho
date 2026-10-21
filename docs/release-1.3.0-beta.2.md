@@ -82,6 +82,26 @@ replayed to mask a transport failure.
 Record the exact committed candidate SHA and results in the release PR. A later
 merge commit must pass its own final gate before tagging.
 
+### Verification progress and discovered capacity defect
+
+Candidate `61c8f5a79a74dae4cf8a2b61d60f32f424195e64` passed the complete clean
+macOS ARM64 release gate, including cargo-dist archive checks and packaged smoke,
+plus executable-only upgrade from checksum-verified published stable `1.2.0`.
+Exact results are recorded in [release PR #119](https://github.com/trchopan/locho/pull/119).
+
+The earlier candidate's [native load run](https://github.com/trchopan/locho/actions/runs/39608843380)
+passed both 15-minute soaks, but failed both Linux/macOS stress profiles at 32
+workers per each of four combinations. Attachment logs showed service handshake
+timeouts; the host inherited a 100-bidirectional-stream QUIC window while the
+stress profile requested 128 simultaneous streams on one peer.
+
+The host now explicitly admits its existing 128-connection TCP budget at the QUIC
+layer. The focused `one_peer_supports_the_full_tcp_connection_budget` regression
+fails at stream 101 with the old binary and passes all 128 with this change. The
+stress profile, timeouts and failure gates are unchanged. Full clean-candidate
+verification and hosted load acceptance must be repeated for the fix; earlier
+green results do not verify these later changes.
+
 - [ ] Clean committed candidate with consistent beta.2 metadata and release notes.
 - [ ] `scripts/verify-release.sh` on Linux or macOS, including cargo-dist archive smoke.
 - [ ] `scripts/Verify-Release.ps1` on Windows.
