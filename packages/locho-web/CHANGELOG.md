@@ -2,6 +2,9 @@
 
 ## 0.1.0-beta.3
 
+- Refresh cached peer relay hints from identity-matching discovery before initial
+  dialing, bounded within the existing startup deadline. Keep explicit hints when
+  discovery is unavailable; never replay an application request.
 - Add opt-in 15-minute metadata session soak tests (up to 60 minutes), covering
   pages/module service workers, slot/socket recovery and credential-free metrics;
   run nightly/manually, separate from short PR smoke checks.

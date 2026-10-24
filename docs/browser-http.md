@@ -5,6 +5,20 @@ TCP stream; it does not call `window.fetch` for the homelab API. One stream is o
 per request, with no pooling, pipelining or automatic replay. The peer session is
 reused. This API requires a parsed TCP ticket.
 
+Peer relay URLs are cached addressing hints, not an API-readiness guarantee. When
+hints are supplied, browser startup first allows up to two seconds for the existing
+address lookup to produce an identity-matching record with a usable relay. A usable
+record replaces the initial dial hints; unavailable, empty, direct-only or slow
+discovery retains the supplied hints. This refresh consumes the existing 15-second
+peer-connect budget and remains cancellable. Discovery without supplied hints keeps
+the normal lookup path. No QUIC retry or application-request replay is added by
+the refresh. Peer identity verification and service authorization remain unchanged.
+
+Public-N0 stale-hint first-request timeouts have been observed even after peer
+connectivity reports connected. Relay refresh is a targeted mitigation, not proof
+that all public-relay failures are eliminated. Validate the first application
+response explicitly and do not automatically replay interrupted writes.
+
 ```ts
 const ticket = await LochoTicket.parse(ticketText);
 const client = await LochoClient.connect({ ticket, http: { authority: 'sample-api' } });

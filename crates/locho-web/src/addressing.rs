@@ -5,9 +5,9 @@ use iroh::{
         AddressLookup, AddressLookupBuilder, AddressLookupBuilderError, EndpointData, EndpointInfo,
         Error, Item, PkarrResolver,
     },
-    Endpoint, EndpointId, RelayUrl, TransportAddr,
+    Endpoint, EndpointAddr, EndpointId, RelayUrl, TransportAddr,
 };
-use n0_future::{boxed::BoxStream, StreamExt};
+use n0_future::{boxed::BoxStream, Stream, StreamExt};
 use std::{sync::Arc, time::Duration};
 
 pub fn relay_url(relay: RelayUrl) -> RelayUrl {
@@ -18,6 +18,45 @@ pub fn relay_url(relay: RelayUrl) -> RelayUrl {
         url.set_host(Some(&host)).expect("valid DNS hostname");
     }
     RelayUrl::from(url)
+}
+
+/// Treat supplied relays as cached hints, not as authoritative addressing.
+/// When discovery succeeds, keep a dead cached hint out of the initial dial's
+/// path candidates. Failed/slow lookup retains the hint for offline discovery.
+pub async fn initial_target(endpoint: &Endpoint, hint: EndpointAddr) -> EndpointAddr {
+    if hint.relay_urls().next().is_none() {
+        return hint;
+    }
+    let Ok(lookup) = endpoint.address_lookup() else {
+        return hint;
+    };
+    let results = lookup
+        .resolve(hint.id)
+        .filter_map(|result| result.ok().and_then(Result::ok));
+    prefer_resolved_relay(hint, results, Duration::from_secs(2)).await
+}
+
+async fn prefer_resolved_relay(
+    hint: EndpointAddr,
+    results: impl Stream<Item = Item>,
+    budget: Duration,
+) -> EndpointAddr {
+    let resolve = async {
+        n0_future::pin!(results);
+        while let Some(item) = results.next().await {
+            // Browser transports need a relay; direct-only or foreign records
+            // must not discard a usable hint or change the peer identity.
+            if item.endpoint_id() == hint.id && item.relay_urls().next().is_some() {
+                return Some(item.into_endpoint_addr());
+            }
+        }
+        None
+    };
+    n0_future::time::timeout(budget, resolve)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(hint)
 }
 
 #[derive(Debug)]
@@ -96,6 +135,66 @@ impl<T: AddressLookup + 'static> AddressLookup for RetryingLookup<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resolved_relay_replaces_stale_hint_without_changing_identity() {
+        let id: EndpointId = "f24993f3f0b8fdc751f622fece94da6687e0c30b93301abbbbd28c7508118a0b"
+            .parse()
+            .unwrap();
+        let hint = EndpointAddr::new(id).with_relay_url("https://127.0.0.1:1/".parse().unwrap());
+        let resolved =
+            EndpointInfo::new(id).with_relay_url("https://relay.example.org/".parse().unwrap());
+        let stream = n0_future::stream::iter([Item::new(resolved.clone(), "fixture", Some(42))]);
+        let target = prefer_resolved_relay(hint, stream, Duration::from_millis(100)).await;
+        assert_eq!(target, resolved.into_endpoint_addr());
+    }
+
+    #[tokio::test]
+    async fn unusable_or_slow_discovery_retains_explicit_hint() {
+        let id: EndpointId = "f24993f3f0b8fdc751f622fece94da6687e0c30b93301abbbbd28c7508118a0b"
+            .parse()
+            .unwrap();
+        let other: EndpointId = "1111111111111111111111111111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        let hint =
+            EndpointAddr::new(id).with_relay_url("https://hint.example.org/".parse().unwrap());
+        let stream = n0_future::stream::iter([
+            Item::new(
+                EndpointInfo::new(other)
+                    .with_relay_url("https://other.example.org/".parse().unwrap()),
+                "fixture",
+                None,
+            ),
+            Item::new(
+                EndpointInfo::new(id).with_ip_addrs(vec!["127.0.0.1:1234".parse().unwrap()]),
+                "fixture",
+                None,
+            ),
+        ]);
+        assert_eq!(
+            prefer_resolved_relay(hint.clone(), stream, Duration::from_millis(100)).await,
+            hint
+        );
+        assert_eq!(
+            prefer_resolved_relay(
+                hint.clone(),
+                n0_future::stream::pending(),
+                Duration::from_millis(10)
+            )
+            .await,
+            hint
+        );
+        assert_eq!(
+            prefer_resolved_relay(
+                hint.clone(),
+                n0_future::stream::empty(),
+                Duration::from_millis(100)
+            )
+            .await,
+            hint
+        );
+    }
 
     #[test]
     fn normalizes_dns_root_dot_without_changing_port_or_path() {

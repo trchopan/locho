@@ -100,13 +100,17 @@ test.describe('official N0 relay integration', () => {
           }
         }));
       }, { ...values, authority });
-      expect(results).toEqual([0, 1].map(() => ({
-        status: 200, body: values.expectedBody, path: values.expectedPath,
-      })));
+      const upstreamRequests = [];
       for (const index of [0, 1]) {
         const counts = await (await request.get(`${values.controlUrl}/?authority=${authority}-${index}`)).json();
-        expect(counts.requests).toBe(1);
+        upstreamRequests.push(counts.requests);
       }
+      // Diagnose whether a timeout happened before HTTP reached the backend,
+      // without logging tickets, request headers, response bytes or relay URLs.
+      expect({ results, upstreamRequests }).toEqual({
+        results: [0, 1].map(() => ({ status: 200, body: values.expectedBody, path: values.expectedPath })),
+        upstreamRequests: [1, 1],
+      });
     });
   }
 

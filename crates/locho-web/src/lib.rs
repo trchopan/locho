@@ -337,6 +337,15 @@ async fn connect_inner(
     for relay in peer_relays {
         target = target.with_relay_url(relay);
     }
+    let started = n0_future::time::Instant::now();
+    let target = tokio::select! {
+        biased;
+        // Retain ownership for the normal session shutdown path below.
+        _ = cancellation.token.cancelled() => target.clone(),
+        target = addressing::initial_target(&endpoint, target.clone()) => target,
+    };
+    // Address refresh consumes the existing startup budget, not extra time.
+    let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
     let (session, driver) = PeerSession::start(endpoint, target);
     let session = Arc::new(session);
     wasm_bindgen_futures::spawn_local(driver.run());
@@ -344,8 +353,8 @@ async fn connect_inner(
         biased;
         _ = cancellation.token.cancelled() => Err(JsValue::from_str("cancelled")),
         result = timeout(
-        Duration::from_secs(15),
-        session.wait_connected(Duration::from_secs(15)),
+        remaining,
+        session.wait_connected(remaining),
         ) => match result {
             Ok(result) => result.map_err(map_error),
             Err(_) => Err(JsValue::from_str("startupTimeout")),
