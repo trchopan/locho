@@ -386,7 +386,8 @@ accepted for migration, but new commands should use the capability-token form.
 
 Released binaries are published on the
 [GitHub Releases page](https://github.com/trchopan/locho/releases). The
-supported CLI distribution targets for stable `1.2.0` and `1.3.0-beta.2` are:
+supported CLI distribution targets for stable `1.2.0` and the `1.3.0-beta.3`
+candidate are:
 
 - Linux x86_64 and ARM64
 - macOS x86_64 and Apple silicon
@@ -408,34 +409,38 @@ Get-Content .\locho-installer.ps1
 .\locho-installer.ps1
 ```
 
-### Testing 1.3.0-beta.2
+### Testing 1.3.0-beta.3
 
 The latest-release installers above follow the stable channel. To test the beta,
 use its version-specific installer after the prerelease is published:
 
+Until beta.3 is published, the previously published CLI beta is `1.3.0-beta.2`.
+
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.2/locho-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.sh | sh
 locho --version
 ```
 
 ```powershell
 Invoke-WebRequest `
-  https://github.com/trchopan/locho/releases/download/v1.3.0-beta.2/locho-installer.ps1 `
+  https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.ps1 `
   -OutFile locho-beta-installer.ps1
 Get-Content .\locho-beta-installer.ps1
 .\locho-beta-installer.ps1
 locho --version
 ```
 
-Expect `locho 1.3.0-beta.2 (commit <full-sha>, clean)`. Browser and Flutter SDKs
-are independently versioned; their `0.1.0-beta.3` release is tracked separately
-from this CLI release. See
+Expect `locho 1.3.0-beta.3 (commit <full-sha>, clean)`. Browser and Flutter SDKs
+are independently versioned; coordinated `0.1.0-beta.3` registry publication
+is tracked separately from the CLI tag. A CLI upgrade does not update SDKs. See
 [SDK installation](docs/sdk-releases.md) and the
-[beta scope and verification record](docs/release-1.3.0-beta.2.md).
+[beta scope and verification record](docs/release-1.3.0-beta.3.md).
 Linux ARM64 native verification remains pending; a cross-build alone is not runtime
 acceptance. Physical iOS/mobile-browser and broad device/network acceptance also
 remain open for this beta. Browser discovery with stale relay hints can still
-intermittently time out over public N0 relays; iroh 1.4.0 is not a demonstrated fix.
+intermittently time out over public N0 relays. The browser relay-key correction is
+not proof every timeout is resolved; requests are not replayed and deadlines are
+unchanged.
 
 ### Manual installation and upgrades
 

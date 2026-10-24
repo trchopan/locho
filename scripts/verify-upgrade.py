@@ -141,18 +141,28 @@ def check_tcp(port, rejected=False):
             require(body == b"locho-upgrade-tcp", "TCP forwarding body mismatch")
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--previous-binary", type=Path, required=True)
+    parser.add_argument("--previous-version", default="1.2.0",
+                        help="Exact published baseline version (default: 1.2.0)")
     parser.add_argument("--candidate-binary", type=Path, required=True)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def check_version(output, version):
+    require(re.fullmatch(rf"locho {re.escape(version)} \(commit [0-9a-f]{{40}}, clean\)", output),
+            "Binary version or clean release provenance mismatch")
+
+
+def main():
+    args = parse_args()
     previous, candidate = args.previous_binary.resolve(), args.candidate_binary.resolve()
     with (Path(__file__).resolve().parent.parent / "Cargo.toml").open("rb") as manifest:
         candidate_version = tomllib.load(manifest)["package"]["version"]
-    for binary, version in [(previous, "1.2.0"), (candidate, candidate_version)]:
+    for binary, version in [(previous, args.previous_version), (candidate, candidate_version)]:
         output = run([str(binary), "--version"])
-        require(re.fullmatch(rf"locho {re.escape(version)} \(commit [0-9a-f]{{40}}, clean\)", output),
-                "Binary version or clean release provenance mismatch")
+        check_version(output, version)
         print(f"Verified clean Locho {version} binary")
 
     with tempfile.TemporaryDirectory(prefix="locho-upgrade-") as temporary, ExitStack() as stack:
@@ -217,10 +227,11 @@ def main():
                     process.close()
 
         for client in [previous, candidate]:
-            print(f"Checking {'1.2.0' if client == previous else 'beta'} client against 1.2.0 host")
+            client_version = args.previous_version if client == previous else candidate_version
+            print(f"Checking {client_version} client against {args.previous_version} host")
             exercise(client)
         old_host.close()
-        print("Both client versions pass HTTP/TCP against the 1.2.0 host")
+        print(f"Both client versions pass HTTP/TCP against the {args.previous_version} host")
 
         new_host = host(candidate)
         require(json.loads((state / "host_state.json").read_text()) == before,
@@ -229,7 +240,8 @@ def main():
         for service, token in tokens.items():
             require(capability(candidate, service) == token, "Service capability changed during upgrade")
         for client in [previous, candidate]:
-            print(f"Checking {'1.2.0' if client == previous else 'beta'} client against beta host")
+            client_version = args.previous_version if client == previous else candidate_version
+            print(f"Checking {client_version} client against {candidate_version} host")
             exercise(client)
         ticket = run([str(candidate), "share", "database", "--config", str(config), "--ticket"], env)
         require(ticket.startswith("locho1:"), "Candidate ticket prefix mismatch")
