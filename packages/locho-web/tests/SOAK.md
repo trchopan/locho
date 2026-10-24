@@ -78,6 +78,8 @@ latency and memory trends are for investigation, without arbitrary pass threshol
 ## CI
 
 `.github/workflows/browser.yml` keeps normal regressions/smoke on PRs and main pushes.
+Hosted CI runs functional cases with one worker to avoid cross-test live-relay/CPU
+contention; deliberate concurrency within individual tests remains enabled.
 A separate soak job runs nightly at 03:30 UTC and on manual dispatch, using the
 freshly built production browser bundle and host. The manual `soak_seconds` input
 defaults to 900 and supports up to 3600. The job uploads credential-free aggregate
