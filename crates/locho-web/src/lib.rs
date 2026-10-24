@@ -322,6 +322,7 @@ async fn connect_inner(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let builder = Endpoint::builder(presets::N0)
+        .relay_mode(addressing::default_relay_mode())
         .clear_address_lookup()
         .address_lookup(PkarrPublisher::n0_dns())
         .address_lookup(addressing::BrowserLookup);
