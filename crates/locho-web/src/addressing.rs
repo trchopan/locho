@@ -1,4 +1,4 @@
-//! Browser relay URL compatibility at the address-lookup boundary.
+//! Browser relay URL compatibility for client policy and peer discovery.
 
 use iroh::{
     address_lookup::{
@@ -18,6 +18,30 @@ pub fn relay_url(relay: RelayUrl) -> RelayUrl {
         url.set_host(Some(&host)).expect("valid DNS hostname");
     }
     RelayUrl::from(url)
+}
+
+pub fn default_relay_mode() -> iroh::RelayMode {
+    client_relay_mode(iroh::endpoint::default_relay_mode())
+}
+
+fn client_relay_mode(mode: iroh::RelayMode) -> iroh::RelayMode {
+    if matches!(mode, iroh::RelayMode::Disabled) {
+        return mode;
+    }
+    // Relay actor identity is URL-keyed. Use the same spelling for home policy
+    // and peer addresses so a DNS root dot cannot create a second actor for the
+    // same physical relay. Preserve all other relay options and server selection.
+    let relays = mode
+        .relay_map()
+        .relays::<Vec<_>>()
+        .into_iter()
+        .map(|config| {
+            let mut config = config.as_ref().clone();
+            config.url = relay_url(config.url);
+            config
+        })
+        .collect();
+    iroh::RelayMode::Custom(relays)
 }
 
 #[derive(Debug)]
@@ -96,6 +120,47 @@ impl<T: AddressLookup + 'static> AddressLookup for RetryingLookup<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_policy_and_peer_lookup_use_the_same_relay_keys() {
+        for mode in [iroh::RelayMode::Default, iroh::RelayMode::Staging] {
+            let original = mode.relay_map();
+            let client = client_relay_mode(mode).relay_map();
+            assert_eq!(client.len(), original.len());
+            for relay in original.relays::<Vec<_>>() {
+                let peer_key = relay_url(relay.url.clone());
+                assert!(
+                    client.contains(&peer_key),
+                    "client policy and normalized peer lookup must share a relay key"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn client_policy_preserves_non_url_options_and_disabled_mode() {
+        let mut config = iroh::RelayConfig::from(
+            "https://relay.example.org.:444/"
+                .parse::<RelayUrl>()
+                .unwrap(),
+        )
+        .with_auth_token("disposable-test-token");
+        config.quic.as_mut().unwrap().port = 9999;
+        let mode = client_relay_mode(iroh::RelayMode::Custom(
+            [config.clone()].into_iter().collect(),
+        ));
+        let map = mode.relay_map();
+        assert_eq!(map.len(), 1);
+        let result = map
+            .get(&"https://relay.example.org:444/".parse().unwrap())
+            .unwrap();
+        assert_eq!(result.quic, config.quic);
+        assert_eq!(result.auth_token, config.auth_token);
+        assert_eq!(
+            client_relay_mode(iroh::RelayMode::Disabled),
+            iroh::RelayMode::Disabled
+        );
+    }
 
     #[test]
     fn normalizes_dns_root_dot_without_changing_port_or_path() {
