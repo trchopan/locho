@@ -153,6 +153,7 @@ export default async function globalSetup() {
   const pending = new Map();
   const requests = new Map();
   const sockets = new Map();
+  let tcpConnections = 0;
   const upstream = createServer((request, response) => {
     const authority = request.headers.host;
     let owned = sockets.get(authority);
@@ -238,6 +239,7 @@ export default async function globalSetup() {
     response.writeHead(404, { Connection: 'close' });
     response.end();
   });
+  upstream.on('connection', () => { tcpConnections++; });
   const control = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     const authority = url.searchParams.get('authority');
@@ -246,7 +248,7 @@ export default async function globalSetup() {
     }
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({ active: pending.has(authority), requests: requests.get(authority) ?? 0,
-      sockets: sockets.get(authority)?.size ?? 0, fixtureRssBytes: process.memoryUsage().rss }));
+      sockets: sockets.get(authority)?.size ?? 0, fixtureRssBytes: process.memoryUsage().rss, tcpConnections }));
   });
   const cleanup = async () => {
     try {

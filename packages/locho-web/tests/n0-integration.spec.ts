@@ -70,6 +70,7 @@ test.describe('official N0 relay integration', () => {
     test(`concurrent stale-hint clients complete their first HTTP request (discovery delay ${discoveryDelayMs}ms)`, async ({ page, request }, testInfo) => {
       const values = fixture();
       const authority = `stale-first-${discoveryDelayMs}-${testInfo.project.name}-${testInfo.repeatEachIndex}`;
+      const before = await (await request.get(values.controlUrl)).json();
       if (discoveryDelayMs > 0) {
         await page.route(values.discoveryUrl, async (route) => {
           // Delay only address discovery: use the real signed record and relay,
@@ -100,13 +101,23 @@ test.describe('official N0 relay integration', () => {
           }
         }));
       }, { ...values, authority });
-      expect(results).toEqual([0, 1].map(() => ({
-        status: 200, body: values.expectedBody, path: values.expectedPath,
-      })));
+      const upstreamRequests = [];
       for (const index of [0, 1]) {
         const counts = await (await request.get(`${values.controlUrl}/?authority=${authority}-${index}`)).json();
-        expect(counts.requests).toBe(1);
+        upstreamRequests.push(counts.requests);
       }
+      const after = await (await request.get(values.controlUrl)).json();
+      // Aggregate TCP counts can include other tests under parallel local runs;
+      // keep them as credential-free diagnostics, not a per-client assertion.
+      await testInfo.attach('upstream-first-request-counts', {
+        body: JSON.stringify({ upstreamRequests, tcpConnections: after.tcpConnections - before.tcpConnections }),
+        contentType: 'application/json',
+      });
+      expect({ results, upstreamRequests },
+        `Upstream TCP connections opened during case (aggregate): ${after.tcpConnections - before.tcpConnections}`).toEqual({
+        results: [0, 1].map(() => ({ status: 200, body: values.expectedBody, path: values.expectedPath })),
+        upstreamRequests: [1, 1],
+      });
     });
   }
 
