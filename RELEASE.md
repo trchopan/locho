@@ -26,8 +26,11 @@ their registry gates are in [SDK beta.3](docs/sdk-0.1.0-beta.3.md).
 - [ ] Verify the documented HTTP and TCP quickstarts with the packaged binary.
 - [ ] Verify host identity and service capabilities survive an executable-only
       upgrade.
-      Run `python3 scripts/verify-upgrade.py --previous-binary <released-1.2.0>
-      --candidate-binary <packaged-candidate>` with Python 3.11+ and OpenSSL.
+       Run `python3 scripts/verify-upgrade.py --previous-binary <released-1.2.0>
+       --candidate-binary <packaged-candidate>` with Python 3.11+ and OpenSSL.
+       Repeat for the current CLI beta using the checksum-verified binary and an
+       explicit `--previous-version 1.3.0-beta.2`; exact version/clean-provenance
+       checks remain required for both baselines.
 - [ ] Verify stale capabilities fail after rotation and unaffected services keep
       working.
 - [ ] Review logs and diagnostics for leaked capabilities or private keys.

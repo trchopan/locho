@@ -61,6 +61,8 @@ Preparation-branch results must be distinguished from final merged-SHA results.
       TCP/Unix combinations, with exact candidate binary provenance.
 - [ ] Executable-only upgrade from checksum-verified stable `1.2.0` and current
       CLI beta.2 preserves identity/capabilities and verifies scoped rotation.
+      The verifier defaults to stable; the beta.2 run must explicitly pass
+      `--previous-version 1.3.0-beta.2` and retain exact clean-provenance checks.
 - [ ] Fresh browser WASM/TS/package/production builds; full ordinary source and
       installed-tarball tests on all engines with the pinned reference backend.
 - [ ] Fresh 900-second page/module-worker browser soak on all three engines.
