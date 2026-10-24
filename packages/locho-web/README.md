@@ -10,7 +10,7 @@ browser-only beta package; it does not replace the browser's native `window.fetc
 ## Install
 
 ```sh
-npm install --save-exact locho_web@0.1.0-beta.2
+npm install --save-exact locho_web@0.1.0-beta.3
 ```
 
 The package includes ESM, TypeScript declarations and the WASM runtime. Consumer

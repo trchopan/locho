@@ -1,5 +1,17 @@
 # SDK beta releases
 
+## 0.1.0-beta.3 — release candidate (not yet published)
+
+Both SDKs are preparing a new beta from merged PR #121. Browser beta.3 adds opt-in
+upstream response metadata for application-managed cookie sessions. Flutter beta.3
+refreshes its bundled core/native implementation; it does not add browser APIs.
+Both incorporate transport/lifecycle updates and ctutils 0.4.4 security fixes.
+
+Registry beta.2 remains available until publication and verification complete.
+See [beta.3 release gates](sdk-0.1.0-beta.3.md) for scope, exact-candidate evidence
+requirements and publication/registry acceptance. No stable-channel promotion or
+CLI release is part of this SDK release.
+
 ## 0.1.0-beta.2 — Browser — 2026-10-17
 
 The browser package now has an app-developer README covering installation, ticket

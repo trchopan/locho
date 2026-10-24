@@ -1,7 +1,7 @@
 # Flutter standalone source-build package
 
 `scripts/package-flutter.py` creates a self-contained staging package at
-`target/flutter-package/locho_flutter`, a `locho_flutter-0.1.0-beta.2.tar.gz`
+`target/flutter-package/locho_flutter`, a `locho_flutter-0.1.0-beta.3.tar.gz`
 archive, a SHA-256 sidecar and a file manifest. CI uploads the output as
 `locho-flutter-source-package`. The staging directory is also the pub.dev
 publication input. Native libraries are built from source, not downloaded.
@@ -12,7 +12,7 @@ Use the hosted beta for ordinary application installation:
 
 ```yaml
 dependencies:
-  locho_flutter: 0.1.0-beta.2
+  locho_flutter: 0.1.0-beta.3
 ```
 
 Run `flutter pub get` and retain the application lockfile. No vendor bootstrap or
@@ -20,8 +20,8 @@ GitHub credentials are needed. For prepublication verification or retained archi
 download the archive and checksum together and extract outside the SDK checkout:
 
 ```sh
-shasum -a 256 -c locho_flutter-0.1.0-beta.2.tar.gz.sha256
-tar -xzf locho_flutter-0.1.0-beta.2.tar.gz
+shasum -a 256 -c locho_flutter-0.1.0-beta.3.tar.gz.sha256
+tar -xzf locho_flutter-0.1.0-beta.3.tar.gz
 ```
 
 Reference the extracted package from your application's pubspec:
@@ -99,7 +99,7 @@ upgrading consumers, and verify registry installation in a fresh app afterward.
 python3 scripts/package-flutter.py
 python3 scripts/test-flutter-package.py --platform android
 # Verify the actual pub.dev package in a fresh external app:
-python3 scripts/test-flutter-package.py --platform android --hosted 0.1.0-beta.2
+python3 scripts/test-flutter-package.py --platform android --hosted 0.1.0-beta.3
 # Optional real runtime acceptance (release CLI and reference API must be built):
 python3 scripts/test-flutter-package.py --platform android --device emulator-5554
 python3 scripts/test-flutter-package.py --platform ios

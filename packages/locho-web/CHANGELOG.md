@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.3
 
 - Add opt-in 15-minute metadata session soak tests (up to 60 minutes), covering
   pages/module service workers, slot/socket recovery and credential-free metrics;
@@ -10,6 +10,11 @@
   Set-Cookie fields, for application-managed sessions (#120).
 - Preserve existing response APIs and streaming ownership; document credential
   handling and the distinction from browser-managed cookies.
+- Update bundled transport to iroh 1.4.0, with shared-peer stream lifecycle and
+  cancellation hardening and bounded read-only discovery retries. Public-N0
+  stale-hint timeouts remain a known limitation; application writes are not replayed.
+- Update ctutils to 0.4.4 to address RUSTSEC-2026-0385. Wire protocol 3 and ticket
+  format 1 remain unchanged; no host CLI upgrade is required by the metadata APIs.
 
 ## 0.1.0-beta.2
 
