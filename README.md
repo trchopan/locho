@@ -428,8 +428,8 @@ locho --version
 ```
 
 Expect `locho 1.3.0-beta.2 (commit <full-sha>, clean)`. Browser and Flutter SDKs
-remain independently versioned at `0.1.0-beta.2`; this CLI release does not
-republish those packages. See
+are independently versioned; their `0.1.0-beta.3` release is tracked separately
+from this CLI release. See
 [SDK installation](docs/sdk-releases.md) and the
 [beta scope and verification record](docs/release-1.3.0-beta.2.md).
 Linux ARM64 native verification remains pending; a cross-build alone is not runtime

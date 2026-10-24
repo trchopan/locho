@@ -13,7 +13,7 @@ Add the package and an HTTP client to `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  locho_flutter: 0.1.0-beta.2
+  locho_flutter: 0.1.0-beta.3
   http: ^1.6.0
 ```
 

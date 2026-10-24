@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-beta.3
+
+- Refresh bundled Locho core/native sources with shared-peer stream lifecycle,
+  failure-isolation and cancellation hardening, and iroh 1.4.0 transport support.
+- Update ctutils to 0.4.4 to address RUSTSEC-2026-0385.
+- Keep the public Flutter API, FRB runtime/codegen pin (2.12.0), wire protocol 3
+  and ticket format 1 unchanged. Native sources are still bundled and built with
+  Rust during consumer builds; no prebuilt native downloads are introduced.
+- Foreground-only lifecycle and existing physical-device/network verification
+  limitations remain. Browser upstream-header APIs are not Flutter APIs.
+
 ## 0.1.0-beta.2
 
 - Rewrite the README as an app-developer quickstart with install, ticket setup,
