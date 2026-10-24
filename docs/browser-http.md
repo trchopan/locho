@@ -34,7 +34,7 @@ try {
 
 Only these request options are supported. Fetch options such as `credentials`,
 `redirect`, `cache`, `mode`, `integrity`, `keepalive` and upload streams are rejected.
-FormData, Blob, Request objects, cookies and automatic JSON serialization are not
+FormData, Blob, Request objects, automatic cookies and automatic JSON serialization are not
 implemented. The existing `health` proof remains available for compatibility.
 
 Caller framing/hop-by-hop headers are rejected: Host, Content-Length,
@@ -145,6 +145,59 @@ standard Headers semantics; Set-Cookie has no browser cookie-jar effect. Hop-by-
 Connection-nominated fields and upstream Content-Length are removed after decoding.
 Header values outside ASCII are currently rejected. CORS, cache behavior, native
 HTTP authentication and browser cookie management are not inherited.
+
+## Opt-in upstream response metadata
+
+`fetchWithMetadata(path, options)` and `fetchStreamWithMetadata(path, options)`
+return `Promise<LochoResponseWithMetadata>`:
+
+```ts
+interface LochoResponseWithMetadata {
+  readonly response: Response;
+  readonly upstreamHeaders: ReadonlyArray<readonly [string, string]>;
+}
+```
+
+The buffered method uses `LochoRequestOptions` and resolves after body buffering.
+The streaming method uses `LochoStreamRequestOptions` and resolves at final headers,
+without consuming the body. The `response` has the same semantics as its existing
+counterpart, including bodyless statuses, deadlines, cancellation and resource
+ownership. Consume or cancel the streaming `response.body`, even if only inspecting
+metadata. Existing `fetch` and `fetchStream` continue to return just `Response`.
+
+The result, header list and individual pairs are frozen. Header pairs preserve
+the parsed order and repeated fields, including separate `Set-Cookie` values and
+their expiry/deletion attributes, independently of browser header filtering or
+combining. Never split or join cookie fields on commas: `Expires` includes commas.
+This is the final response's metadata before browser `Response` processing, not
+raw HTTP bytes: the existing parser lowercases field names, trims surrounding
+whitespace, rejects non-ASCII values, and strips hop-by-hop, Connection-nominated
+and Content-Length fields. Informational responses and trailers are not exposed.
+No host, native client, ticket or wire-protocol change is required.
+
+### Sensitive metadata and application-managed sessions
+
+Raw headers can contain credentials. Never log them, serialize them into diagnostics
+or page messages, or persist them by default. An application may process each
+`set-cookie` pair in a narrowly scoped in-memory session handler and explicitly send
+`Cookie` on authorized requests. That handler must validate service/path scope,
+expiry and deletion attributes; never share credentials across tickets or services.
+Clear state on logout or ticket changes. A service-worker gateway must remove
+sensitive headers before returning responses to the page, and must account for
+worker termination discarding in-memory state. Same-origin page scripts remain
+part of the application's trust boundary.
+
+There is no SDK cookie jar, automatic cookie attachment, browser cookie-jar update,
+or native `HttpOnly`/`SameSite` enforcement for this application-managed state.
+Access to metadata alone does not promise compatibility with every existing
+cookie-authenticated application.
+
+Metadata integration tests use a disposable cookie-auth fixture for buffered and
+streaming login/authenticated request/logout, repeated fields, expiry/deletion,
+HEAD/204 responses and immutable header pairs. The browser matrix also runs the
+SDK inside classic and module service workers, returning only non-sensitive
+assertions to the page, and exercises pending-read abort/cancel, setup/idle
+timeouts, operation-capacity recovery and close of unread streamed bodies.
 
 ## Evidence
 

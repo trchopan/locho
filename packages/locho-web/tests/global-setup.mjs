@@ -152,9 +152,38 @@ export default async function globalSetup() {
   let notesApp;
   const pending = new Map();
   const requests = new Map();
+  const sockets = new Map();
   const upstream = createServer((request, response) => {
+    const authority = request.headers.host;
+    let owned = sockets.get(authority);
+    if (!owned) { owned = new Set(); sockets.set(authority, owned); }
+    if (!owned.has(request.socket)) {
+      owned.add(request.socket);
+      request.socket.once('close', () => {
+        owned.delete(request.socket);
+        if (owned.size === 0) sockets.delete(authority);
+      });
+    }
+    if (request.url === '/cookie-login') {
+      response.writeHead(200, {
+        'Set-Cookie': [
+          'session=synthetic; Path=/; HttpOnly; Secure; SameSite=Lax',
+          'preference=one; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/',
+        ],
+        'X-Test': ['one', 'two'],
+      });
+      response.end('logged in'); return;
+    }
+    if (request.url === '/cookie-session') {
+      const authenticated = request.headers.cookie === 'session=synthetic';
+      response.writeHead(authenticated ? 200 : 401); response.end(); return;
+    }
+    if (request.url === '/cookie-logout') {
+      response.writeHead(204, { 'Set-Cookie': 'session=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; HttpOnly' });
+      response.end(); return;
+    }
     if (request.url === '/stream' || request.url === '/stream-idle') {
-      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Set-Cookie': 'stream=synthetic; Path=/; HttpOnly' });
       response.write(': connected\n\n');
       const timer = request.url === '/stream' ? setInterval(() => response.write(': heartbeat\n\n'), 100) : undefined;
       pending.set(request.headers.host, response);
@@ -216,7 +245,8 @@ export default async function globalSetup() {
       pending.get(authority)?.destroy();
     }
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ active: pending.has(authority), requests: requests.get(authority) ?? 0 }));
+    response.end(JSON.stringify({ active: pending.has(authority), requests: requests.get(authority) ?? 0,
+      sockets: sockets.get(authority)?.size ?? 0, fixtureRssBytes: process.memoryUsage().rss }));
   });
   const cleanup = async () => {
     try {

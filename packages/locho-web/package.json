@@ -22,7 +22,9 @@
     "build:production": "vite build examples/minimal --config vite.config.ts --outDir ../../dist/browser --emptyOutDir",
     "dev": "vite examples/minimal",
     "preview": "vite preview --outDir dist/browser",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:smoke": "playwright test tests/smoke.spec.ts tests/metadata.spec.ts",
+    "test:soak": "playwright test --config playwright.soak.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

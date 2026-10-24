@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'tests',
+  testIgnore: '**/*.soak.spec.ts',
   timeout: 30_000,
   globalSetup: './tests/global-setup.mjs',
   use: { baseURL: process.env.LOCHO_BROWSER_URL ?? 'http://127.0.0.1:4173' },

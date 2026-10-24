@@ -448,6 +448,29 @@ pub async fn read<R: AsyncRead + Unpin>(stream: R, method: &str) -> Result<Respo
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn cookie_headers_preserve_order_duplicates_and_attributes() {
+        let bytes = b"HTTP/1.1 200 OK\r\nSet-Cookie: session=synthetic; Path=/; HttpOnly; Secure; SameSite=Lax\r\nSet-Cookie: preference=one; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/\r\nSet-Cookie: session=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        let buffered = read(bytes.as_slice(), "GET").await.unwrap();
+        let (streamed, _) = head(bytes.as_slice(), "GET").await.unwrap();
+        let expected = vec![
+            (
+                "set-cookie".into(),
+                "session=synthetic; Path=/; HttpOnly; Secure; SameSite=Lax".into(),
+            ),
+            (
+                "set-cookie".into(),
+                "preference=one; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/".into(),
+            ),
+            (
+                "set-cookie".into(),
+                "session=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/".into(),
+            ),
+        ];
+        assert_eq!(buffered.headers, expected);
+        assert_eq!(streamed.headers, expected);
+    }
+
+    #[tokio::test]
     async fn streaming_returns_headers_and_partial_chunk_before_completion() {
         use tokio::io::AsyncWriteExt;
         let (mut writer, reader) = tokio::io::duplex(64);

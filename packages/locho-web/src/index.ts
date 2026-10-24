@@ -45,6 +45,16 @@ export interface LochoStreamRequestOptions extends Omit<LochoRequestOptions, 'ti
   /** Upstream read inactivity while pulling; consumer pauses do not count. Default 75000. */
   idleTimeoutMs?: number;
 }
+export interface LochoResponseWithMetadata {
+  readonly response: Response;
+  /** Parsed upstream headers before browser filtering. May contain credentials; do not log or persist by default. */
+  readonly upstreamHeaders: ReadonlyArray<readonly [string, string]>;
+}
+
+function withMetadata(response: Response, headers: [string, string][]): LochoResponseWithMetadata {
+  return Object.freeze({ response, upstreamHeaders: Object.freeze(headers.map((pair) => Object.freeze(pair))) });
+}
+
 export class LochoTicket {
   private constructor(raw: WebTicket) { tickets.set(this, raw); }
   static async parse(value: string): Promise<LochoTicket> {
@@ -175,6 +185,10 @@ export class LochoClient {
     return { method, body, options: JSON.stringify({ method, path, authority: this.authority, headers, timeout_ms: timeoutMs }) };
   }
   async fetch(path: string, options: LochoRequestOptions = {}): Promise<Response> {
+    return (await this.fetchWithMetadata(path, options)).response;
+  }
+  /** Buffered response plus parsed upstream header pairs, including separate Set-Cookie values. */
+  async fetchWithMetadata(path: string, options: LochoRequestOptions = {}): Promise<LochoResponseWithMetadata> {
     const request = this.prepare(path, options);
     const raw = await cancellable(options.signal, (cancel) => rawTicket(this.ticket!).request(this.raw,
       request.options, request.body, cancel));
@@ -182,13 +196,18 @@ export class LochoClient {
       if (options.signal?.aborted) throw new LochoError('cancelled');
       const metadata = JSON.parse(raw.metadata());
       const bytes = new Uint8Array(raw.body()).buffer;
-      return new Response(request.method === 'HEAD' || [204, 205, 304].includes(metadata.status) ? null : bytes,
+      const response = new Response(request.method === 'HEAD' || [204, 205, 304].includes(metadata.status) ? null : bytes,
         { status: metadata.status, headers: metadata.headers });
+      return withMetadata(response, metadata.headers);
     } catch (value) { throw error(value); }
     finally { raw.free(); }
   }
   /** Resolves at final headers. Caller must consume or cancel the body. */
   async fetchStream(path: string, options: LochoStreamRequestOptions = {}): Promise<Response> {
+    return (await this.fetchStreamWithMetadata(path, options)).response;
+  }
+  /** Resolves at final headers with parsed upstream header pairs. Caller must consume or cancel response.body. */
+  async fetchStreamWithMetadata(path: string, options: LochoStreamRequestOptions = {}): Promise<LochoResponseWithMetadata> {
     const allowed = new Set(['method', 'headers', 'body', 'signal', 'setupTimeoutMs', 'idleTimeoutMs']);
     if (Object.keys(options).some((key) => !allowed.has(key))) throw new LochoError('unsupportedOption');
     const idle = options.idleTimeoutMs ?? 75000;
@@ -214,7 +233,7 @@ export class LochoClient {
       const metadata = JSON.parse(raw.metadata());
       if (request.method === 'HEAD' || [204, 205, 304].includes(metadata.status)) {
         const response = new Response(null, { status: metadata.status, headers: metadata.headers });
-        release(); return response;
+        release(); return withMetadata(response, metadata.headers);
       }
       let pending: Promise<void> = Promise.resolve();
       let controller: ReadableStreamDefaultController<Uint8Array>;
@@ -248,7 +267,7 @@ export class LochoClient {
       this.streams.add(stop);
       const response = new Response(body, { status: metadata.status, headers: metadata.headers });
       if (this.closing || options.signal?.aborted) { await stop(); throw new LochoError(this.closing ? 'closed' : 'cancelled'); }
-      return response;
+      return withMetadata(response, metadata.headers);
     } catch (value) { release(); throw error(value); }
   }
   async health(capability?: string, authority = 'sample-api', signal?: AbortSignal): Promise<Response> {

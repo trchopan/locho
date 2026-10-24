@@ -36,17 +36,28 @@ try {
     locho_web: process.env.LOCHO_NPM_VERSION ?? `file:../${pack.filename}`, vite: '7.3.7', typescript: '5.9.3',
   } }));
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
-  for (const name of ['index.html', 'main.ts', 'lifecycle.html', 'lifecycle.ts']) {
+  for (const name of ['index.html', 'main.ts', 'lifecycle.html', 'lifecycle.ts', 'metadata-worker.ts', 'metadata-soak.ts', 'metadata-soak-worker.ts']) {
     const source = await readFile(join(root, 'examples/minimal', name), 'utf8');
     await writeFile(join(consumer, name), source.replaceAll("'../../src/index'", "'locho_web'"));
   }
-  await writeFile(join(consumer, 'types.ts'), `import { LochoClient, LochoTicket, initializeLocho, type LochoRequestOptions, type LochoStreamRequestOptions } from 'locho_web';
+  await writeFile(join(consumer, 'types.ts'), `import { LochoClient, LochoTicket, initializeLocho, type LochoRequestOptions, type LochoStreamRequestOptions, type LochoResponseWithMetadata } from 'locho_web';
 const options: LochoRequestOptions = { method: 'POST', body: new Uint8Array([1]) };
 const streamOptions: LochoStreamRequestOptions = { setupTimeoutMs: 15000, idleTimeoutMs: 75000 };
 async function stream(client: LochoClient) { const response: Response = await client.fetchStream('/api/events', streamOptions); await response.body?.cancel(); }
+async function metadata(client: LochoClient) {
+  const buffered: LochoResponseWithMetadata = await client.fetchWithMetadata('/api/login', options);
+  const streamed: LochoResponseWithMetadata = await client.fetchStreamWithMetadata('/api/events', streamOptions);
+  const pairs: ReadonlyArray<readonly [string, string]> = buffered.upstreamHeaders;
+  // @ts-expect-error Header lists are read-only.
+  pairs.push(['set-cookie', 'synthetic']);
+  // @ts-expect-error Individual header pairs are read-only.
+  pairs[0][1] = 'synthetic';
+  await streamed.response.body?.cancel();
+}
 async function consume(text: string) { await initializeLocho(); const ticket = await LochoTicket.parse(text); const client = await LochoClient.connect({ ticket }); try { return await client.fetch('/api/notes', options); } finally { await client.close(); } }
 void consume;
 void stream;
+void metadata;
 `);
   await writeFile(join(consumer, 'initialize.html'), '<!doctype html><p id="result">initializing</p><script type="module" src="./initialize.ts"></script>');
   await writeFile(join(consumer, 'initialize.ts'), `import { initializeLocho, LochoTicket } from 'locho_web';
