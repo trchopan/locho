@@ -7,9 +7,11 @@ same checks locally and in CI.
 ## Release Candidate
 
 For the current beta, record candidate-specific results and remaining gates in
-[1.3.0-beta.2 evidence](docs/release-1.3.0-beta.2.md). SDK package versions are
+[1.3.0-beta.3 evidence](docs/release-1.3.0-beta.3.md). SDK package versions are
 independent of the CLI version; metadata-only CLI changes may require manual
 dispatch of the browser and Flutter workflows against the candidate branch.
+The coordinated SDK targets are `locho_web` and `locho_flutter` `0.1.0-beta.3`;
+their registry gates are in [SDK beta.3](docs/sdk-0.1.0-beta.3.md).
 
 - [ ] Confirm the version in `Cargo.toml`, `Cargo.lock`, and the changelog.
 - [ ] Confirm the changelog describes user-visible changes and known limitations.
@@ -51,7 +53,8 @@ release notes must state that verification is pending.
 - [ ] Update `Cargo.toml` and `Cargo.lock` to the final version.
 - [ ] Confirm the final notes are in the versioned changelog entry.
 - [ ] Run the complete release gate again from a clean checkout.
-- [ ] Create and push the matching tag, for example `v1.3.0-beta.2`.
+- [ ] Create and push the matching CLI tag, for example `v1.3.0-beta.3`.
+- [ ] Do not create SDK version tags without reviewing the CLI version-tag workflow.
 - [ ] Confirm beta releases are marked prerelease and the stable latest-release
       installers continue to select the stable release.
 - [ ] Confirm the GitHub Release contains every supported archive, checksum, and

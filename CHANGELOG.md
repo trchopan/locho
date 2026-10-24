@@ -4,6 +4,33 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+## [1.3.0-beta.3] - 2026-10-25
+
+This limited integration prerelease refreshes the CLI security dependencies;
+`1.2.0` remains the stable release.
+
+- Updates ctutils from 0.4.2 to 0.4.4 to address RUSTSEC-2026-0385.
+- Keeps native CLI/runtime behavior, iroh 1.4.0, `locho/3`, ticket format 1 and
+  host-state schema 2 unchanged from CLI beta.2. No state/capability migration is
+  required; upgrading replaces only the executable.
+
+The coordinated but independently published `locho_web` and `locho_flutter`
+`0.1.0-beta.3` packages carry their own changes and provenance. Browser beta.3
+adds opt-in upstream-header metadata and aligns client/peer relay URL keys;
+Flutter beta.3 refreshes its bundled core/native implementation. These changes
+are not embedded in the CLI executable, and a CLI upgrade does not update SDKs.
+
+Public-N0 stale-hint intermittency remains a documented limitation: the relay-key
+configuration mismatch has a deterministic regression, but the stricter network
+A/B control was inconclusive and does not prove every timeout is resolved. HTTP
+requests are not replayed and deadlines are unchanged. Physical iOS, broad
+device/network-transition acceptance and Linux ARM64 native verification remain
+open; cross-builds and hosted compilation are not device/runtime proof.
+
+See [beta.3 release gates](docs/release-1.3.0-beta.3.md) and
+[SDK publication gates](docs/sdk-0.1.0-beta.3.md). Prerelease publishing must leave
+the stable CLI installers and npm `latest` channel unchanged.
+
 ## [1.3.0-beta.2] - 2026-10-21
 
 This prerelease adds native Unix stream forwarding and hardens shared peer
