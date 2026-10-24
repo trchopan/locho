@@ -12,7 +12,15 @@ on:
       - 'crates/locho-core/**'
       - 'crates/locho-web/**'
       - 'packages/locho-web/**'
+  schedule:
+    - cron: '30 3 * * *'
   workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: Metadata soak duration per browser/context (1–3600 seconds)
+        default: '900'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -54,7 +62,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: packages/locho-web
-      - run: npm run test:browser
+      - name: Browser regression and metadata smoke
+        run: npm run test:browser
         working-directory: packages/locho-web
         env:
           LOCHO_N0_INTEGRATION: '1'
@@ -76,3 +85,49 @@ jobs:
         with:
           name: locho-web-wasm-proof
           path: packages/locho-web/src/generated
+      - name: Upload soak runtime
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: locho-web-soak-runtime
+          path: |
+            target/release/locho
+            packages/locho-web/dist/browser
+
+  metadata-soak:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: wasm-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.18.0'
+          cache: npm
+          cache-dependency-path: packages/locho-web/package-lock.json
+      - uses: actions/download-artifact@v7
+        with:
+          name: locho-web-soak-runtime
+      - run: chmod +x target/release/locho
+      - run: npm ci
+        working-directory: packages/locho-web
+      - run: npx playwright install --with-deps chromium firefox webkit
+        working-directory: packages/locho-web
+      - name: Sustained metadata sessions in pages and module service workers
+        run: npm run test:soak
+        working-directory: packages/locho-web
+        env:
+          LOCHO_N0_INTEGRATION: '1'
+          LOCHO_HOST_BINARY: ${{ github.workspace }}/target/release/locho
+          LOCHO_N0_FIXTURE_FILE: ${{ runner.temp }}/locho-metadata-soak-fixture.json
+          LOCHO_SOAK_SECONDS: ${{ inputs.soak_seconds || '900' }}
+      - name: Upload credential-free soak diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: locho-web-metadata-soak
+          path: |
+            packages/locho-web/test-results/soak
+            packages/locho-web/test-results/soak-results.json
+          if-no-files-found: warn

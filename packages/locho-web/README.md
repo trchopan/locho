@@ -96,8 +96,51 @@ const note = await response.json();
 
 The initial HTTP API supports root-relative paths, common HTTP methods, JSON/text/
 byte bodies, standard `Response` objects, redirects returned without following them,
-bounded buffering and `AbortSignal`. It does not provide cookies, CORS behavior,
+bounded buffering and `AbortSignal`. It does not provide automatic cookies, CORS behavior,
 browser caching, native HTTP authentication, FormData or automatic JSON encoding.
+
+### Opt-in Upstream Headers
+
+Use `fetchWithMetadata` or `fetchStreamWithMetadata` when your application needs
+headers before the browser processes the synthetic `Response`:
+
+```ts
+const { response, upstreamHeaders } = await client.fetchStreamWithMetadata(
+  '/api/auth/login',
+  { method: 'POST', body: loginBody },
+);
+try {
+  for (const [name, value] of upstreamHeaders) {
+    if (name === 'set-cookie') {
+      // Application-owned handler: validate scope, expiry and deletion attributes.
+      session.acceptSetCookie(value);
+    }
+  }
+  // Consume the response as usual. Never return upstreamHeaders to the page.
+  await response.arrayBuffer();
+} finally {
+  await response.body?.cancel().catch(() => {});
+}
+```
+
+`session` above is your own narrowly scoped session handler, not an SDK cookie jar.
+The result type is `LochoResponseWithMetadata`; `upstreamHeaders` is a frozen
+`ReadonlyArray<readonly [string, string]>`, preserving separate repeated fields.
+Never split or join `Set-Cookie` values on commas (`Expires` contains commas).
+These are parsed headers: names are lowercase, surrounding whitespace is trimmed,
+and framing/hop-by-hop fields have already been removed. They are not raw wire bytes.
+
+Raw metadata can contain credentials. Do not log it, include it in diagnostics,
+serialize it to a page, or persist it by default. Attach an application-managed
+`Cookie` header only to its authorized service and allowed paths; clear session
+state on logout or ticket changes. A service worker should strip sensitive response
+headers before forwarding a response to the page. Worker memory may disappear when
+the browser terminates it. This API does not update the browser cookie jar or
+provide native `HttpOnly`/`SameSite` protections for application-managed state.
+
+The buffered method retains `fetch`'s options and limits. The streaming method
+retains `fetchStream`'s options, backpressure and cancellation; always consume or
+cancel `response.body`. Existing `fetch`/`fetchStream` still return `Response` only.
 
 ## WASM And Vite
 
@@ -218,6 +261,7 @@ HTTPS, and CSP `script-src` permits WASM compilation. For Vite, try the explicit
 - [Portable ticket format](https://github.com/trchopan/locho/blob/main/docs/tickets.md)
 - [Runnable browser notes app](https://github.com/trchopan/locho_sdk_examples/tree/main/apps/web)
 - [Browser SDK source and contributor checks](https://github.com/trchopan/locho/tree/main/packages/locho-web)
+- [Metadata smoke and sustained browser/service-worker soak checks](https://github.com/trchopan/locho/blob/main/packages/locho-web/tests/SOAK.md)
 
 ## Beta Limitations
 
