@@ -1,0 +1,38 @@
+[package]
+name = "locho-browser-repro"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Isolated investigation tool: server-only dependencies do not enter SDK releases.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+dirs = "7"
+fs2 = "0.4"
+futures-util = "0.3"
+hex = "0.4"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+iroh = "=1.4.0"
+iroh-relay = { version = "=1.4.0", features = ["server"] }
+locho-core = { path = "../../crates/locho-core", features = ["native-transport", "transport-diagnostics"] }
+rand = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+
+[features]
+default = ["integration-test"]
+integration-test = []

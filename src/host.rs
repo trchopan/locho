@@ -24,7 +24,7 @@ use tokio::task::JoinSet;
 use tokio::time::{timeout, timeout_at, Instant};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn, Instrument};
 use url::Url;
 
 trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -219,6 +219,8 @@ async fn handle_connection(
         }
     };
     let client_id = connection.remote_id().fmt_short().to_string();
+    #[cfg(feature = "integration-test")]
+    let _diagnostic_registration = investigation::register(&connection);
     let mut streams = JoinSet::new();
     loop {
         tokio::select! {
@@ -246,6 +248,108 @@ async fn handle_connection(
     while streams.join_next().await.is_some() {}
 }
 
+/// Disposable post-failure inspection, enabled only by the isolated trace binary.
+/// Ordinary/release CLI builds do not compile this module; ordinary integration
+/// builds do not register anything unless the fixture explicitly enables it.
+#[cfg(feature = "integration-test")]
+pub(crate) mod investigation {
+    use iroh::endpoint::Connection;
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Mutex, OnceLock,
+        },
+    };
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static CONNECTIONS: OnceLock<Mutex<HashMap<usize, Connection>>> = OnceLock::new();
+
+    #[allow(dead_code)] // Used by the Unix-only disposable trace/snapshot launchers.
+    pub fn enable() {
+        ENABLED.store(true, Ordering::Relaxed);
+    }
+
+    pub struct Registration(usize);
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            CONNECTIONS.get().unwrap().lock().unwrap().remove(&self.0);
+        }
+    }
+
+    pub fn register(connection: &Connection) -> Option<Registration> {
+        if !ENABLED.load(Ordering::Relaxed) {
+            return None;
+        }
+        let id = connection.stable_id();
+        CONNECTIONS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(id, connection.clone());
+        Some(Registration(id))
+    }
+
+    #[allow(dead_code)] // Used by the Unix-only disposable trace/snapshot launchers.
+    pub fn snapshot() -> Vec<serde_json::Value> {
+        let Some(connections) = CONNECTIONS.get() else {
+            return vec![];
+        };
+        connections.lock().unwrap().values().map(|connection| {
+            let stats = connection.stats();
+            serde_json::json!({
+                "connection": connection.stable_id(),
+                "datagramsTx": stats.udp_tx.datagrams, "datagramsRx": stats.udp_rx.datagrams,
+                "bytesTx": stats.udp_tx.bytes, "bytesRx": stats.udp_rx.bytes,
+                "streamFramesTx": stats.frame_tx.stream, "streamFramesRx": stats.frame_rx.stream,
+                "acksTx": stats.frame_tx.acks, "acksRx": stats.frame_rx.acks,
+                "pathAcksTx": stats.frame_tx.path_acks, "pathAcksRx": stats.frame_rx.path_acks,
+                "pathAbandonTx": stats.frame_tx.path_abandon, "pathAbandonRx": stats.frame_rx.path_abandon,
+                "sentPackets": stats.sent_packets, "lostPackets": stats.lost_packets, "lostBytes": stats.lost_bytes,
+                "closed": connection.close_reason().is_some(),
+                "paths": locho_core::session::diagnostic_paths(connection),
+            })
+        }).collect()
+    }
+
+    /// Test-only CLI observer: no logging replacement and no per-packet work.
+    /// The ordinary CLI never reads this variable unless built with integration-test.
+    #[cfg(unix)]
+    pub fn install_dump_from_env(
+    ) -> anyhow::Result<Option<tokio::task::JoinHandle<anyhow::Result<()>>>> {
+        use std::{
+            fs::OpenOptions,
+            io::{Seek, SeekFrom, Write},
+            os::unix::fs::OpenOptionsExt,
+        };
+        let Some(path) = std::env::var_os("LOCHO_TEST_CONNECTION_SNAPSHOT_FILE") else {
+            return Ok(None);
+        };
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        let mut signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
+        enable();
+        Ok(Some(tokio::spawn(async move {
+            let mut sequence = 0u64;
+            while signal.recv().await.is_some() {
+                sequence += 1;
+                let data = serde_json::to_vec(&serde_json::json!({
+                    "sequence": sequence, "dropped_bytes": 0, "data": "", "connections": snapshot(),
+                }))?;
+                file.set_len(0)?;
+                file.seek(SeekFrom::Start(0))?;
+                file.write_all(&data)?;
+                file.flush()?;
+            }
+            Ok(())
+        })))
+    }
+}
+
 // Observe STOP_SENDING even while an upstream is silent. Otherwise a cancelled
 // response retains its upstream request until another write or the full timeout.
 async fn handle_peer_stream(
@@ -254,6 +358,8 @@ async fn handle_peer_stream(
     services: Arc<HostServices>,
     client_id: String,
 ) -> Result<()> {
+    let span =
+        tracing::debug_span!("locho_peer_stream", client_id = %client_id, stream = %send.id());
     let stopped = send.stopped();
     let cancelled = async move {
         // Successful delivery of a finished send half is not cancellation:
@@ -265,7 +371,7 @@ async fn handle_peer_stream(
     tokio::select! {
         biased;
         _ = cancelled => Ok(()),
-        result = handle_stream(send, recv, services, client_id) => result,
+        result = handle_stream(send, recv, services, client_id).instrument(span) => result,
     }
 }
 
@@ -559,6 +665,17 @@ where
             return write_error(&mut writer, 504).await;
         }
     };
+    debug!(stage = "upstream_connected", "Locho TCP setup");
+    #[cfg(feature = "integration-test")]
+    if let Some(delay) = std::env::var("LOCHO_TEST_AUTH_REPLY_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1..=30_000).contains(value))
+    {
+        // Disposable fault control only; disabled in ordinary/release builds.
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+    debug!(stage = "authorization_reply_start", "Locho TCP setup");
     write_json_head(
         &mut writer,
         &LochoResponseHead {
@@ -570,6 +687,7 @@ where
     )
     .await?;
     write_body(&mut writer, &[]).await?;
+    debug!(stage = "authorization_reply_written", "Locho TCP setup");
     let tunnel = tokio::io::join(reader, writer);
     let result = relay_with_idle_policy(
         tunnel,

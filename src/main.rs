@@ -116,6 +116,8 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+    #[cfg(all(feature = "integration-test", unix))]
+    let _diagnostic_snapshots = host::investigation::install_dump_from_env()?;
     match Cli::parse().command {
         Command::Host {
             config,

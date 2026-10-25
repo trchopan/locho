@@ -2,9 +2,12 @@ import { cp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { assertReleaseBindings } from './release-guards.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const out = new URL('../dist/package/', import.meta.url);
+const bindings = await readFile(new URL('../src/generated/locho_web.js', import.meta.url), 'utf8');
+assertReleaseBindings(bindings);
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 const result = spawnSync('npx', ['--no-install', 'tsc', '-p', 'tsconfig.package.json'], { cwd: root, stdio: 'inherit' });

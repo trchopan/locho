@@ -16,7 +16,7 @@ resolver = "2"
 exclude = ["packages/locho_flutter/rust"]
 
 [features]
-integration-test = []
+integration-test = ["locho-core/transport-diagnostics"]
 
 [dependencies]
 locho-client-native = { path = "crates/locho-client-native", version = "0.1.0" }

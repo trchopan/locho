@@ -120,6 +120,12 @@ pub async fn read_json_head<T: DeserializeOwned, R: AsyncRead + Unpin>(
         .await
         .context("read tunnel header length")?;
     let len = u32::from_be_bytes(prefix) as usize;
+    #[cfg(feature = "transport")]
+    tracing::debug!(
+        stage = "head_prefix_read",
+        bytes = len,
+        "Locho protocol head"
+    );
     if len > max_len {
         bail!("tunnel header exceeds limit")
     }
@@ -128,6 +134,12 @@ pub async fn read_json_head<T: DeserializeOwned, R: AsyncRead + Unpin>(
         .read_exact(&mut data)
         .await
         .context("read tunnel header")?;
+    #[cfg(feature = "transport")]
+    tracing::debug!(
+        stage = "head_bytes_read",
+        bytes = len,
+        "Locho protocol head"
+    );
     serde_json::from_slice(&data).context("decode tunnel header")
 }
 

@@ -173,6 +173,25 @@ impl PeerSession {
         self.owner.status.borrow().clone()
     }
 
+    /// Investigation-only passive counters. No reads, writes, timers or retries.
+    #[cfg(feature = "transport-diagnostics")]
+    pub fn diagnostic_connection_stats(&self) -> Option<iroh::endpoint::ConnectionStats> {
+        self.owner
+            .connections
+            .borrow()
+            .as_ref()
+            .map(|active| active.connection.stats())
+    }
+
+    #[cfg(feature = "transport-diagnostics")]
+    pub fn diagnostic_connection_paths(&self) -> Option<Vec<serde_json::Value>> {
+        self.owner
+            .connections
+            .borrow()
+            .as_ref()
+            .map(|active| diagnostic_paths(&active.connection))
+    }
+
     /// Watch-style receiver, initialized to the latest snapshot. Updates coalesce;
     /// inspect the snapshot before waiting for `changed()` (including closed state).
     pub fn subscribe(&self) -> watch::Receiver<SessionStatus> {
@@ -256,6 +275,35 @@ impl PeerSession {
     }
 }
 
+/// Fixed-schema, post-failure path counters. Never include transport addresses.
+#[cfg(feature = "transport-diagnostics")]
+pub fn diagnostic_paths(connection: &Connection) -> Vec<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    connection.paths().iter().map(|path| {
+        let stats = path.stats();
+        let relay_tag = match path.remote_addr() {
+            iroh::TransportAddr::Relay(relay) => {
+                let mut url = url::Url::parse(relay.as_str()).expect("validated relay URL");
+                if let Some(host) = url.host_str().map(|host| host.trim_end_matches('.').to_ascii_lowercase()) {
+                    let _ = url.set_host(Some(&host));
+                }
+                Some(hex::encode(Sha256::digest(url.as_str().as_bytes()))[..12].to_string())
+            }
+            _ => None,
+        };
+        serde_json::json!({
+            "id": path.id().to_string(), "selected": path.is_selected(),
+            "relay": path.is_relay(), "direct": path.is_ip(), "relayTag": relay_tag,
+            "rttMs": stats.rtt.as_millis().min(u64::MAX as u128) as u64,
+            "cwnd": stats.cwnd, "sentPackets": stats.sent_packets, "lostPackets": stats.lost_packets,
+            "datagramsTx": stats.udp_tx.datagrams, "datagramsRx": stats.udp_rx.datagrams,
+            "streamFramesTx": stats.frame_tx.stream, "streamFramesRx": stats.frame_rx.stream,
+            "acksTx": stats.frame_tx.acks, "acksRx": stats.frame_rx.acks,
+            "pathAcksTx": stats.frame_tx.path_acks, "pathAcksRx": stats.frame_rx.path_acks,
+        })
+    }).collect()
+}
+
 impl ConnectionLease {
     pub fn connection(&self) -> &Connection {
         &self.connection
@@ -301,7 +349,11 @@ impl ConnectionLease {
                 send_finished: false,
                 _permit: permit,
             };
-            authorize_tcp(&mut stream.send, &mut stream.recv, capability).await?;
+            use tracing::Instrument;
+            let span = tracing::debug_span!("locho_service_setup", connection = self.connection.stable_id(), stream = %stream.send.id());
+            authorize_tcp(&mut stream.send, &mut stream.recv, capability)
+                .instrument(span)
+                .await?;
             Ok(stream)
         };
         tokio::select! {
@@ -380,6 +432,7 @@ async fn authorize_tcp<W: tokio::io::AsyncWrite + Unpin, R: tokio::io::AsyncRead
     reader: &mut R,
     capability: &Capability,
 ) -> Result<(), SessionError> {
+    tracing::debug!(stage = "authorization_request_start", "Locho service setup");
     write_json_head(
         writer,
         &StreamRequestHead::Tcp(TcpRequestHead {
@@ -390,9 +443,18 @@ async fn authorize_tcp<W: tokio::io::AsyncWrite + Unpin, R: tokio::io::AsyncRead
     )
     .await
     .map_err(|_| SessionError::Transport(ErrorStage::Handshake))?;
+    tracing::debug!(
+        stage = "authorization_request_written",
+        "Locho service setup"
+    );
     let response: LochoResponseHead = read_json_head(reader, MAX_HEAD_LEN)
         .await
         .map_err(|_| SessionError::Protocol)?;
+    tracing::debug!(
+        stage = "authorization_reply_decoded",
+        status = response.status,
+        "Locho service setup"
+    );
     if response.version != PROTOCOL_VERSION || !(100..=599).contains(&response.status) {
         return Err(SessionError::Protocol);
     }
@@ -1096,6 +1158,51 @@ mod tests {
         assert!(late.revision > initial.revision);
         assert_eq!(late.state, SessionState::Closed);
         assert_eq!(late.path, TransportPath::Unknown);
+    }
+
+    #[cfg(feature = "transport-diagnostics")]
+    #[tokio::test]
+    async fn passive_counter_snapshot_has_no_addresses_or_stream_side_effects() {
+        let (session, driver, server, _connection) = connected().await;
+        assert!(session.diagnostic_connection_stats().is_some());
+        let paths = session.diagnostic_connection_paths().unwrap();
+        assert!(!paths.is_empty());
+        let allowed = [
+            "id",
+            "selected",
+            "relay",
+            "direct",
+            "relayTag",
+            "rttMs",
+            "cwnd",
+            "sentPackets",
+            "lostPackets",
+            "datagramsTx",
+            "datagramsRx",
+            "streamFramesTx",
+            "streamFramesRx",
+            "acksTx",
+            "acksRx",
+            "pathAcksTx",
+            "pathAcksRx",
+        ];
+        for path in &paths {
+            assert!(path
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| allowed.contains(&key.as_str())));
+        }
+        let serialized = serde_json::to_string(&paths).unwrap();
+        assert!(!serialized.contains("127.0.0.1"));
+        assert!(!serialized.contains("http:"));
+        assert_eq!(session.owner.streams.available_permits(), 512);
+        assert_eq!(session.snapshot().state, SessionState::Connected);
+        session.close().await.unwrap();
+        driver.await.unwrap();
+        server.close().await;
+        assert!(session.diagnostic_connection_stats().is_none());
+        assert!(session.diagnostic_connection_paths().is_none());
     }
 
     #[tokio::test]

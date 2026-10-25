@@ -1,5 +1,7 @@
 mod addressing;
 mod http;
+#[cfg(feature = "browser-repro")]
+mod repro;
 
 use ::http::uri::Authority;
 use iroh::{
@@ -306,6 +308,21 @@ async fn connect_inner(
     peer_relay_urls: Vec<String>,
     cancellation: &WebCancellation,
 ) -> Result<WebClient, JsValue> {
+    let builder = Endpoint::builder(presets::N0)
+        .clear_address_lookup()
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(addressing::BrowserLookup);
+    #[cfg(feature = "browser-repro")]
+    let builder = repro::candidate_builder(builder);
+    connect_using_builder(host_id, peer_relay_urls, cancellation, builder).await
+}
+
+async fn connect_using_builder(
+    host_id: String,
+    peer_relay_urls: Vec<String>,
+    cancellation: &WebCancellation,
+    builder: iroh::endpoint::Builder,
+) -> Result<WebClient, JsValue> {
     if cancellation.token.is_cancelled() {
         return Err(JsValue::from_str("cancelled"));
     }
@@ -321,10 +338,6 @@ async fn connect_inner(
                 .map_err(|_| JsValue::from_str("invalidPeerRelay"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let builder = Endpoint::builder(presets::N0)
-        .clear_address_lookup()
-        .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(addressing::BrowserLookup);
     let endpoint = tokio::select! {
         biased;
         _ = cancellation.token.cancelled() => return Err(JsValue::from_str("cancelled")),
@@ -337,6 +350,8 @@ async fn connect_inner(
     for relay in peer_relays {
         target = target.with_relay_url(relay);
     }
+    #[cfg(feature = "browser-repro")]
+    let trace_endpoint = endpoint.clone();
     let (session, driver) = PeerSession::start(endpoint, target);
     let session = Arc::new(session);
     wasm_bindgen_futures::spawn_local(driver.run());
@@ -355,6 +370,8 @@ async fn connect_inner(
         let _ = session.close().await;
         return Err(error);
     }
+    #[cfg(feature = "browser-repro")]
+    repro::trace_online(&trace_endpoint).await;
     Ok(WebClient {
         session,
         shutdown: CancellationToken::new(),

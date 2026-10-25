@@ -24,9 +24,12 @@ browser clients, and a local HTTP backend reached through the real N0 relay.
 - Temporary local instrumentation also observed that the failing browser endpoint
   was **not registered/online at connect return**. That is a correlation, not proof
   that it remained offline at timeout or that missing registration is the cause.
-- No finer failing QUIC/authorization sub-stage or definitive upstream defect has
-  been established. An HTTP body parser/EOF-only explanation does not explain the
-  reproduced pre-HTTP failure.
+- Later passive post-timeout snapshots captured **zero received QUIC STREAM
+  frames in the browser**, while the host reported one transmitted STREAM frame
+  and both authorization writes complete. Both sides retained one selected relay
+  path; no PATH_ABANDON was observed. This excludes an application read-wake
+  explanation for those captures, but does not prove on-wire delivery or identify
+  the exact upstream routing/recovery defect.
 
 All diagnostics use fixed stages and aggregate counters. Temporary diagnostic
 error codes and fields are not part of the public SDK and are removed from the
@@ -71,6 +74,36 @@ Use one worker for isolation. The ordinary success requirement remains exactly o
 HTTP request per client and the expected successful first response.
 
 ## Next investigation gates
+
+The isolated harness and initial results are now documented in
+[`tests/browser-repro`](../tests/browser-repro/README.md) and its
+[evidence record](../tests/browser-repro/RESULTS.md). The unchanged SDK tarball
+reproduced a natural timeout with both host authorization reply writes complete;
+this is narrower evidence than the earlier aggregate socket counters, not a fix.
+
+Current candidate: normalize the browser's default client relay-policy keys using
+the same DNS-root-dot normalization already applied to peer hints/discovery. The
+default iroh home-policy map otherwise retains dotted URLs, allowing actor keys
+for both spellings of one physical relay. Local alias controls confirmed duplicate
+sessions but did not reproduce the natural stall. In a matched private WASM build,
+the candidate passed 30 focused cases and the ordinary baseline path failed on its
+first case, with the same host/WASM hashes and passive diagnostics. Larger
+three-browser verification is pending; this is not yet a release approval. Review
+also found the private constructor bypassed a cached JS initialization await, a
+possible timing confound. A stricter paired control using the public JS connect
+path in both variants subsequently passed 30/30 baseline and 30/30 canonical
+cases. Host/WASM/runner/browser/peer-relay inputs matched, but the baseline did not
+fail, so the stricter comparison is **inconclusive**, not proof of causality. The
+raw candidate's 270/270 three-browser pass is retained as coverage, not a substitute
+for that missing causal evidence. No unchanged control is being retried until it
+produces a favorable contrast.
+
+A minimal proposed repair is isolated on `fix/browser-relay-policy` off main. Its
+deterministic policy-key regression was observed failing against the original
+policy, then passing after normalization; all 18 browser Rust tests passed. It
+contains no tracing harness, request replay, readiness wait, changed deadline,
+dependency/version changes or wire-format changes. That unit regression proves the
+configuration mismatch, not deterministic reproduction of the network timeout.
 
 1. Reproduce against a controlled relay to separate public relay/network conditions
    from local SDK/QUIC behavior, while retaining public-N0 coverage and its failures.

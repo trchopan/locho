@@ -11,6 +11,10 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Investigation-only loopback fixture; never enable for a published SDK build.
+browser-repro = ["dep:tracing-subscriber", "locho-core/transport-diagnostics"]
+
 [dependencies]
 locho-core = { path = "../locho-core", version = "0.1.0", features = ["web-transport"] }
 http = "1"
@@ -23,6 +27,8 @@ ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 n0-future = "0.3"
 tokio = { version = "1", features = ["io-util", "sync", "macros"] }
 tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", optional = true, default-features = false, features = ["fmt", "env-filter", "registry"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 

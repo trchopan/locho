@@ -20,6 +20,31 @@ pub fn relay_url(relay: RelayUrl) -> RelayUrl {
     RelayUrl::from(url)
 }
 
+/// Investigation candidate: client policy must use the same URL spelling as
+/// peer hints/discovery, or one physical relay can acquire two actor keys.
+#[cfg(feature = "browser-repro")]
+pub fn canonical_default_relay_mode() -> iroh::RelayMode {
+    canonical_relay_mode(iroh::endpoint::default_relay_mode())
+}
+
+#[cfg(feature = "browser-repro")]
+fn canonical_relay_mode(mode: iroh::RelayMode) -> iroh::RelayMode {
+    if matches!(mode, iroh::RelayMode::Disabled) {
+        return mode;
+    }
+    let relays = mode
+        .relay_map()
+        .relays::<Vec<_>>()
+        .into_iter()
+        .map(|config| {
+            let mut config = config.as_ref().clone();
+            config.url = relay_url(config.url);
+            config
+        })
+        .collect();
+    iroh::RelayMode::Custom(relays)
+}
+
 #[derive(Debug)]
 pub struct BrowserLookup;
 
@@ -96,6 +121,29 @@ impl<T: AddressLookup + 'static> AddressLookup for RetryingLookup<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "browser-repro")]
+    #[test]
+    fn canonical_client_policy_matches_peer_keys_and_preserves_relay_options() {
+        for mode in [iroh::RelayMode::Default, iroh::RelayMode::Staging] {
+            let original = mode.relay_map();
+            let normalized = canonical_relay_mode(mode).relay_map();
+            assert_eq!(original.len(), normalized.len());
+            for config in original.relays::<Vec<_>>() {
+                let url = relay_url(config.url.clone());
+                let result = normalized
+                    .get(&url)
+                    .expect("peer-normalized key must be in client policy");
+                assert_eq!(result.url, url);
+                assert_eq!(result.quic, config.quic);
+                assert_eq!(result.auth_token, config.auth_token);
+            }
+        }
+        assert_eq!(
+            canonical_relay_mode(iroh::RelayMode::Disabled),
+            iroh::RelayMode::Disabled
+        );
+    }
 
     #[test]
     fn normalizes_dns_root_dot_without_changing_port_or_path() {

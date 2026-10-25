@@ -1688,6 +1688,7 @@ dependencies = [
  "subtle",
  "tokio",
  "tokio-util",
+ "tracing",
  "url",
 ]
 
