@@ -54,9 +54,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Test performance harnesses
+      - name: Test release and performance harnesses
         if: runner.os != 'Windows'
         run: |
+          python3 -m unittest discover -s tests/release -p test_verify_upgrade.py -v
           python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
           python3 -m unittest discover -s tests/perf/loadgen -p test_loadgen.py -v
 

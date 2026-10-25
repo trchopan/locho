@@ -2,15 +2,20 @@
 
 ## 0.1.0-beta.3 — release candidate (not yet published)
 
-Both SDKs are preparing a new beta from merged PR #121. Browser beta.3 adds opt-in
+Both SDKs are preparing a new beta from merged PRs #121, #122 and #124. Browser
+beta.3 adds opt-in
 upstream response metadata for application-managed cookie sessions. Flutter beta.3
 refreshes its bundled core/native implementation; it does not add browser APIs.
 Both incorporate transport/lifecycle updates and ctutils 0.4.4 security fixes.
+Browser beta.3 also aligns client/peer relay URL keys. The configuration regression
+is proven; its causal role in intermittent N0 timeouts remains unproven.
 
 Registry beta.2 remains available until publication and verification complete.
 See [beta.3 release gates](sdk-0.1.0-beta.3.md) for scope, exact-candidate evidence
-requirements and publication/registry acceptance. No stable-channel promotion or
-CLI release is part of this SDK release.
+requirements and publication/registry acceptance. CLI `1.3.0-beta.3` publication is
+coordinated separately through its own [release gate](release-1.3.0-beta.3.md) and
+version tag; SDK publication does not trigger or replace it. Stable channels are
+unchanged, and no beta.3 package is claimed published before registry acceptance.
 
 ## 0.1.0-beta.2 — Browser — 2026-10-17
 

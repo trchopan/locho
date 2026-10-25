@@ -2,6 +2,10 @@
 
 ## 0.1.0-beta.3
 
+- Canonicalize the default/staging client relay-policy URLs using the same DNS
+  root-dot normalization as peer hints/discovery, preventing inconsistent relay
+  actor keys while preserving server selection and relay options (#124). This
+  repairs a proven configuration mismatch, not proof all N0 timeouts are resolved.
 - Add opt-in 15-minute metadata session soak tests (up to 60 minutes), covering
   pages/module service workers, slot/socket recovery and credential-free metrics;
   run nightly/manually, separate from short PR smoke checks.
