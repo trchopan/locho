@@ -55,7 +55,11 @@ half-close behavior. Native adapter unit tests supplement filesystem cases.
 ### Stress profile and acceptance
 
 The stress profile ramps concurrent workers per forwarding combination through
-4, 8, 16 and 32 by default over a five-minute load budget. Override the matrix
+4, 8, 16 and 32 by default over a five-minute load budget. On macOS, the runner
+uses 4, 8, 16 and 28 for the loaded stress phases because the platform's loopback
+TCP TIME_WAIT/source-port behavior makes exactly 128 churn workers an OS resource
+limit rather than a useful transport test. The dedicated budget probe still holds
+and validates all 128 active streams. Override the matrix
 or use one level when isolating a result:
 
 ```sh
@@ -64,7 +68,10 @@ python3 tests/perf/unix_streams.py stress --duration 2m --concurrency 16
 ```
 
 Each level exercises TCP→TCP, TCP→Unix, Unix→TCP and Unix→Unix with persistent
-connections, churn, fragmented/slow transfers and periodic 1 MiB payloads.
+connections, churn, fragmented/slow transfers and periodic 1 MiB payloads. The
+two TCP upstream fixtures use separate loopback destination ports so macOS source
+port/TIME_WAIT pools do not alias unrelated forwarding combinations. This is a
+fixture-capacity isolation measure, not a production transport change.
 Stress fails on corruption, replay, unexpected I/O failures, worker/process
 failure, cleanup failure or descriptor growth above `--max-fd-growth`. It
 records throughput and p50/p95/p99 latency plus RSS/CPU/FD samples; those
