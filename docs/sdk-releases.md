@@ -1,6 +1,6 @@
 # SDK beta releases
 
-## 0.1.0-beta.3 — release candidate (not yet published)
+## 0.1.0-beta.3 — Browser and Flutter — 2026-10-25
 
 Both SDKs are preparing a new beta from merged PRs #121, #122 and #124. Browser
 beta.3 adds opt-in
@@ -10,12 +10,26 @@ Both incorporate transport/lifecycle updates and ctutils 0.4.4 security fixes.
 Browser beta.3 also aligns client/peer relay URL keys. The configuration regression
 is proven; its causal role in intermittent N0 timeouts remains unproven.
 
-Registry beta.2 remains available until publication and verification complete.
-See [beta.3 release gates](sdk-0.1.0-beta.3.md) for scope, exact-candidate evidence
-requirements and publication/registry acceptance. CLI `1.3.0-beta.3` publication is
-coordinated separately through its own [release gate](release-1.3.0-beta.3.md) and
-version tag; SDK publication does not trigger or replace it. Stable channels are
-unchanged, and no beta.3 package is claimed published before registry acceptance.
+Registry beta.3 is now available. npm's `beta` tag points to beta.3 while npm
+`latest` remains beta.1. CLI `1.3.0-beta.3` is published separately as GitHub
+prerelease `v1.3.0-beta.3`; stable CLI/latest remains `1.2.0`.
+
+| SDK | Registry | Install |
+| --- | --- | --- |
+| Browser | [locho_web 0.1.0-beta.3](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.3) | `npm install --save-exact locho_web@0.1.0-beta.3` |
+| Flutter | [locho_flutter 0.1.0-beta.3](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.3) | `locho_flutter: 0.1.0-beta.3` |
+
+### Registry integrity and provenance
+
+- npm SRI: `sha512-D1GzJUBKHwT07/ECa3cqFS3nKxoDss+YHeXYtaYYBV0clpdrM3oDNKzxTjG+TaHv2PlvANDAbYkpg9FrVuOsWg==`
+- npm SHA-256: `1dcbee155e6c59b8561c3fda3b3e20a15123ef9cb1808fb566ed6ceeb537bc65`
+- pub.dev archive SHA-256: `fcdad92b61204ed6ef3ead00fb5f46ea780a7263ee3f4465226d5ecc05faa735`
+- Both `BUILD.json` files record final source SHA `0c8ad57`, dirty false, wire protocol 3 and ticket format 1.
+
+### Registry acceptance
+
+- Fresh npm beta.3 consumer: 99/99 browser tests across Chromium/Firefox/WebKit.
+- Fresh pub.dev beta.3 Android consumer: analyze, debug/release APK builds and 16 KiB alignment passed; hosted iOS simulator/unsigned-release consumer passed.
 
 ## 0.1.0-beta.2 — Browser — 2026-10-17
 
