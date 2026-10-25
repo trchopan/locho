@@ -1,12 +1,12 @@
-# SDK 0.1.0-beta.3 release candidate
+# SDK 0.1.0-beta.3 release record
 
 ## Scope and provenance
 
 This candidate releases npm `locho_web` and pub.dev `locho_flutter` independently
 versioned from the coordinated CLI `1.3.0-beta.3` prerelease; see the
-[combined release gates](release-1.3.0-beta.3.md). Both registries currently offer
-beta.2; beta.3 is not published until
-registry acceptance below is recorded. Keep npm's `beta` channel and leave
+[combined release gates](release-1.3.0-beta.3.md). Both registries now offer beta.3;
+npm's `beta` channel points to beta.3 and `latest` remains beta.1. Keep npm's
+`latest` unchanged and leave
 `latest` unchanged. Do not create SDK version tags without reviewing the CLI's
 version-tag-triggered cargo-dist workflow.
 
@@ -16,8 +16,8 @@ and shared/native source changes since their respective published beta.2 archive
 including iroh 1.4.0 and patched ctutils 0.4.4 (RUSTSEC-2026-0385).
 SDK version preparation merged in PR #122 (`c0334940194a01020cfdaaa410280e27f7bbe125`).
 Browser relay-policy correction PR #124 merged as
-`e6217657b5da3461e5570a96a72991f281ead69b`. The final publication SHA must be the
-later merged coordinated release-preparation commit, after the CLI metadata bump.
+`e6217657b5da3461e5570a96a72991f281ead69b`. The final publication SHA is
+`0c8ad57cc91af30144138bd324aeca86604f48dd`.
 
 - Browser: additive buffered/streaming upstream-header metadata APIs, preserved
   repeated cookies, existing Response compatibility and streaming ownership.
@@ -43,31 +43,37 @@ same-public-JS-path network A/B control passed both variants and was inconclusiv
 neither that result nor the earlier private-wrapper comparison proves all public
 relay stalls are resolved. Do not reuse its branch tarball for final publication.
 
-- [ ] Locked Rust security audit and workspace tests.
-- [ ] Browser fresh WASM/TypeScript/production/package builds.
-- [ ] Browser full source and installed-tarball matrices on all three engines,
+- [x] Locked Rust security gate and workspace tests.
+- [x] Browser fresh WASM/TypeScript/production/package builds.
+- [x] Browser full source and installed-tarball matrices on all three engines,
       with the pinned reference backend configured.
-- [ ] Fresh 900-second page/module-service-worker metadata soak across all engines.
-- [ ] Flutter formatting, analysis, tests, bridge runtime tests, Clippy and codegen
+- [x] Fresh 900-second page/module-service-worker metadata soak across all engines.
+- [x] Flutter formatting, analysis, tests, bridge runtime tests, Clippy and codegen
       reproducibility; maintain matching FRB pins.
-- [ ] Fresh external Flutter Android debug/release builds and 16 KiB alignment.
-- [ ] Hosted iOS simulator and unsigned-release external consumer builds.
-- [ ] Android runtime smoke where available; distinguish it from compilation.
-- [ ] Flutter standalone staging outside Git and pub publication dry run.
-- [ ] Candidate PR green, then final merged SHA revalidated.
+- [x] Fresh external Flutter Android debug/release builds and 16 KiB alignment.
+- [x] Hosted iOS simulator and unsigned-release external consumer builds.
+- [x] Android pub.dev consumer acceptance; no connected-device runtime smoke was available locally.
+- [x] Flutter standalone staging outside Git and pub publication dry run.
+- [x] Final merged SHA revalidated; hosted workflows passed.
 
 ## Publication and registry acceptance
 
-- [ ] Retain the exact tested npm tarball, integrity hash and clean `build.json`.
-- [ ] Publish that tarball with `--tag beta`; complete staged approval if required.
-- [ ] Verify npm beta.3 is installable, `beta` selects beta.3 and `latest` is unchanged.
-- [ ] Test actual npm beta.3 consumption in a fresh external Vite app.
-- [ ] Publish the verified Flutter staging directory outside Git, not the
+- [x] Retain the exact tested npm tarball, integrity hash and clean `build.json`.
+- [x] Publish that tarball with `--tag beta`; `beta` selects beta.3 and `latest` is unchanged.
+- [x] Verify npm beta.3 and test actual beta.3 consumption in a fresh external Vite app (99/99).
+- [x] Publish the verified Flutter staging directory outside Git, not the
       development wrapper with sibling Rust paths or the ignored target directory.
-- [ ] Verify pub.dev beta.3 archive checksum and bundled `BUILD.json` provenance.
-- [ ] Test pub.dev beta.3 in fresh Android/iOS consumers.
-- [ ] Record source SHA, registry integrity, workflow/soak results and limitations
-      in `docs/sdk-releases.md`; update examples to the published versions.
+- [x] Verify pub.dev beta.3 archive checksum and bundled `BUILD.json` provenance.
+- [x] Test pub.dev beta.3 in fresh Android and hosted iOS consumers.
+- [x] Record source SHA, registry integrity, workflow/soak results and limitations
+      in `docs/sdk-releases.md`.
+
+### Published integrity
+
+- npm SRI: `sha512-D1GzJUBKHwT07/ECa3cqFS3nKxoDss+YHeXYtaYYBV0clpdrM3oDNKzxTjG+TaHv2PlvANDAbYkpg9FrVuOsWg==`
+- npm SHA-256: `1dcbee155e6c59b8561c3fda3b3e20a15123ef9cb1808fb566ed6ceeb537bc65`
+- pub.dev archive SHA-256: `fcdad92b61204ed6ef3ead00fb5f46ea780a7263ee3f4465226d5ecc05faa735`
+- Both `BUILD.json` files record final SHA `0c8ad57`, dirty false, wire protocol 3 and ticket format 1.
 
 Registry publication may require the maintainer's interactive npm/pub approval.
 Keep these gates pending until they actually complete; do not describe a staged

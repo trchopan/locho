@@ -411,10 +411,8 @@ Get-Content .\locho-installer.ps1
 
 ### Testing 1.3.0-beta.3
 
-The latest-release installers above follow the stable channel. To test the beta,
-use its version-specific installer after the prerelease is published:
-
-Until beta.3 is published, the previously published CLI beta is `1.3.0-beta.2`.
+The latest-release installers above follow the stable channel. To test the published
+beta, use its version-specific installer:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.sh | sh
