@@ -16,21 +16,25 @@ The core mental model is:
 Configure services -> Start host -> Share a service capability -> Attach locally
 ```
 
-## 1.0 Status: Complete
+## 1.0–1.2 Status: Stable Core Complete
 
-The first stable release, `1.0.0`, delivers the core service-tunnel workflow:
+The stable release channel (currently `1.2.0`) delivers the core service-tunnel
+workflow:
 
 - Multiple named HTTP and TCP services in one host process.
 - Explicit service configuration and service lifecycle behavior.
 - An independent attachment capability for every service.
-- Local HTTP proxying for HTTP services.
+- Local HTTP proxying for HTTP services with configurable upstream and attachment
+  response timeouts.
 - Local port forwarding for TCP services.
-- Multiple concurrent attachments from different machines.
+- Multiple concurrent attachments from different machines, including
+  multi-service `attachments.toml` sharing one peer connection.
 - Shared service capabilities rather than per-user authorization.
 - Per-service capability rotation, which invalidates the previous capability
   after the host restarts with the replacement state.
 - Persistent host identity and safe credential storage.
-- Encrypted iroh connectivity with direct-path and relay fallback behavior.
+- Encrypted iroh connectivity with direct-path, custom relay (`--relay-config`),
+  and N0 relay fallback behavior.
 - Bounded memory, connection, request, and response resources.
 - Timeouts, graceful shutdown, diagnostics, and actionable errors.
 - Cross-platform build, packaging, and operational documentation.
@@ -59,22 +63,32 @@ relay infrastructure.
 The project does not promise individual machine identity, per-user policy,
 audit-grade access records, or a centralized locho account system.
 
-## 1.3.0-beta.1: SDK Integration Beta
+## 1.3.0-beta.3: Unix Streams & SDK Integration Beta
 
-The beta adds portable single-service tickets, shared client libraries and public
-browser/foreground Flutter SDKs, independently versioned at browser `0.1.0-beta.1`
-and Flutter `0.1.0-beta.2`.
-Both standalone notes examples consume the registry packages and share one API.
-JSON, scoped opt-in persistence, explicit lifecycle/recovery and SSE have
-desktop-browser/Android-emulator evidence; Android/iOS compilation is covered in CI.
-The existing host config and `locho/3` wire protocol are preserved.
+The `1.3.0-beta.x` prerelease series (currently `1.3.0-beta.3`) adds:
+
+- **Native Unix stream sockets (macOS/Linux)**: Filesystem Unix stream socket
+  upstreams and attachment listeners for TCP capabilities, configurable
+  application-byte idle deadlines (`tcp_idle_timeout_secs`), and shared-peer
+  stream failure isolation.
+- **Portable single-service tickets (`locho1:`)**: Exported with
+  `locho share SERVICE --config locho.toml --ticket` and optional peer relay
+  hints.
+- **Shared client libraries & public SDKs**: Independently versioned Browser
+  (`locho_web` `0.1.0-beta.3` on npm) and foreground Flutter (`locho_flutter`
+  `0.1.0-beta.3` on pub.dev) SDKs built on `locho-core` and
+  `locho-client-native`.
+- **Browser HTTP & metadata subset**: Buffered and streaming HTTP/1.1 over
+  authorized TCP streams, plus opt-in upstream response header metadata for
+  application-managed sessions.
+- **Preserved compatibility**: The existing host configuration, state schema 2,
+  and `locho/3` wire protocol are preserved without migration.
 
 This is a limited beta, not completion of the full mobile acceptance matrix.
 Physical iOS, full physical Android/mobile-browser journeys, real network/storage
-transitions, actual BFCache and controlled-relay coverage remain follow-up gates.
-Browser managed WebSockets, QR and background mobile execution are later work.
-See [the release evidence record](docs/release-1.3.0-beta.1.md) and
-[SDK installation/provenance](docs/sdk-releases.md).
+transitions, actual BFCache, and controlled-relay coverage remain follow-up
+gates. Browser managed WebSockets, QR scanning, and background mobile execution
+are later work. See [SDK releases and beta provenance](sdk-releases.md).
 
 ## Non-Goals
 

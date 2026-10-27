@@ -1,155 +1,170 @@
-# SDK beta releases
+# SDK and Prerelease Provenance
 
-## 0.1.0-beta.3 — Browser and Flutter — 2026-10-25
+This document records the installation commands, registry checksums, source
+provenance, compatibility boundaries, and verification evidence for published
+`locho_web` (npm), `locho_flutter` (pub.dev), and coordinated `locho` CLI
+prereleases.
 
-Both SDKs are preparing a new beta from merged PRs #121, #122 and #124. Browser
-beta.3 adds opt-in
-upstream response metadata for application-managed cookie sessions. Flutter beta.3
-refreshes its bundled core/native implementation; it does not add browser APIs.
-Both incorporate transport/lifecycle updates and ctutils 0.4.4 security fixes.
-Browser beta.3 also aligns client/peer relay URL keys. The configuration regression
-is proven; its causal role in intermittent N0 timeouts remains unproven.
+SDK package versions are independent of the `locho` CLI version. A CLI upgrade
+replaces only the CLI executable and does not automatically update installed SDK
+packages. Do not create Git tags for SDK versions: the repository's version-tag
+workflow drives CLI `cargo-dist` releases.
 
-Registry beta.3 is now available. npm's `beta` tag points to beta.3 while npm
-`latest` remains beta.1. CLI `1.3.0-beta.3` is published separately as GitHub
-prerelease `v1.3.0-beta.3`; stable CLI/latest remains `1.2.0`.
+## Compatibility Summary
+
+| Release Series | CLI Prerelease | Browser SDK (`npm`) | Flutter SDK (`pub.dev`) | Wire / Ticket / State | iroh / FRB Pins |
+| --- | --- | --- | --- | --- | --- |
+| **Beta 3** (2026-10-25) | `v1.3.0-beta.3` (`0c8ad57cc91af30144138bd324aeca86604f48dd`) | `locho_web@0.1.0-beta.3` | `locho_flutter: 0.1.0-beta.3` | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.4.0`, `frb 2.12.0` |
+| **Beta 2** (2026-10-17 / 21) | `v1.3.0-beta.2` (`8e1dcc3` / `61c8f5a`) | `locho_web@0.1.0-beta.2` (`e9d09b8`) | `locho_flutter: 0.1.0-beta.2` (`ebd6e10`) | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.4.0` (CLI), `frb 2.12.0` |
+| **Beta 1** (2026-10-17) | `v1.3.0-beta.1` (`3786da3127338b2530e0cd8cea8ef23bc6d55dfd`) | `locho_web@0.1.0-beta.1` (`cb1b232`, dirty) | `locho_flutter: 0.1.0-beta.1` (`cb1b232`, dirty) | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.2.0`, `frb 2.12.0` |
+
+Stable CLI (`latest` GitHub Release channel) remains `1.2.0`.
+
+---
+
+## 0.1.0-beta.3 & CLI 1.3.0-beta.3 — 2026-10-25
+
+Coordinated from merged PRs #121, #122, and #124 at final clean source SHA
+`0c8ad57cc91af30144138bd324aeca86604f48dd`:
+
+- **Browser (`locho_web` `0.1.0-beta.3`)**: Adds opt-in upstream response
+  metadata (`fetchWithMetadata` and `fetchStreamWithMetadata`) for
+  application-managed cookie sessions, and aligns client/peer relay URL keys.
+  The relay-key configuration mismatch has a deterministic regression test; its
+  causal role in intermittent public-N0 stale-hint timeouts remains unproven.
+- **Flutter (`locho_flutter` `0.1.0-beta.3`)**: Refreshes its bundled
+  `locho-core` and `locho-client-native` sources while keeping its public Dart
+  API and FRB `2.12.0` pins unchanged.
+- **CLI (`v1.3.0-beta.3`)**: Updates `ctutils` from `0.4.2` to `0.4.4`
+  (`RUSTSEC-2026-0385`), keeping runtime behavior, Unix stream forwarding, and
+  `iroh =1.4.0` unchanged from `1.3.0-beta.2`.
+
+npm's `beta` dist-tag points to `0.1.0-beta.3` while npm `latest` remains
+`0.1.0-beta.1`. CLI `v1.3.0-beta.3` is marked as a GitHub prerelease so stable
+installers continue to resolve to `v1.2.0`.
+
+| Product | Registry / Channel | Install |
+| --- | --- | --- |
+| Browser SDK | [locho_web 0.1.0-beta.3](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.3) | `npm install --save-exact locho_web@0.1.0-beta.3` |
+| Flutter SDK | [locho_flutter 0.1.0-beta.3](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.3) | `locho_flutter: 0.1.0-beta.3` |
+| CLI (Unix) | [GitHub `v1.3.0-beta.3`](https://github.com/trchopan/locho/releases/tag/v1.3.0-beta.3) | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.sh \| sh` |
+
+### Registry Integrity and Provenance
+
+- **Final merged source SHA**: `0c8ad57cc91af30144138bd324aeca86604f48dd` (`dirty: false`, wire protocol `3`, ticket format `1`)
+- **npm SRI**: `sha512-D1GzJUBKHwT07/ECa3cqFS3nKxoDss+YHeXYtaYYBV0clpdrM3oDNKzxTjG+TaHv2PlvANDAbYkpg9FrVuOsWg==`
+- **npm SHA-256**: `1dcbee155e6c59b8561c3fda3b3e20a15123ef9cb1808fb566ed6ceeb537bc65`
+- **pub.dev archive SHA-256**: `fcdad92b61204ed6ef3ead00fb5f46ea780a7263ee3f4465226d5ecc05faa735`
+
+### Verification and Acceptance
+
+- **Browser**: Fresh npm `0.1.0-beta.3` external Vite consumer passed 99/99
+  browser tests across Chromium, Firefox, and WebKit, plus a 900-second
+  six-context page/module-service-worker soak (3,555 cycles).
+- **Flutter**: Fresh pub.dev `0.1.0-beta.3` Android consumer passed `flutter analyze`,
+  ARM64/x86_64 debug/release APK builds, and 16 KiB ELF/ZIP alignment checks;
+  hosted iOS simulator and unsigned-release consumer builds passed.
+- **CLI**: Native Linux/macOS Unix stream stress (5m) and soak (15m) across all
+  four TCP/Unix forwarding combinations, cargo-dist archive smoke, and
+  executable-only upgrade rehearsals from `1.2.0` and `1.3.0-beta.2` passed.
+
+---
+
+## 0.1.0-beta.2 & CLI 1.3.0-beta.2 — 2026-10-17 / 2026-10-21
+
+### Browser `0.1.0-beta.2` (2026-10-17)
+
+Added the app-developer README covering installation, ticket setup, first
+`/health` request, JSON and streaming calls, Vite/WASM deployment,
+status/lifecycle handling, and troubleshooting. API and implementation remained
+compatible with `0.1.0-beta.1`.
 
 | SDK | Registry | Install |
 | --- | --- | --- |
-| Browser | [locho_web 0.1.0-beta.3](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.3) | `npm install --save-exact locho_web@0.1.0-beta.3` |
-| Flutter | [locho_flutter 0.1.0-beta.3](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.3) | `locho_flutter: 0.1.0-beta.3` |
+| Browser | [locho_web 0.1.0-beta.2](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.2) | `npm install --save-exact locho_web@0.1.0-beta.2` |
 
-### Registry integrity and provenance
-
-- npm SRI: `sha512-D1GzJUBKHwT07/ECa3cqFS3nKxoDss+YHeXYtaYYBV0clpdrM3oDNKzxTjG+TaHv2PlvANDAbYkpg9FrVuOsWg==`
-- npm SHA-256: `1dcbee155e6c59b8561c3fda3b3e20a15123ef9cb1808fb566ed6ceeb537bc65`
-- pub.dev archive SHA-256: `fcdad92b61204ed6ef3ead00fb5f46ea780a7263ee3f4465226d5ecc05faa735`
-- Both `BUILD.json` files record final source SHA `0c8ad57`, dirty false, wire protocol 3 and ticket format 1.
-
-### Registry acceptance
-
-- Fresh npm beta.3 consumer: 99/99 browser tests across Chromium/Firefox/WebKit.
-- Fresh pub.dev beta.3 Android consumer: analyze, debug/release APK builds and 16 KiB alignment passed; hosted iOS simulator/unsigned-release consumer passed.
-
-## 0.1.0-beta.2 — Browser — 2026-10-17
-
-The browser package now has an app-developer README covering installation, ticket
-setup, the first `/health` request, JSON and streaming calls, Vite/WASM deployment,
-status/lifecycle handling and troubleshooting. The browser API and implementation
-remain compatible with beta.1.
-
-| SDK | Registry | Install |
-| --- | --- | --- |
-| Browser | [locho_web](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.2) | `npm install --save-exact locho_web@0.1.0-beta.2` |
-
-The npm `beta` dist-tag points to beta.2; npm `latest` remains beta.1 because both
-published versions are prereleases.
-
-### Registry integrity
-
-- npm tarball integrity:
+- **npm tarball integrity**:
   `sha512-OEpW+aNcQ80ChJSixIQPiCIcpA8Z9WxoAp0Aq7vI5+m/W149hZhXlzuEcYtuMRg3kdkyGX+93Xc2IOl/ZsNflQ==`
-- Package source provenance: clean Locho commit
-  `e9d09b8020e947a23fda8d5d96adf52122ea1065`, wire protocol 3, ticket format 1.
+- **Package source provenance**: clean commit
+  `e9d09b8020e947a23fda8d5d96adf52122ea1065`, wire protocol `3`, ticket format `1`.
 
-### Verification
+### Flutter `0.1.0-beta.2` (2026-10-17)
 
-- TypeScript, WASM, package and production builds passed.
-- Fresh external Vite consumer installed the registry beta.2 package with scripts
-  disabled; package declarations, explicit WASM initialization and 9 local browser
-  smoke/package checks passed. Public-N0 integration remains environment-dependent.
-- Hosted browser WASM CI passed the full source build and package workflow.
-
-## 0.1.0-beta.2 — 2026-10-17
-
-Flutter beta.2 is a documentation-focused update. The API, wire protocol, ticket
-format and native implementation remain compatible with beta.1; browser consumers
-continue using `locho_web` `0.1.0-beta.1`.
+Documentation-focused update with app-developer onboarding for Android/iOS
+configuration, foreground lifecycle, and troubleshooting.
 
 | SDK | Registry | Install |
 | --- | --- | --- |
-| Flutter | [locho_flutter](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.2) | `locho_flutter: 0.1.0-beta.2` in pubspec, then `flutter pub get` |
+| Flutter | [locho_flutter 0.1.0-beta.2](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.2) | `locho_flutter: 0.1.0-beta.2` |
 
-The package README now starts with the app-developer path: install, create a
-ticket, make a first `package:http` request, configure Android/iOS, manage the
-foreground lifecycle and troubleshoot common failures. Advanced source-build and
-FRB details remain linked for maintainers.
-
-### Registry integrity
-
-- pub.dev archive SHA-256:
+- **pub.dev archive SHA-256**:
   `f835a7d8dd5d8ccba0799da8dd5bd4f3b294d6aced52954bb6bdc553c0c1503b`
-- Package source provenance: clean Locho commit
-  `ebd6e10dfe61dcbcbfcd625eff6f1ee65567b7bf`, wire protocol 3, ticket format 1.
+- **Package source provenance**: clean commit
+  `ebd6e10dfe61dcbcbfcd625eff6f1ee65567b7bf`, wire protocol `3`, ticket format `1`.
 
-### Verification
+### CLI `1.3.0-beta.2` (2026-10-21)
 
-- Pub staging outside the checkout passed package validation with the intentional
-  exact FRB dependency warning.
-- Flutter formatting, analyze, unit tests, Rust bridge tests and Clippy passed.
-- Fresh external Android consumer from the beta.2 archive passed analyze,
-  ARM64/x86_64 debug/release APK builds and 16 KiB ELF/ZIP alignment checks.
-- Fresh external Android consumer installed from pub.dev beta.2 passed the same
-  analyze, debug/release and alignment checks.
-- Hosted Flutter CI passed Android debug/release and iOS simulator/unsigned-release
-  builds. Physical iOS runtime and broad device/network acceptance remain open.
+Added macOS/Linux Unix stream socket forwarding, shared-peer HTTP failure
+isolation, host QUIC 128-stream window alignment, cancellation/lifecycle
+hardening, bounded browser discovery retries, and `iroh` `1.4.0` across source
+builds (preparation base `8e1dcc3c8bd97496a9e13dfccfcea97c86c0aeee`, candidate
+`61c8f5a79a74dae4cf8a2b61d60f32f424195e64`).
 
-## 0.1.0-beta.1 — 2026-10-17
+---
 
-Both packages are publicly available. SDK versions are independent of the Locho
-CLI version; these packages use wire protocol 3 and attachment ticket format 1.
+## 0.1.0-beta.1 & CLI 1.3.0-beta.1 — 2026-10-17
 
-| SDK | Registry | Install |
+Initial public SDK beta and CLI ticket integration prerelease (`locho/3` wire
+protocol and ticket format `1`).
+
+| Product | Registry / Tag | Install |
 | --- | --- | --- |
-| Browser | [locho_web](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.1) | `npm install --save-exact locho_web@0.1.0-beta.1` |
-| Flutter | [locho_flutter](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.1) | `locho_flutter: 0.1.0-beta.1` in pubspec, then `flutter pub get` |
+| Browser | [locho_web 0.1.0-beta.1](https://www.npmjs.com/package/locho_web/v/0.1.0-beta.1) | `npm install --save-exact locho_web@0.1.0-beta.1` |
+| Flutter | [locho_flutter 0.1.0-beta.1](https://pub.dev/packages/locho_flutter/versions/0.1.0-beta.1) | `locho_flutter: 0.1.0-beta.1` |
+| CLI | [GitHub `v1.3.0-beta.1`](https://github.com/trchopan/locho/releases/tag/v1.3.0-beta.1) | Tag commit `3786da3127338b2530e0cd8cea8ef23bc6d55dfd` |
 
-Browser imports use `locho_web` and `locho_web/wasm?url`. There is no published
-`@locho/web` package. Flutter consumers need Rust and Android/iOS build toolchains;
-the package bundles matching Locho core/native sources and generated FRB bindings.
-Neither installation requires a vendor bootstrap, GitHub login or SDK checkout.
-
-### Registry integrity
-
-- npm tarball integrity:
+- **npm tarball integrity**:
   `sha512-q5utHDCCFIegS9yFrW8mVO5rEsAOwteyrqex9xcpGRsny/gMBq+4lwtrESBhPfkbZjaSiAiTNwQ7Oh6R43fI2g==`
-- pub.dev archive SHA-256:
+- **pub.dev archive SHA-256**:
   `40d69471f0a0fe99bf19788eb260e428d30fc1124c4cfdede6bbef6172eb0234`
+- **SDK source provenance**: base revision
+  `cb1b232b95500b27a7c9fcd4c7c9264a347b05a5` (`dirty: true` due to initial
+  release-preparation changes).
+- **Examples baseline**: Verified against
+  [`locho_sdk_examples`](https://github.com/trchopan/locho_sdk_examples) commits
+  `efa44bbd1528342f8633323b93f274984051216c` and
+  `57f95ff94835de5525e77e182d9921245dba773b` (Notes API v1, OpenAPI 1.1.0).
 
-Package provenance records base source revision
-`cb1b232b95500b27a7c9fcd4c7c9264a347b05a5` and `dirty: true`, because this initial
-publication includes local release-preparation changes. Native sources are bundled
-with the Flutter distribution rather than fetched from a separate Locho Git revision.
+---
 
-### Verification
+## Target Verification Boundaries & Known Beta Limitations
 
-- Browser TypeScript/WASM build and tarball allowlist validation.
-- Fresh external Vite consumer installed from npm with scripts disabled, production
-  build under `/sdk/`, explicit WASM assets, and 69 passing Chromium/Firefox/WebKit
-  cases through a real Locho host, including JSON notes and incremental SSE.
-- Flutter analyze/unit tests: five pass; the optional real-bridge ticket test is
-  skipped without `LOCHO_TEST_LIBRARY`.
-- Fresh external Android consumers from both local archive and pub.dev: analyze,
-  ARM64/x86_64 debug/release APK builds and ELF/ZIP 16 KiB alignment checks pass.
-- iOS builds were not rerun for this publication: full Xcode is unavailable locally.
-  Physical-device/mobile-browser and broad network acceptance remain separate gates.
+- **CLI native targets**: Linux `x86_64`, macOS Apple silicon, and Windows
+  `x86_64` have native hosted CI and release-smoke coverage. Linux `ARM64` and
+  macOS `x86_64` distribution archives are cross-compiled unless a separate
+  native rehearsal is recorded. Windows `ARM64` is not distributed.
+- **Unix stream sockets**: Supported on macOS and Linux only; Windows rejects
+  Unix upstreams and listeners while supporting TCP attachments.
+- **Mobile & browser scope**: Android `ARM64`/`x86_64` debug/release source
+  builds, 16 KiB alignment checks, and Android emulator runtime are verified.
+  iOS simulator and unsigned-release compilation run in CI, but physical iOS
+  runtime, broad physical-device/mobile-browser journeys, real Wi-Fi/cellular
+  transitions, actual BFCache, and controlled/authenticated browser relays
+  remain open gates. Flutter is foreground-only.
+- **Stale relay hints**: Browser discovery with stale relay hints can still
+  intermittently time out over public N0 relays. Application requests are never
+  automatically replayed.
 
-The examples repository subsequently verified the published packages at commit
-`efa44bbd1528342f8633323b93f274984051216c`: browser/API and private HTTPS deployment
-CI pass, and [Flutter CI](https://github.com/trchopan/locho_sdk_examples/actions/runs/39028168937)
-passes Android debug/release and iOS simulator/unsigned-release builds. This is
-hosted compilation evidence, not physical iOS runtime acceptance. See the examples'
-[registry acceptance](https://github.com/trchopan/locho_sdk_examples/blob/efa44bbd1528342f8633323b93f274984051216c/docs/registry-acceptance.md)
-for runtime results and historical unexplained public-relay health-check timeouts.
+## Publishing Subsequent SDK Releases
 
-### Subsequent publication
-
-Build/test the browser tarball, then publish that exact file with `--tag beta`.
-If npm stages the upload, use its Staged Packages page or `npm stage` commands to
-review and approve it; a `0.0.0-stage` placeholder does not mean the SDK is installable.
-Verify registry integrity and run `LOCHO_NPM_VERSION=<version> npm run test:external`
-with the fixture environment documented in the package README.
-
-For Flutter, follow [the staging/publication instructions](flutter-package.md).
-Keep FRB runtime/codegen pinned together; pub's exact-version warning is intentional.
-Use a new version for each release and test actual registry consumption afterward.
+- **Browser (`locho_web`)**: Build and test the package tarball from a clean
+  committed source checkout (`npm run build:wasm && npm run build && npm run build:package`),
+  then publish that exact tarball with `--tag beta` (leaving `latest` unchanged
+  during beta). Verify registry integrity and run
+  `LOCHO_NPM_VERSION=<version> npm run test:external`.
+- **Flutter (`locho_flutter`)**: Follow the standalone staging and verification
+  procedure in [flutter-package.md](flutter-package.md). Always publish from a
+  verified staging directory outside the Git checkout (`scripts/package-flutter.py --output ...`),
+  keep FRB runtime and codegen versions pinned together, and verify actual
+  `pub.dev` installation afterward with
+  `python3 scripts/test-flutter-package.py --platform android --hosted <version>`.
