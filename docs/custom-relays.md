@@ -80,7 +80,7 @@ machines use different directory layouts).
 
 `locho` configures relay clients; it does not run a relay server. To deploy a
 self-hosted relay, follow the version-matched
-[`iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.4.0/iroh-relay),
+[`iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.4.1/iroh-relay),
 which covers building the server, TLS certificates, QUIC Address Discovery,
 access control, and metrics.
 

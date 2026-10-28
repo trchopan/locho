@@ -42,7 +42,7 @@ Released binaries are published on the
 - macOS `x86_64` and Apple silicon (`ARM64`)
 - Windows `x86_64`
 
-### Stable Release (`1.2.0`)
+### Stable Release (`1.3.0`)
 
 On Linux and macOS:
 
@@ -60,30 +60,13 @@ Get-Content .\locho-installer.ps1
 .\locho-installer.ps1
 ```
 
-### Testing Prerelease `1.3.0-beta.3`
+### Client SDKs (Beta)
 
-The `latest` installers follow the stable channel (`1.2.0`). To test the
-published `1.3.0-beta.3` prerelease (which adds portable tickets and macOS/Linux
-Unix stream sockets), use its version-specific installer:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.sh | sh
-locho --version
-```
-
-```powershell
-Invoke-WebRequest `
-  https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.ps1 `
-  -OutFile locho-beta-installer.ps1
-Get-Content .\locho-beta-installer.ps1
-.\locho-beta-installer.ps1
-locho --version
-```
-
-Expect `locho 1.3.0-beta.3 (commit <full-sha>, clean)`. Browser (`locho_web`)
-and Flutter (`locho_flutter`) SDKs are independently versioned at
-`0.1.0-beta.3`; see [SDK and prerelease provenance](docs/sdk-releases.md) for
-installation and target verification boundaries.
+The CLI `latest` installers follow the stable CLI release (`1.3.0`). Browser
+(`locho_web`) and Flutter (`locho_flutter`) SDKs are independently versioned and
+published in beta at `0.1.0-beta.3`; see
+[SDK and prerelease provenance](docs/sdk-releases.md) for installation
+instructions, registry checksums, and target verification boundaries.
 
 ### Manual Installation and Upgrades
 

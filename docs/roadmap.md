@@ -16,9 +16,9 @@ The core mental model is:
 Configure services -> Start host -> Share a service capability -> Attach locally
 ```
 
-## 1.0–1.2 Status: Stable Core Complete
+## 1.0–1.3 Status: Stable Core Complete
 
-The stable release channel (currently `1.2.0`) delivers the core service-tunnel
+The stable release channel (currently `1.3.0`) delivers the core service-tunnel
 workflow:
 
 - Multiple named HTTP and TCP services in one host process.
@@ -63,9 +63,9 @@ relay infrastructure.
 The project does not promise individual machine identity, per-user policy,
 audit-grade access records, or a centralized locho account system.
 
-## 1.3.0-beta.3: Unix Streams & SDK Integration Beta
+## 1.3.0: Unix Streams, Tickets & SDK Integration Beta
 
-The `1.3.0-beta.x` prerelease series (currently `1.3.0-beta.3`) adds:
+The `1.3.0` release series adds:
 
 - **Native Unix stream sockets (macOS/Linux)**: Filesystem Unix stream socket
   upstreams and attachment listeners for TCP capabilities, configurable

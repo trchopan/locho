@@ -63,8 +63,8 @@ host holds the state lock while running, then restart it to load the replacement
 
 Yes. The CLI can generate a portable ticket with
 `locho share SERVICE --config PATH --ticket`. The `locho_web` and
-`locho_flutter` SDKs are independently versioned; their coordinated beta.3 targets
-are `0.1.0-beta.3`, not the CLI's `1.3.0-beta.3`. The linked registry history records
+`locho_flutter` SDKs are independently versioned; their current beta targets
+are `0.1.0-beta.3`, not the CLI's `1.3.0`. The linked registry history records
 which versions are actually published; updating the CLI alone does not update SDKs.
 Both use TCP service
 capabilities and the existing `locho/3` protocol. Browser HTTP runs over
@@ -217,7 +217,7 @@ rotate-secret` includes `--relay-config` when you provide it; ensure that path
 is valid on the attachment machine.
 
 locho does not host the relay server itself. Follow the
-[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.4.0/iroh-relay)
+[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.4.1/iroh-relay)
 for deployment, TLS, QAD, access control, and metrics. The relay server's
 access-token configuration is separate from locho's client-side `token_env`
 setting.

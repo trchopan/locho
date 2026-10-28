@@ -33,6 +33,7 @@ try {
     # ordinary release binary separately on every supported OS.
     Invoke-Step "cargo test --workspace --all-targets --all-features -- --test-threads=1"
     Invoke-Step "cargo test -p locho-core --no-default-features"
+    Invoke-Step "cargo metadata --locked --format-version=1 --manifest-path packages/locho_flutter/rust/Cargo.toml | Out-Null"
 
     Write-Host "`nCI verification passed."
 }

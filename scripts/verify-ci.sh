@@ -27,5 +27,6 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # ordinary release binary separately on every supported OS.
 run cargo test --workspace --all-targets --all-features -- --test-threads=1
 run cargo test -p locho-core --no-default-features
+run cargo metadata --locked --format-version=1 --manifest-path packages/locho_flutter/rust/Cargo.toml >/dev/null
 
 printf '\nCI verification passed.\n'

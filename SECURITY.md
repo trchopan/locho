@@ -2,10 +2,10 @@
 
 ## Supported Versions
 
-The currently supported stable release is `1.2.0` (with `1.3.0-beta.3` and SDK
-`0.1.0-beta.3` available as active integration prereleases). Older releases and
-development snapshots are not supported; fixes may be backported at maintainer
-discretion.
+The currently supported stable CLI release is `1.3.0` (with `locho_web` and
+`locho_flutter` SDK `0.1.0-beta.3` available as active integration prereleases).
+Older releases and development snapshots are not supported; fixes may be
+backported at maintainer discretion.
 
 ## Reporting a Vulnerability
 

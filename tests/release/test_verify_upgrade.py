@@ -23,7 +23,7 @@ class UpgradeVersionTests(unittest.TestCase):
         self.assertEqual(args.previous_version, "1.3.0-beta.2")
 
     def test_exact_stable_and_beta_versions_pass(self):
-        for version in ["1.2.0", "1.3.0-beta.2", "1.3.0-beta.3"]:
+        for version in ["1.2.0", "1.3.0-beta.2", "1.3.0-beta.3", "1.3.0"]:
             with self.subTest(version=version):
                 UPGRADE.check_version(self.output(version), version)
 
