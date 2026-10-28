@@ -3,397 +3,48 @@
 > local + echo = locho
 
 `locho` is an open-source, developer-oriented private service tunnel for
-connecting to selected HTTP APIs, web services, databases, and TCP endpoints
-from another machine. It works as an HTTP reverse proxy or local TCP port
-forwarder, using [iroh](https://iroh.computer/) for encrypted peer-to-peer
-connectivity and NAT traversal.
+connecting to selected HTTP APIs, web services, databases, and TCP or Unix
+stream endpoints from another machine. It works as an HTTP reverse proxy or
+local TCP/Unix stream forwarder, using [iroh](https://iroh.computer/) for
+encrypted peer-to-peer connectivity and NAT traversal.
 
-locho gives an authorized machine a local endpoint for one explicitly selected
+`locho` gives an authorized machine a local endpoint for one explicitly selected
 service without exposing the host network. It is _a focused alternative_ to SSH
 port forwarding, a VPN, or a hosted tunnel when you need private access to a
 small set of development or infrastructure services.
 
 ## Why locho?
 
-- Tunnel private HTTP and TCP services to local endpoints.
-- Authorize each service independently with a service capability.
+- Tunnel private HTTP and TCP/Unix services to local endpoints.
+- Authorize each service independently with a service-scoped capability or
+  portable ticket.
 - Connect directly between peers or use encrypted relay connectivity when
   direct networking is unavailable.
 - Share selected services without exposing the host network or other ports.
-- Use locho without an account or application-managed control plane.
-- Run on Linux, macOS, and Windows with a single Rust binary.
+- Use `locho` without an account or application-managed control plane.
+- Run on Linux, macOS, and Windows with a single Rust binary, or connect from
+  Browser and Flutter apps using the beta SDKs.
 
-locho is deliberately a service tunnel, not a VPN or a hosted service platform:
+`locho` is deliberately a service tunnel, not a VPN or a hosted service platform:
 it does not create a virtual network, route subnets, publish public URLs, or
 provide remote shell access.
 
-Start with the [installation instructions](#installation), see the
-[FAQ](FAQ.md) for common questions, or read the [comparison](COMPARISON.md) to
-choose the right tool for your use case.
-
-## The Service Model
-
-```text
-Host process
-|-- API service   -> HTTP upstream   -> service capability A
-|-- Database      -> TCP endpoint    -> service capability B
-`-- Dev server    -> HTTP upstream   -> service capability C
-```
-
-Each service is configured explicitly and has an independent attachment
-capability. A machine with a capability can attach that service locally. The
-same capability may be used by multiple machines concurrently; locho does not
-provide per-user or per-machine authorization.
-
-```text
-Machine A -- capability A --+
-Machine B -- capability A --+--> API service on the host
-Machine C -- capability B ------> Database on the host
-```
-
-## When to use locho
-
-Use locho when developers need to:
-
-- Reach a specific private HTTP or TCP service from another machine.
-- Share selected services without exposing the host network.
-- Avoid an SSH login, VPN deployment, or hosted tunnel account.
-- Give several machines access to the same explicitly selected service.
-
-Use another tool when you need:
-
-- Remote shell administration: use SSH.
-- Machine, IP, or subnet connectivity: use a VPN or network overlay.
-- A public URL, webhooks, or public ingress: use a public tunnel provider.
-- Team identity, per-user policy, audit, or service management: use a platform
-  designed for those requirements.
-
-## How it works
-
-```text
-Client machine                              Host machine
-+------------------+                    +------------------+
-| local HTTP proxy |                    | locho host       |
-| or TCP listener  |===================>| selected service |
-+------------------+   iroh connection  +------------------+
-       ^                    encrypted             ^
-       |                                           |
-   local app                              HTTP upstream or
-                                          TCP endpoint
-```
-
-The host owns the service configuration. An attachment capability authorizes
-access to one service only. iroh may establish a direct peer connection or use
-a relay when direct connectivity is unavailable. Relayed traffic remains
-end-to-end encrypted, but public relay infrastructure does not provide an
-availability guarantee.
-
-## Usage
-
-The host configuration defines multiple named HTTP and TCP services. Each
-service has an independent attachment capability:
-
-```toml
-# locho.toml
-[[services]]
-name = "api"
-type = "http"
-upstream = "https://example.com"
-# Optional total upstream request/response timeout in seconds (1-300).
-# Defaults to 60 seconds.
-# upstream_timeout_secs = 90
-# Optional PEM CA certificate for a private HTTPS upstream.
-# ca_cert = "/path/to/upstream-ca.pem"
-
-[[services]]
-name = "database"
-type = "tcp"
-endpoint = "127.0.0.1:5432"
-# Replace endpoint (do not combine the fields) to select a Unix stream socket:
-# unix_socket = "/home/alice/.config/herdr/herdr.sock"
-# tcp_idle_timeout_secs = 0 # omit for 300 seconds; 0 disables byte-idle expiry
-```
-
-Start the host with the validated configuration:
-
-```sh
-locho host --config locho.toml
-```
-
-### Unix stream sockets (macOS/Linux)
-
-TCP capabilities also authorize raw byte-stream services backed by a filesystem
-Unix socket. Listener and upstream choices are independent: TCP→TCP, TCP→Unix,
-Unix→TCP and Unix→Unix all use the same protocol and capability format.
-
-For example, replace a service's `endpoint` with `unix_socket`:
-
-```toml
-[[services]]
-name = "workspace"
-type = "tcp"
-unix_socket = "/home/alice/.config/example/api.sock"
-tcp_idle_timeout_secs = 0
-```
-
-Save this service in `locho.toml` and start (or restart) the host with that
-configuration. Prepare an existing private listener directory, then attach with the capability
-obtained privately through `locho share workspace --config locho.toml`:
-
-```sh
-mkdir -m 700 -p "$HOME/.local/run/locho"
-locho attach '<host-id>' 'workspace:tcp:<secret>' \
-  --listen-unix "$HOME/.local/run/locho/api.sock" \
-  --tcp-idle-timeout-secs 0
-```
-
-Paths must be absolute, with no tilde/environment expansion inside TOML. The
-maximum configured path is 103 bytes on macOS and 107 on Linux; keep filenames
-short (Linux directory-relative binding through `/proc/self/fd` may impose a
-shorter basename limit). Linux requires `/proc/self/fd` to be available. Windows
-rejects Unix endpoints/listeners explicitly; existing TCP attachments still work.
-HTTP capabilities do not accept Unix listeners or raw-stream idle options.
-
-Idle policy is local to each end: omitted means 300 seconds, `0` disables it,
-and positive values range from 1 to 3,153,600,000 seconds. The stricter endpoint
-wins; older peers still expire after five minutes. Transport keepalives do not
-reset this application-byte deadline. See [Unix socket security](SECURITY.md#unix-socket-attachments)
-for ancestry requirements, delegated authority and cleanup limitations. Datagram,
-abstract-socket, descriptor-passing and ancillary-data semantics are unsupported.
-
-### Custom relays
-
-Host, attachment, and diagnostic endpoints can use the same optional relay
-configuration file. The file supports custom-only operation by default, or
-custom relays alongside the normal N0 relays:
-
-```toml
-# relay.toml
-include_n0_relays = false
-
-[[relays]]
-url = "https://relay.example.org"
-token_env = "LOCHO_RELAY_TOKEN"
-quic_address_discovery = true
-```
-
-`quic_address_discovery` defaults to `true` and uses the relay's default QAD
-UDP port, 7842. Set it to `false` when the relay is reachable through an HTTPS
-reverse proxy that does not expose QAD. `token_env` names an environment
-variable containing an optional bearer token; the token is never printed by
-locho or included in normal diagnostics.
-
-Use the same relay file for both sides of a connection:
-
-```sh
-export LOCHO_RELAY_TOKEN="..."
-locho host --config locho.toml --relay-config relay.toml
-locho attach <host-id> api:http:<secret> --relay-config relay.toml
-locho diagnose --host-id <host-id> --relay-config relay.toml
-```
-
-For fallback to N0, set `include_n0_relays = true`. Relay entries are a set of
-connectivity candidates, not a priority list. iroh still prefers a working
-direct path over relayed paths, and selects among available relays based on
-reachability and measured latency. Without `--relay-config`, locho retains its
-existing N0 relay behavior.
-
-`include_n0_relays = false` means custom relay transport only. The current
-endpoint builder still uses iroh's N0 discovery services to publish and resolve
-host IDs, so a bare host-ID connection may still need access to N0 discovery.
-Use an explicit direct address when that discovery dependency is not acceptable.
-
-The simplest local `iroh-relay --dev` mode uses plain HTTP, but locho requires
-HTTPS relay URLs. For locho clients, use a relay with a trusted TLS certificate;
-the upstream self-signed/local TLS setup also requires client CA configuration
-that locho does not currently expose.
-
-### Manual relay verification
-
-For a relay-only or fallback check, deploy the version-matched `iroh-relay`
-server from the documentation above and configure a shared server token, for
-example:
-
-```toml
-access.shared_token = ["replace-with-a-secret"]
-```
-
-Keep the token out of files shared with clients and expose it through
-`LOCHO_RELAY_TOKEN`:
-
-```toml
-# relay.toml
-include_n0_relays = false
-
-[[relays]]
-url = "https://relay.example.org"
-token_env = "LOCHO_RELAY_TOKEN"
-quic_address_discovery = false
-```
-
-Run the host and attachment with the same relay file, then verify the path:
-
-```sh
-export LOCHO_RELAY_TOKEN="replace-with-a-secret"
-locho host --config locho.toml --relay-config relay.toml
-locho share api --config locho.toml --relay-config relay.toml
-locho attach <host-id> api:http:<secret> --relay-config relay.toml
-locho diagnose --host-id <host-id> --relay-config relay.toml
-```
-
-The diagnostic output should report the configured relay and a `relay(...)` or
-`mixed(...)` transport when direct connectivity is unavailable. To verify N0
-fallback, change `include_n0_relays` to `true` and repeat with a custom relay
-that is unavailable. Exact path selection is network-dependent because iroh
-still prefers working direct paths and measures relay reachability and latency.
-
-locho configures relay clients; it does not run a relay server. To host a
-self-hosted iroh relay, use the version-matched
-[`iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.2.0/iroh-relay),
-which covers building the server, TLS, QUIC Address Discovery, access control,
-and metrics. Configure the server's shared access token separately from
-locho's `token_env` client setting, and keep the two processes on compatible
-iroh versions.
-
-The host prints its ID and the configured service names, but never prints
-capabilities. Generate an attach command explicitly:
-
-```sh
-locho share api --config locho.toml --relay-config relay.toml
-```
-
-The command output contains a capability token in the form
-`<service>:<type>:<secret>` and, when supplied, the `--relay-config` option.
-The relay configuration path must exist on the attachment machine; adjust the
-path if the host and attachment use different filesystem layouts. Share the
-output through a trusted channel.
-
-For a host that must provide an explicit reachable address to an attachment,
-bind it to that address and pass the same address to `locho attach` with
-`--direct-address`. This is useful for local testing or networks where peer
-discovery cannot advertise the host address:
-
-```sh
-locho host --config locho.toml --bind-address 192.0.2.10:12345
-locho share api --config locho.toml --relay-config relay.toml \
-  --direct-address 192.0.2.10:12345
-locho attach <host-id> api:http:<secret> \
-  --relay-config relay.toml --direct-address 192.0.2.10:12345 \
-  --listen 127.0.0.1:8765
-```
-
-Use a fixed reachable port instead of `0` when sharing the address with an
-attachment.
-
-Attach one selected service locally using the command generated by `locho share`:
-
-```sh
-locho attach <host-id> api:http:<secret> --listen 127.0.0.1:8765
-```
-
-For a one-off client-side HTTP response timeout, add
-`--http-timeout-secs <seconds>`. The value defaults to 60 seconds and accepts
-values from 1 to 300 seconds.
-
-For scripts that need only the token, use `locho secret`:
-
-```sh
-locho secret api --config locho.toml
-```
-
-Export a versioned single-service bearer ticket explicitly:
-
-```sh
-locho share api --config locho.toml --ticket
-```
-
-See [portable tickets v1](docs/tickets.md) for optional peer relay hints, encoding,
-and credential handling. Prerelease Flutter and browser wrappers accept the same
-ticket through the shared Rust parser. Both SDKs are available as public beta
-packages; see [SDK releases](docs/sdk-releases.md) for installation and compatibility.
-
-Check local state and configuration without printing capabilities:
-
-```sh
-locho diagnose --config locho.toml
-locho diagnose --host-id <host-id>
-locho diagnose --host-id <host-id> --direct-address 192.0.2.10:12345
-```
-
-The optional host probe reports the concrete iroh transport path. `direct(...)`
-means a direct UDP path, `relay(...)` means traffic is currently using a relay,
-and `mixed(...)` means iroh has both a direct and relay path available. The
-diagnostic probe waits briefly for a relay connection to upgrade to a direct
-path before printing its result. An attachment prints its initial path and
-continues reporting path changes while running. Use `--direct-address` when
-discovery cannot advertise a reachable address to the probing machine. A relay
-path is encrypted end-to-end, but relay availability and performance remain
-external infrastructure dependencies.
-
-Some networks use destination-dependent NAT mappings. iroh detects this with
-QUIC Address Discovery (QAD), which probes multiple relay destinations and
-compares the public IPv4 mappings they observe. This can make direct UDP
-hole-punching unreliable, but it does not indicate a locho failure. Relay
-fallback is the expected behavior in this situation.
-
-TCP services are attached to a local TCP listener and forward bidirectionally:
-
-Rotate one service capability without affecting other services:
-
-```sh
-locho rotate-secret api --config locho.toml --relay-config relay.toml
-```
-
-When the host requires an explicit address, include it in the rotation command
-so the generated attach command is complete:
-
-```sh
-locho rotate-secret api --config locho.toml --relay-config relay.toml \
-  --direct-address 192.0.2.10:12345
-```
-
-The host holds its state lock while running, so stop the host before rotating a
-capability, then start it again to load the replacement.
-
-An HTTP service is used through its local HTTP endpoint:
-
-```sh
-curl http://127.0.0.1:8765/path
-```
-
-HTTP request and response bodies are streamed through the tunnel. Known-length
-bodies use length framing; chunked bodies use bounded chunk framing. Individual
-bodies are limited to 32 MiB, and HTTP requests use a configurable upstream
-request/response timeout that defaults to 60 seconds and accepts values from 1
-to 300 seconds. Hop-by-hop headers are not forwarded. WebSocket upgrades are
-not supported. HTTPS certificates are validated against the normal system roots
-by default; `ca_cert` may explicitly add a PEM CA certificate for a private
-upstream. If an upstream fails after response headers have been forwarded, the
-attachment closes the response stream; an HTTP client may observe a truncated
-body rather than a replacement gateway status.
-
-A TCP service is attached to a local port and used by its native client:
-
-```sh
-locho attach <host-id> database:tcp:<secret> --listen 127.0.0.1:5432
-psql --host 127.0.0.1 --port 5432
-```
-
-Older attach commands using separate service and secret arguments remain
-accepted for migration, but new commands should use the capability-token form.
+Start with the [installation instructions](#installation) and
+[5-minute quickstart](#quickstart), browse the [documentation hub](docs/README.md),
+see the [FAQ](docs/faq.md), or read the [tool comparison](docs/comparison.md).
 
 ## Installation
 
 Released binaries are published on the
-[GitHub Releases page](https://github.com/trchopan/locho/releases). The
-supported CLI distribution targets for stable `1.2.0` and the `1.3.0-beta.3`
-candidate are:
+[GitHub Releases page](https://github.com/trchopan/locho/releases) for:
 
-- Linux x86_64 and ARM64
-- macOS x86_64 and Apple silicon
-- Windows x86_64
+- Linux `x86_64` and `ARM64`
+- macOS `x86_64` and Apple silicon (`ARM64`)
+- Windows `x86_64`
 
-On Unix, install the latest release with:
+### Stable Release (`1.2.0`)
+
+On Linux and macOS:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/latest/download/locho-installer.sh | sh
@@ -409,10 +60,11 @@ Get-Content .\locho-installer.ps1
 .\locho-installer.ps1
 ```
 
-### Testing 1.3.0-beta.3
+### Testing Prerelease `1.3.0-beta.3`
 
-The latest-release installers above follow the stable channel. To test the published
-beta, use its version-specific installer:
+The `latest` installers follow the stable channel (`1.2.0`). To test the
+published `1.3.0-beta.3` prerelease (which adds portable tickets and macOS/Linux
+Unix stream sockets), use its version-specific installer:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trchopan/locho/releases/download/v1.3.0-beta.3/locho-installer.sh | sh
@@ -428,50 +80,131 @@ Get-Content .\locho-beta-installer.ps1
 locho --version
 ```
 
-Expect `locho 1.3.0-beta.3 (commit <full-sha>, clean)`. Browser and Flutter SDKs
-are independently versioned; coordinated `0.1.0-beta.3` registry publication
-is tracked separately from the CLI tag. A CLI upgrade does not update SDKs. See
-[SDK installation](docs/sdk-releases.md) and the
-[beta scope and verification record](docs/release-1.3.0-beta.3.md).
-Linux ARM64 native verification remains pending; a cross-build alone is not runtime
-acceptance. Physical iOS/mobile-browser and broad device/network acceptance also
-remain open for this beta. Browser discovery with stale relay hints can still
-intermittently time out over public N0 relays. The browser relay-key correction is
-not proof every timeout is resolved; requests are not replayed and deadlines are
-unchanged.
+Expect `locho 1.3.0-beta.3 (commit <full-sha>, clean)`. Browser (`locho_web`)
+and Flutter (`locho_flutter`) SDKs are independently versioned at
+`0.1.0-beta.3`; see [SDK and prerelease provenance](docs/sdk-releases.md) for
+installation and target verification boundaries.
 
-### Manual installation and upgrades
+### Manual Installation and Upgrades
 
-Manual installation is also supported: download the archive for the operating
-system and architecture, extract `locho` or `locho.exe` into a directory on
-your `PATH`, and verify the matching `.sha256` entry or the unified `sha256.sum`
-file. The release archive contains the binary, `README.md`, `CHANGELOG.md`, and
-`LICENSE`.
+You can also download the release archive for your OS and architecture, extract
+`locho` or `locho.exe` onto your `PATH`, and verify the matching `.sha256` entry
+or `sha256.sum`. Upgrading replaces only the executable; host identity and
+service capabilities remain in the application state directory and are preserved
+across upgrades.
 
-Upgrading replaces only the executable. Host identity and service capabilities
-remain in the application state directory and are preserved across upgrades.
-Back up that directory before upgrading, protect capabilities like passwords,
-and rotate a capability if it may have been exposed. Release binaries need
-outbound network access for iroh discovery and relay connectivity; no locho
-account or hosted coordinator is required.
+## Quickstart
 
-TCP attachments use a 10-second handshake and upstream connection timeout and
-close idle connections after 5 minutes by default. A TCP host or attachment may
-set `tcp_idle_timeout_secs` to `0` to disable byte-idle expiry, or to a positive
-value; both ends must disable it for indefinite byte silence. At most 128 TCP
-connections are active per host and per attachment process. If the configured
-endpoint is unavailable, the attachment reports a gateway failure; it never
-connects to an arbitrary address. Connection budgets remain enforced when idle
-expiry is disabled, so silent clients can consume capacity indefinitely.
+### 1. Configure Services on the Host
 
-Attachments keep their local listener available while the tunnel reconnects.
-New HTTP requests and TCP clients wait briefly for recovery and then receive an
-unavailable error if the tunnel is still down. In-flight requests and TCP
-connections are not replayed after a tunnel loss. Use a process supervisor such
-as Docker, systemd, or launchd for process-level recovery.
+Define one or more named HTTP or TCP services in `locho.toml`:
 
-To attach several services with one client process and one shared iroh
-connection, use an attachment configuration:
+```toml
+# locho.toml
+[[services]]
+name = "api"
+type = "http"
+upstream = "https://example.com"
+# Optional total upstream request/response timeout in seconds (1-300, default 60):
+# upstream_timeout_secs = 90
+# Optional PEM CA certificate for a private HTTPS upstream:
+# ca_cert = "/path/to/upstream-ca.pem"
+
+[[services]]
+name = "database"
+type = "tcp"
+endpoint = "127.0.0.1:5432"
+# Or, on macOS/Linux, replace endpoint with a filesystem Unix stream socket:
+# unix_socket = "/home/alice/.config/example/api.sock"
+# tcp_idle_timeout_secs = 0 # omit for 300s default; 0 disables byte-idle expiry
+```
+
+### 2. Start the Host
+
+```sh
+locho host --config locho.toml
+```
+
+The host validates `locho.toml` before starting, initializes its persistent
+identity and per-service secrets, and prints its Host ID and configured service
+names (it never prints capability secrets automatically).
+
+### 3. Share a Service Capability
+
+Generate a ready-to-run `locho attach` command for one service and share it
+through a trusted channel:
+
+```sh
+locho share api --config locho.toml
+```
+
+- For scripts that need only the `<service>:<type>:<secret>` token:
+  `locho secret api --config locho.toml`
+- For Browser and Flutter SDKs that consume a `locho1:` portable ticket:
+  `locho share database --config locho.toml --ticket` (see
+  [portable tickets v1](docs/tickets.md)).
+
+### 4. Attach on the Client Machine
+
+Attach an HTTP service to a local HTTP endpoint:
+
+```sh
+locho attach <host-id> api:http:<secret> --listen 127.0.0.1:8765
+curl http://127.0.0.1:8765/path
+```
+
+Or attach a TCP service to a local port and connect with its native client:
+
+```sh
+locho attach <host-id> database:tcp:<secret> --listen 127.0.0.1:5432
+psql --host 127.0.0.1 --port 5432
+```
+
+## The Service Model & How It Works
+
+```text
+Host process
+|-- API service   -> HTTP upstream   -> service capability A
+|-- Database      -> TCP endpoint    -> service capability B
+`-- Dev server    -> HTTP upstream   -> service capability C
+```
+
+Each configured service has an independent attachment capability. A machine with
+capability A can attach the API service locally, and multiple machines may use
+the same capability concurrently:
+
+```text
+Machine A -- capability A --+
+Machine B -- capability A --+--> API service on the host
+Machine C -- capability B ------> Database on the host
+```
+
+```text
+Client machine                              Host machine
++------------------+                    +------------------+
+| local HTTP proxy |                    | locho host       |
+| or TCP listener  |===================>| selected service |
++------------------+   iroh connection  +------------------+
+       ^                    encrypted             ^
+       |                                          |
+   local app                              HTTP upstream or
+                                          TCP/Unix endpoint
+```
+
+- **When to use `locho`**: Reach a specific private HTTP or TCP/Unix service
+  from another machine without exposing the host network, creating a VPN, or
+  requiring an SSH login.
+- **When to use another tool**: Use SSH for remote shell administration, a VPN
+  or network overlay for subnet/IP routing, a public tunnel provider for public
+  URLs/webhooks, or an enterprise access platform for per-user identity and
+  audit logging. See [COMPARISON.md](docs/comparison.md).
+
+## Common CLI Operations
+
+### Multi-Service Attachments (`attachments.toml`)
+
+Attach multiple services in one client process over a single shared `iroh`
+connection:
 
 ```toml
 # attachments.toml
@@ -482,114 +215,121 @@ listen_host = "127.0.0.1"           # optional; defaults to localhost
 [[services]]
 capability = "api:http:<secret>"
 listen_port = 8765
-# Optional attachment response timeout in seconds (1-300).
-# Defaults to 60 seconds.
-# http_timeout_secs = 90
+# http_timeout_secs = 90 # optional (1-300, default 60)
 
 [[services]]
 capability = "database:tcp:<secret>"
 listen_port = 5432
-# Or, for a TCP capability:
-# Replace listen_port; exactly one listener field is required.
+# Or on macOS/Linux, replace listen_port with an absolute Unix socket path:
 # listen_unix = "/home/bob/.local/run/locho/database.sock"
 # tcp_idle_timeout_secs = 0
 ```
-
-Unix socket paths must be absolute. Unix attachment listeners require an
-existing private parent directory owned by the effective user (for example,
-`mkdir -m 700 -p "$HOME/.local/run/locho"`), are created mode `0600`, refuse
-existing entries including stale sockets, and remove only the socket created by
-that attachment when its identity still matches (best-effort against concurrent
-same-UID modifications). Listener operations use pinned directory handles; unsafe
-writable ancestry and non-root parent symlinks are refused, and macOS ACL allow
-entries in listener ancestry are conservatively rejected. A crash or `SIGKILL` can leave a stale path; verify it before
-removing it manually. Unix sockets are supported on macOS and Linux only. The
-public native, Flutter, and browser SDK APIs remain unchanged and do not expose
-Unix listener handles or browser Unix APIs.
-
-Start all configured local listeners with:
 
 ```sh
 locho attach --config attachments.toml
 ```
 
-The capability token supplies the service name and type. Each listener remains
-scoped to its configured capability. The config form shares one connection and
-therefore has one reconnect and process failure boundary for all services; run
-separate positional `locho attach` commands when independent failure domains
-are required.
+### Rotating a Service Capability
 
-Host and attachment processes handle Ctrl-C gracefully, and Unix attachments
-also handle SIGTERM: they stop accepting new connections, close active tunnel
-connections, and wait up to 10 seconds for active tasks to finish before
-terminating remaining tasks. Tunnel handshakes also have a 10-second timeout.
-HTTP hosts enforce the configured upstream
-request/response timeout, which defaults to 60 seconds. HTTP attachments enforce
-their configured response timeout, which also defaults to 60 seconds and applies
-between response chunks.
+Stop the running host (which holds the state lock), rotate one service's secret
+without affecting other services, and restart the host:
 
-Configuration is loaded and fully validated before the host starts. Service
-names are unique, limited to letters, numbers, `-`, and `_`, HTTP upstreams
-must use HTTPS, and each service must define only the endpoint field matching
-its type. Unix paths do not carry through tickets or the wire protocol; they
-are local host/attachment policy. The upstream sees the Locho host process as
-its local peer, not the original caller's UID/GID/PID.
+```sh
+locho rotate-secret api --config locho.toml
+```
 
-## Security model
+### Diagnostics and Explicit Direct Addressing
 
-- iroh provides encrypted transport and cryptographic peer identities.
-- locho capabilities provide application-level authorization for one service.
-- Possession of a capability grants access to its service; it does not identify
-  a human or independently identify a machine.
-- Capabilities can be rotated or revoked per service.
-- Multiple attached machines can use the same capability concurrently.
-- Upstream TLS verification and local listener binding remain security-critical
-  configuration choices.
-- Credentials and host private keys must be protected like passwords and keys.
+Check local configuration or probe the concrete transport path (`direct(...)`,
+`relay(...)`, or `mixed(...)`) to a host without printing capabilities:
 
-No locho account or application-managed coordinator is required. iroh discovery
-and relay infrastructure may still participate in establishing connectivity.
+```sh
+locho diagnose --config locho.toml
+locho diagnose --host-id <host-id>
+```
 
-## Scope
+When peer discovery cannot advertise a reachable host address (such as in
+isolated local test networks), bind the host to a fixed address and pass
+`--direct-address` to clients:
 
-Included:
+```sh
+locho host --config locho.toml --bind-address 192.0.2.10:12345
+locho attach <host-id> api:http:<secret> --direct-address 192.0.2.10:12345 --listen 127.0.0.1:8765
+```
 
-- Multiple explicitly configured HTTP and TCP services per host process.
-- Independent service-scoped attachment capabilities.
-- Concurrent attachments from multiple machines.
-- Persistent host identity, capability rotation, and service revocation.
-- Bounded resources, timeouts, diagnostics, and graceful lifecycle behavior.
+### Protocol Behavior & Operational Limits
 
-Not included:
+- **HTTP services**: Request and response bodies stream up to 32 MiB per body.
+  Upstream and attachment timeouts default to 60 seconds (`1`–`300` seconds).
+  Hop-by-hop headers and WebSocket upgrades are unsupported (use a TCP service
+  for non-HTTP protocols). HTTP upstreams must use HTTPS (`ca_cert` may add a
+  custom PEM CA).
+- **TCP & Unix stream services**: 10-second handshake and upstream connection
+  timeout, 5-minute default application-byte idle timeout (configurable via
+  `tcp_idle_timeout_secs`), and up to 128 active connections per host and per
+  attachment process.
+- **Reconnection & shutdown**: Local listeners stay bound while the tunnel
+  reconnects; in-flight requests and streams are never automatically replayed.
+  `Ctrl-C` (and `SIGTERM` on Unix attachments) stops accepting new connections
+  and drains active tasks for up to 10 seconds.
 
-- Virtual network interfaces, subnet routing, or arbitrary host access.
-- Public ingress or provider-managed application endpoints.
-- Per-user identity, per-machine policy, team administration, or audit platform.
-- Service discovery, hosted accounts, or a centralized locho control plane.
+### Advanced Operational Guides
 
-See [COMPARISON.md](COMPARISON.md), [FAQ.md](FAQ.md), and
-[ROADMAP.md](ROADMAP.md) for product decisions and future direction.
+- **[Unix Stream Sockets (macOS/Linux)](docs/unix-sockets.md)** — Exposing Unix
+  socket upstreams and attaching local Unix socket listeners (`--listen-unix`),
+  path length limits, idle policies, and directory security.
+- **[Custom iroh Relays](docs/custom-relays.md)** — Configuring self-hosted
+  `iroh-relay` servers (`relay.toml`), bearer token environment variables, QUIC
+  Address Discovery, and manual relay verification.
+- **[Portable Tickets v1](docs/tickets.md)** — Generating and consuming
+  `locho1:` single-service tickets with optional peer relay hints.
 
-## Development
+## Client SDKs (Browser & Flutter Beta)
 
-Build requirements:
+Browser and foreground Flutter applications can connect to TCP-configured
+`locho` services using portable `locho1:` tickets without installing the CLI on
+client devices:
 
-- Rust stable with Cargo
-- Network access for iroh discovery and relay connectivity
+| Platform | Package | Documentation |
+| --- | --- | --- |
+| **Browser (TypeScript / WASM)** | [`locho_web` on npm](https://www.npmjs.com/package/locho_web) | [Browser SDK Guide](packages/locho-web/README.md) · [Browser HTTP Spec](docs/browser-http.md) |
+| **Flutter (Android / iOS)** | [`locho_flutter` on pub.dev](https://pub.dev/packages/locho_flutter) | [Flutter SDK Guide](packages/locho_flutter/README.md) · [Source-Build Packaging](docs/flutter-package.md) |
+| **Rust (Workspace Crate)** | `locho-client-native` (internal `0.1.0`) | [Native Client API](docs/native-client.md) · [SDK Foundation](docs/sdk-foundation.md) |
+
+See [SDK and prerelease provenance](docs/sdk-releases.md) for registry
+checksums, version compatibility, and current mobile/browser beta limitations.
+
+## Security Model & Scope
+
+- **Encrypted peer transport**: `iroh` provides end-to-end encrypted connections
+  and cryptographic peer identities.
+- **Service-scoped capabilities**: Possession of a capability or ticket grants
+  access to that single service; it does not identify an individual user or
+  expose other services on the host.
+- **Safe operation**: Protect host state and capability tokens like passwords,
+  rotate leaked capabilities with `locho rotate-secret`, and review
+  [SECURITY.md](SECURITY.md) for vulnerability reporting and Unix socket
+  security requirements.
+- **Product scope**: See [docs/roadmap.md](docs/roadmap.md) for completed
+  milestones, explicit non-goals, and architectural decision gates.
+
+## Development & Contributing
+
+Build and run the test suite with Rust `1.96+` and Cargo:
 
 ```sh
 cargo build --release
 cargo test
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, complete
-quality gate, integration tests, and release verification commands. Maintainers
-preparing a release should follow [RELEASE.md](RELEASE.md).
+We welcome bug reports, documentation improvements, and pull requests! See:
 
-Flutter and browser SDK beta packages use the workspace's shared protocol and
-client libraries. See [SDK releases](docs/sdk-releases.md) for registry installation,
-verification and platform limitations, and [SDK foundation](docs/sdk-foundation.md)
-for the shared architecture.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** for the repository architecture map,
+  local Rust/Browser/Flutter development setup, and CI quality gates.
+- **[Documentation Hub (`docs/README.md`)](docs/README.md)** for the complete
+  index of guides and specifications.
+- **[Release Checklist (`docs/releasing.md`)](docs/releasing.md)** for
+  maintainer release verification steps.
 
 ## License
 

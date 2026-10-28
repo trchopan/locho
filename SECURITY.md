@@ -2,7 +2,8 @@
 
 ## Supported Versions
 
-The currently supported release is `1.1.1`. Older releases and
+The currently supported stable release is `1.2.0` (with `1.3.0-beta.3` and SDK
+`0.1.0-beta.3` available as active integration prereleases). Older releases and
 development snapshots are not supported; fixes may be backported at maintainer
 discretion.
 

@@ -6,16 +6,16 @@ same checks locally and in CI.
 
 ## Release Candidate
 
-For the current beta, record candidate-specific results and remaining gates in
-[1.3.0-beta.3 evidence](docs/release-1.3.0-beta.3.md). SDK package versions are
-independent of the CLI version; metadata-only CLI changes may require manual
-dispatch of the browser and Flutter workflows against the candidate branch.
-The coordinated SDK targets are `locho_web` and `locho_flutter` `0.1.0-beta.3`;
-their registry gates are in [SDK beta.3](docs/sdk-0.1.0-beta.3.md).
+For the current beta, record candidate-specific results, provenance hashes, and
+remaining gates in [SDK & Prerelease Provenance](sdk-releases.md). SDK package
+versions are independent of the CLI version; metadata-only CLI changes may
+require manual dispatch of the browser and Flutter workflows against the
+candidate branch. The coordinated SDK targets are `locho_web` and
+`locho_flutter` `0.1.0-beta.3`.
 
-- [ ] Confirm the version in `Cargo.toml`, `Cargo.lock`, and the changelog.
+- [ ] Confirm the version in `Cargo.toml`, `Cargo.lock`, and [`CHANGELOG.md`](../CHANGELOG.md).
 - [ ] Confirm the changelog describes user-visible changes and known limitations.
-- [ ] Confirm `README.md`, `FAQ.md`, and installation instructions use the
+- [ ] Confirm [`README.md`](../README.md), [`docs/faq.md`](faq.md), and installation instructions use the
       release version and supported target matrix.
 - [ ] Run `scripts/verify-release.sh` on Linux or macOS.
 - [ ] Run `scripts/Verify-Release.ps1` on Windows.

@@ -4,7 +4,7 @@ The workspace contains the `locho` CLI, unpublished `locho-core` 0.1.0 shared
 library and `locho-client-native` 0.1.0 native attachment adapter. See
 [Native TCP attachment API](native-client.md) for caller-owned runtime, loopback
 startup/status/shutdown and HTTP integration. The published browser and Flutter
-packages are independently versioned at `0.1.0-beta.1`; see
+packages are independently versioned at `0.1.0-beta.3`; see
 [SDK releases](sdk-releases.md) for installation, provenance and registry integrity.
 
 The [Flutter SDK](../packages/locho_flutter/README.md) wraps the native adapter with
@@ -155,7 +155,7 @@ documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
    historical public-N0 initial-health/restore timeouts. Later green runs do not
    establish the cause of those timeouts.
 4. Candidate-specific host/package/examples compatibility and published CLI artifact
-   verification for each release. See [1.3.0-beta.1 evidence](release-1.3.0-beta.1.md).
+   verification for each release. See [SDK releases and beta provenance](sdk-releases.md).
 
 Streaming/SSE has desktop/emulator evidence. Browser managed WebSockets, QR and
 background mobile execution are later scope. Package installation and source-build

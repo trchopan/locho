@@ -103,7 +103,7 @@ ticket relay hints. Client relay policy remains independent. Browser ticket inpu
 cannot be mixed with the existing explicit `peerRelayUrl` option. All ticket hints
 are forwarded to iroh; transport address sets do not guarantee array dialing order.
 
-These APIs are available in the published `0.1.0-beta.1` SDKs, including general
+These APIs are available in the published `0.1.0-beta.3` SDKs, including general
 buffered/streaming browser HTTP. See [SDK releases](sdk-releases.md) for registry
 installation, checksums and external-consumer evidence. Physical-device ticket
 acceptance and authenticated browser-relay validation remain separate gates.

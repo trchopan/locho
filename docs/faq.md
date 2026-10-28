@@ -76,7 +76,7 @@ Tickets contain bearer credentials and are not encrypted invitations. Peer
 separately. Flutter is foreground-only. Physical iOS, full physical/mobile-browser
 and real network-transition acceptance remain open. Browser managed WebSockets and
 authenticated browser relays are unsupported in this beta. See
-[SDK releases](docs/sdk-releases.md) and [beta evidence](docs/release-1.3.0-beta.3.md).
+[SDK releases and beta provenance](sdk-releases.md).
 Browser discovery with stale relay hints can still intermittently time out over
 public N0 relays. The browser's relay-key correction fixes a configuration mismatch,
 but the stricter network A/B experiment was inconclusive; it does not establish
@@ -147,7 +147,7 @@ For a Unix listener, prepare a private mode-0700 parent directory and use
 `--listen-unix /absolute/path/socket`. In a multi-service attachment, use
 `listen_unix` instead of `listen_port`. Existing paths, including stale sockets,
 are refused rather than removed automatically; a crash or SIGKILL may require
-explicit stale-path cleanup.
+explicit stale-path cleanup. See [Unix stream sockets](unix-sockets.md).
 
 locho forwards the selected TCP service only. It does not provide arbitrary IP
 connectivity or a way to reach other ports on the host.
@@ -206,7 +206,8 @@ host, attachment, and diagnostic commands. The file can select custom-only
 operation or merge custom relays with the N0 relays. Relay selection is not a
 strict priority order: iroh prefers a working direct path and measures relay
 reachability and latency. Optional bearer tokens are read from environment
-variables named by `token_env` and are not included in diagnostics.
+variables named by `token_env` and are not included in diagnostics. See
+[custom iroh relays](custom-relays.md) for configuration and verification.
 
 Custom-only means custom relay transport only. iroh's current N0 discovery
 services remain enabled, so a connection by bare host ID may still require
@@ -216,7 +217,7 @@ rotate-secret` includes `--relay-config` when you provide it; ensure that path
 is valid on the attachment machine.
 
 locho does not host the relay server itself. Follow the
-[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.2.0/iroh-relay)
+[version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.4.0/iroh-relay)
 for deployment, TLS, QAD, access control, and metrics. The relay server's
 access-token configuration is separate from locho's client-side `token_env`
 setting.

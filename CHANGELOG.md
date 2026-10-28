@@ -27,8 +27,8 @@ requests are not replayed and deadlines are unchanged. Physical iOS, broad
 device/network-transition acceptance and Linux ARM64 native verification remain
 open; cross-builds and hosted compilation are not device/runtime proof.
 
-See [beta.3 release gates](docs/release-1.3.0-beta.3.md) and
-[SDK publication gates](docs/sdk-0.1.0-beta.3.md). Prerelease publishing must leave
+See [SDK and prerelease provenance](docs/sdk-releases.md) and the
+[release checklist](docs/releasing.md). Prerelease publishing must leave
 the stable CLI installers and npm `latest` channel unchanged.
 
 ## [1.3.0-beta.2] - 2026-10-21
@@ -81,8 +81,8 @@ establish native runtime acceptance.
 
 The independently published `locho_web` and `locho_flutter` packages remain at
 `0.1.0-beta.2`; this CLI release does not republish them or update their bundled
-implementation. See [candidate evidence](docs/release-1.3.0-beta.2.md) for remaining
-gates and target-specific limitations.
+implementation. See [SDK and prerelease provenance](docs/sdk-releases.md) for
+target-specific limitations and verification records.
 
 ## [1.3.0-beta.1] - 2026-10-17
 
@@ -121,7 +121,7 @@ WebSocket upgrades; native TCP byte forwarding remains available.
 
 Linux ARM64 artifacts are cross-compiled; native verification is pending. Other
 target verification boundaries and candidate evidence are in
-`docs/release-1.3.0-beta.1.md`.
+`docs/sdk-releases.md`.
 
 ## [1.2.0] - 2026-09-29
 
