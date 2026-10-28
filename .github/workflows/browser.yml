@@ -106,7 +106,7 @@ jobs:
           node-version: '24.18.0'
           cache: npm
           cache-dependency-path: packages/locho-web/package-lock.json
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: locho-web-soak-runtime
       - run: chmod +x target/release/locho
