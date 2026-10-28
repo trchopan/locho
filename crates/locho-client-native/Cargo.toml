@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 locho-core = { path = "../locho-core", version = "0.1.0", features = ["native-transport"] }
-iroh = "=1.4.0"
+iroh = "=1.4.1"
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
 tokio-util = "0.7"
 tracing = "0.1"
