@@ -28,7 +28,8 @@ def main():
         import hashlib
         if hashlib.sha256(archive.read_bytes()).hexdigest() != manifest["sha256"]:
             raise RuntimeError("Flutter package checksum mismatch")
-    with tempfile.TemporaryDirectory(prefix="locho-external-flutter-") as temporary:
+    temp_root = os.environ.get("RUNNER_TEMP") or None
+    with tempfile.TemporaryDirectory(prefix="locho-external-flutter-", dir=temp_root) as temporary:
         directory = Path(temporary)
         if not args.hosted:
             with tarfile.open(archive) as source:
@@ -87,6 +88,7 @@ flutter:
             (resources / "network_security_config.xml").write_text('<network-security-config><domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">127.0.0.1</domain></domain-config></network-security-config>')
             for mode in ["debug", "release"]:
                 run(["flutter", "build", "apk", f"--{mode}", "--target-platform=android-arm64,android-x64"], app)
+                shutil.rmtree(app / "build/locho_flutter/build", ignore_errors=True)
             apk = app / "build/app/outputs/flutter-apk/app-release.apk"
             run(["python3", str(ROOT / "scripts/check-android-pages.py"), str(apk)], ROOT)
             sdk = Path(os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk"))

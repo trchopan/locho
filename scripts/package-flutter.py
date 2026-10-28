@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import gzip
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,7 +26,8 @@ def main():
     epoch = int(subprocess.check_output(["git", "show", "-s", "--format=%ct", "HEAD"], cwd=ROOT, text=True).strip())
     dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
     version = next(line.split(":", 1)[1].strip() for line in (PACKAGE / "pubspec.yaml").read_text().splitlines() if line.startswith("version:"))
-    with tempfile.TemporaryDirectory(prefix="locho-flutter-package-") as temporary:
+    temp_root = os.environ.get("RUNNER_TEMP") or None
+    with tempfile.TemporaryDirectory(prefix="locho-flutter-package-", dir=temp_root) as temporary:
         stage = Path(temporary) / "locho_flutter"
         stage.mkdir()
         tracked = subprocess.check_output(["git", "ls-files", "packages/locho_flutter"], cwd=ROOT, text=True).splitlines()

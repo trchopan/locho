@@ -80,6 +80,7 @@ jobs:
       - run: flutter build apk --release --target-platform android-arm64,android-x64
       - run: python3 ../../../scripts/check-android-pages.py build/app/outputs/flutter-apk/app-release.apk
       - run: '$ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 build/app/outputs/flutter-apk/app-release.apk'
+      - run: rm -rf build
       - run: python3 scripts/package-flutter.py
         working-directory: .
       - run: python3 scripts/test-flutter-package.py --platform android
