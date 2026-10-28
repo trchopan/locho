@@ -6,12 +6,11 @@ same checks locally and in CI.
 
 ## Release Candidate
 
-For the current beta, record candidate-specific results, provenance hashes, and
-remaining gates in [SDK & Prerelease Provenance](sdk-releases.md). SDK package
-versions are independent of the CLI version; metadata-only CLI changes may
-require manual dispatch of the browser and Flutter workflows against the
-candidate branch. The coordinated SDK targets are `locho_web` and
-`locho_flutter` `0.1.0-beta.3`.
+Record SDK and prerelease results, provenance hashes, and remaining gates in
+[SDK & Prerelease Provenance](sdk-releases.md). SDK package versions are
+independent of the CLI version; metadata-only CLI changes may require manual
+dispatch of the browser and Flutter workflows against the candidate branch. The
+current SDK beta targets are `locho_web` and `locho_flutter` `0.1.0-beta.3`.
 
 - [ ] Confirm the version in `Cargo.toml`, `Cargo.lock`, and [`CHANGELOG.md`](../CHANGELOG.md).
 - [ ] Confirm the changelog describes user-visible changes and known limitations.
@@ -28,9 +27,9 @@ candidate branch. The coordinated SDK targets are `locho_web` and
       upgrade.
        Run `python3 scripts/verify-upgrade.py --previous-binary <released-1.2.0>
        --candidate-binary <packaged-candidate>` with Python 3.11+ and OpenSSL.
-       Repeat for the current CLI beta using the checksum-verified binary and an
-       explicit `--previous-version 1.3.0-beta.2`; exact version/clean-provenance
-       checks remain required for both baselines.
+       Repeat for the latest CLI prerelease using the checksum-verified binary
+       and an explicit `--previous-version 1.3.0-beta.3`; exact
+       version/clean-provenance checks remain required for both baselines.
 - [ ] Verify stale capabilities fail after rotation and unaffected services keep
       working.
 - [ ] Review logs and diagnostics for leaked capabilities or private keys.
@@ -56,7 +55,7 @@ release notes must state that verification is pending.
 - [ ] Update `Cargo.toml` and `Cargo.lock` to the final version.
 - [ ] Confirm the final notes are in the versioned changelog entry.
 - [ ] Run the complete release gate again from a clean checkout.
-- [ ] Create and push the matching CLI tag, for example `v1.3.0-beta.3`.
+- [ ] Create and push the matching CLI tag, for example `v1.3.0`.
 - [ ] Do not create SDK version tags without reviewing the CLI version-tag workflow.
 - [ ] Confirm beta releases are marked prerelease and the stable latest-release
       installers continue to select the stable release.

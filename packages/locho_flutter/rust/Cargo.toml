@@ -16,7 +16,7 @@ locho-client-native = { path = "../../../crates/locho-client-native" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-iroh = "=1.4.0"
+iroh = "=1.4.1"
 jni = "0.21"
 jni_new = { package = "jni", version = "0.22" }
 rustls-platform-verifier = "=0.7.1"

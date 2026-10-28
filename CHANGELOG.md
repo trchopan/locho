@@ -4,6 +4,57 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+## [1.3.0] - 2026-10-28
+
+This release promotes the `1.3.0` CLI feature and reliability series to the
+stable release channel, adding native macOS/Linux Unix stream socket forwarding,
+portable single-service tickets (`locho1:`), shared core/native client libraries,
+and shared-peer stream hardening.
+
+- Adds Unix filesystem stream upstreams (`unix_socket`) for TCP services and
+  secure Unix socket listeners (`--listen-unix` and `listen_unix`) for TCP
+  attachments on macOS and Linux, including mixed TCP/Unix multi-service
+  attachments and configurable raw-stream application-byte idle deadlines
+  (`tcp_idle_timeout_secs`, defaulting to 300 seconds; `0` disables idle expiry).
+- Anchors Unix listener creation (`0600`) to verified private (`0700`) directory
+  handles, rejects unsafe ancestry/symlinks/macOS ACLs, checks device/inode
+  identity before cleanup, and installs attachment shutdown handlers before
+  startup. Root/same-UID filesystem races remain an explicit trust boundary.
+- Adds explicit `locho share SERVICE --config PATH --ticket` output with optional
+  `--peer-relay-url` hints. Ticket v1 (`locho1:`) packages an existing service
+  capability as a bearer credential; it is not an encrypted, expiring, or
+  independently revocable invitation.
+- Extracts shared protocol, capability proof, ticket v1, and `PeerSession`
+  supervision into `locho-core` and owned loopback TCP attachments into
+  `locho-client-native` while preserving CLI HTTP/TCP and multi-service behavior.
+- Isolates HTTP upstream failures and truncated responses from other streams on
+  the same peer session; hardens stream cancellation, half-close, and cleanup so
+  one failed request does not disconnect unrelated services.
+- Aligns the host QUIC stream window with its 128-connection TCP budget, avoiding
+  handshake stalls above 100 concurrent streams on a shared peer.
+- Adds native Unix/TCP release smoke, stress, and soak harnesses across all four
+  TCP/Unix forwarding combinations, plus explicit multi-baseline upgrade
+  rehearsal verification.
+- Updates `iroh` to `1.4.1`, `tokio` to `1.54.1`, `hyper` to `1.12.0`, `base64`
+  to `0.23.1`, `ctutils` to `0.4.4` (`RUSTSEC-2026-0385`), and TLS certificate
+  verification/root-trust dependencies.
+
+No host-state or capability migration is required; wire protocol `locho/3`,
+ticket format `1`, and host-state schema `2` are unchanged. Upgrading replaces
+only the CLI executable and retains host identity and service capabilities. Unix
+stream sockets are supported on macOS and Linux, not Windows. CLI HTTP WebSocket
+upgrades remain unsupported.
+
+The independently versioned `locho_web` (npm) and `locho_flutter` (pub.dev) SDK
+packages remain in beta at `0.1.0-beta.3`; a CLI upgrade does not update
+installed SDK packages. Physical iOS runtime, broad physical-device/mobile-browser
+and network-transition acceptance, actual BFCache, and authenticated browser
+relays remain open SDK beta gates, and browser discovery with stale relay hints
+can still intermittently time out over public N0 relays. See
+[SDK and prerelease provenance](docs/sdk-releases.md).
+
+Linux ARM64 artifacts are cross-compiled; native verification is pending.
+
 ## [1.3.0-beta.3] - 2026-10-25
 
 This limited integration prerelease refreshes the CLI security dependencies;

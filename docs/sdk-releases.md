@@ -12,13 +12,14 @@ workflow drives CLI `cargo-dist` releases.
 
 ## Compatibility Summary
 
-| Release Series | CLI Prerelease | Browser SDK (`npm`) | Flutter SDK (`pub.dev`) | Wire / Ticket / State | iroh / FRB Pins |
+| Release Series | CLI Release / Prerelease | Browser SDK (`npm`) | Flutter SDK (`pub.dev`) | Wire / Ticket / State | iroh / FRB Pins |
 | --- | --- | --- | --- | --- | --- |
+| **CLI 1.3.0** (2026-10-28) | `v1.3.0` (stable) | `locho_web@0.1.0-beta.3` | `locho_flutter: 0.1.0-beta.3` | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.4.1` (CLI/source), `frb 2.12.0` |
 | **Beta 3** (2026-10-25) | `v1.3.0-beta.3` (`0c8ad57cc91af30144138bd324aeca86604f48dd`) | `locho_web@0.1.0-beta.3` | `locho_flutter: 0.1.0-beta.3` | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.4.0`, `frb 2.12.0` |
 | **Beta 2** (2026-10-17 / 21) | `v1.3.0-beta.2` (`8e1dcc3` / `61c8f5a`) | `locho_web@0.1.0-beta.2` (`e9d09b8`) | `locho_flutter: 0.1.0-beta.2` (`ebd6e10`) | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.4.0` (CLI), `frb 2.12.0` |
 | **Beta 1** (2026-10-17) | `v1.3.0-beta.1` (`3786da3127338b2530e0cd8cea8ef23bc6d55dfd`) | `locho_web@0.1.0-beta.1` (`cb1b232`, dirty) | `locho_flutter: 0.1.0-beta.1` (`cb1b232`, dirty) | `locho/3`, ticket `v1`, state schema `2` | `iroh =1.2.0`, `frb 2.12.0` |
 
-Stable CLI (`latest` GitHub Release channel) remains `1.2.0`.
+Stable CLI (`latest` GitHub Release channel) is `1.3.0`.
 
 ---
 
