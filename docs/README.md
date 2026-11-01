@@ -17,6 +17,11 @@ protocol and SDK specifications, architecture docs, and maintainer workflows.
 
 ## CLI & Operational Guides
 
+- **[macOS SSH Tunnel Hardening (`macos-ssh-tunnel.md`)](macos-ssh-tunnel.md)** —
+  Independent SSH attachments, idle policy, descriptor limits, safe upgrades,
+  verification, and rollback.
+- **[CLI DNS Recovery (`dns-recovery.md`)](dns-recovery.md)** — Opt-in independent
+  DNS tier racing, public-query privacy and split-horizon tradeoffs, and probes.
 - **[Unix Stream Sockets (`unix-sockets.md`)](unix-sockets.md)** — Forwarding
   TCP capabilities to/from filesystem Unix stream sockets on macOS and Linux,
   idle timeout policies, and listener security.
