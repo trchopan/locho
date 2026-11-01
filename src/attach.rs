@@ -211,6 +211,16 @@ async fn run_attachments(
     direct_address: Option<SocketAddr>,
 ) -> Result<()> {
     let node_id: EndpointId = host_id.parse().context("invalid host ID")?;
+    if let Some(soft_limit) = locho_client_native::listener::descriptor_limit() {
+        info!(
+            soft_limit,
+            connection_budget = MAX_TOTAL_CONNECTIONS,
+            "attachment descriptor budget estimate (excludes variable transport overhead)"
+        );
+        if soft_limit <= MAX_TOTAL_CONNECTIONS as u64 + attachments.len() as u64 + 32 {
+            warn!(soft_limit, "descriptor limit may be too small for the connection budget and transport overhead; review the per-process limit");
+        }
+    }
     // Register handlers synchronously before creating any endpoint/listener.
     // Constructing an async ctrl_c future alone does not install its handler.
     let mut shutdown_signal = ShutdownSignal::install()?;
@@ -426,10 +436,11 @@ async fn run_http_listener(
 ) -> Result<()> {
     let http_connections = std::sync::Arc::new(Semaphore::new(MAX_HTTP_CONNECTIONS));
     let mut clients = JoinSet::new();
+    let mut accept_retry = locho_client_native::listener::AcceptRetry::default();
     loop {
         tokio::select! {
-            result = listener.accept() => {
-                let (stream, peer) = result?;
+            result = accept_retry.accept(|| listener.accept(), &shutdown) => {
+                let Some((stream, peer)) = result? else { break; };
                 let connection = connection.clone();
                 let service_name = service.clone();
                 let secret = secret.clone();

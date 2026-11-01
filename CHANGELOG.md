@@ -4,6 +4,19 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+- Keeps TCP/Unix and HTTP attachment listeners bound during transient accept
+  failures, including descriptor exhaustion, with capped backoff and cancellable
+  recovery. Adds isolated TCP/Unix low-descriptor-limit regressions and logs an
+  estimated CLI attachment descriptor budget at startup.
+- Adds opt-in CLI `LOCHO_DNS_EAGER_FALLBACK=1` for environments where unreachable
+  system DNS servers consume iroh's lookup deadline before fallback can run.
+  System DNS settings are unchanged; existing public fallback resolvers race the
+  system tier only when explicitly enabled. Non-empty records take precedence
+  over empty answers. Public answers can override private split-horizon DNS;
+  see [DNS recovery](docs/dns-recovery.md).
+- Adds generic macOS SSH attachment configuration and recovery guidance in
+  [macOS SSH tunnel hardening](docs/macos-ssh-tunnel.md).
+
 ## [1.3.0] - 2026-10-28
 
 This release promotes the `1.3.0` CLI feature and reliability series to the

@@ -64,7 +64,15 @@ pub(crate) fn load(path: Option<&Path>) -> Result<Option<RelaySettings>> {
 }
 
 pub(crate) fn endpoint_builder(settings: Option<&RelaySettings>) -> Builder {
-    let builder = Endpoint::builder(presets::N0);
+    let mut builder = Endpoint::builder(presets::N0);
+    if std::env::var("LOCHO_DNS_EAGER_FALLBACK").as_deref() == Ok("1") {
+        // The outer iroh lookup deadline can expire before an unreachable
+        // system DNS tier finishes. This opt-in races the existing fallback
+        // providers; it does not change system DNS or the TLS trust policy.
+        let resolver = crate::dns::resilient_resolver();
+        tracing::info!("DNS eager fallback enabled for this process");
+        builder = builder.dns_resolver(resolver);
+    }
     match settings {
         Some(settings) => builder.relay_mode(settings.mode()),
         None => builder,
@@ -107,6 +115,83 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn eager_dns_answers_before_unreachable_primary_deadline() {
+        use iroh::dns::{DnsResolver, NameserverConfig};
+        use tokio::{
+            net::UdpSocket,
+            time::{timeout, Duration},
+        };
+        let mut primaries = Vec::new();
+        for _ in 0..4 {
+            primaries.push(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        }
+        let primary_configs: Vec<_> = primaries
+            .iter()
+            .map(|socket| {
+                let address = socket.local_addr().unwrap();
+                NameserverConfig::udp(address.ip()).with_port(address.port())
+            })
+            .collect();
+        let fallback = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let fallback_addr = fallback.local_addr().unwrap();
+        let responder = tokio::spawn(async move {
+            let mut packet = [0u8; 512];
+            let (size, peer) = fallback.recv_from(&mut packet).await.unwrap();
+            let mut end = 12;
+            while packet[end] != 0 {
+                end += 1 + packet[end] as usize;
+            }
+            end += 5;
+            assert!(end <= size);
+            let mut response = packet[..end].to_vec();
+            response[2..12].copy_from_slice(&[0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+            response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 42]);
+            fallback.send_to(&response, peer).await.unwrap();
+        });
+        let builder = DnsResolver::builder()
+            .add_nameserver_configs(primary_configs.clone())
+            .fallback_nameserver_configs([
+                NameserverConfig::udp(fallback_addr.ip()).with_port(fallback_addr.port())
+            ]);
+        // Reproduce the original failure: an unreachable primary remains
+        // pending beyond the outer deadline, preventing deferred fallback.
+        let deferred = builder.clone().build();
+        assert!(deferred
+            .lookup_ipv4("hardening.test", Duration::from_millis(250))
+            .await
+            .is_err());
+        // Merging tiers also fails: three dead servers occupy all query slots.
+        let merged = builder
+            .with_fallback_mode(iroh::dns::FallbackMode::Eager)
+            .build();
+        assert!(merged
+            .lookup_ipv4("hardening.test", Duration::from_millis(500))
+            .await
+            .is_err());
+        let system = DnsResolver::builder()
+            .add_nameserver_configs(primary_configs)
+            .disable_fallback();
+        let public = DnsResolver::builder()
+            .add_nameserver_config(
+                NameserverConfig::udp(fallback_addr.ip()).with_port(fallback_addr.port()),
+            )
+            .disable_fallback();
+        let resolver = crate::dns::racing_resolver(system, public);
+        let result = timeout(
+            Duration::from_secs(1),
+            resolver.lookup_ipv4("hardening.test", Duration::from_secs(1)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.collect::<Vec<_>>(),
+            vec![std::net::Ipv4Addr::new(127, 0, 0, 42)]
+        );
+        responder.await.unwrap();
+    }
 
     #[test]
     fn parses_custom_only_relay_configuration() {

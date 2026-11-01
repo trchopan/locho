@@ -3,6 +3,7 @@ mod attach_config;
 mod auth;
 mod config;
 mod diagnostics;
+mod dns;
 mod host;
 mod http_utils;
 mod relay;

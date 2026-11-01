@@ -4,6 +4,8 @@
 mod client;
 mod error;
 pub mod forward;
+#[doc(hidden)]
+pub mod listener;
 #[cfg(unix)]
 #[doc(hidden)]
 pub mod unix;

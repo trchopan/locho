@@ -111,12 +111,13 @@ async fn serve_listener<L: LocalListener + 'static>(
 ) -> std::io::Result<()> {
     let connections = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
     let mut tasks = JoinSet::new();
+    let mut accept_retry = crate::listener::AcceptRetry::default();
     let result = loop {
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => break Ok(()),
-            result = listener.accept() => {
-                let (stream, peer) = match result { Ok(value) => value, Err(error) => break Err(error) };
+            result = accept_retry.accept(|| listener.accept(), &shutdown) => {
+                let (stream, peer) = match result { Ok(Some(value)) => value, Ok(None) => break Ok(()), Err(error) => break Err(error) };
                 let permit = match connections.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => { error!(service = %capability.service, peer = %peer, "stream connection limit reached"); drop(stream); continue; }
