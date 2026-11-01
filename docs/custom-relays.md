@@ -76,6 +76,10 @@ machines use different directory layouts).
   probes across relays. This can make direct UDP hole-punching less reliable,
   causing `locho` to fall back to an encrypted relay path as designed.
 
+For unreachable DNS servers that consume lookup deadlines, see
+[CLI DNS recovery](dns-recovery.md). Its opt-in public DNS racing policy applies
+even with custom-only relays and may override private split-horizon answers.
+
 ## Manual Relay Verification
 
 `locho` configures relay clients; it does not run a relay server. To deploy a
