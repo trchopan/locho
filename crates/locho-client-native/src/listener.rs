@@ -4,23 +4,22 @@ use std::{future::Future, io, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 fn retryable(error: &io::Error) -> bool {
-    if matches!(
+    let kind_retryable = matches!(
         error.kind(),
         io::ErrorKind::Interrupted
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::WouldBlock
-    ) {
-        return true;
-    }
+    );
     #[cfg(unix)]
-    if matches!(
+    let os_retryable = matches!(
         error.raw_os_error(),
         Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
-    ) {
-        return true;
-    }
-    false
+    );
+    #[cfg(not(unix))]
+    let os_retryable = false;
+
+    kind_retryable || os_retryable
 }
 
 /// Retry state survives cancellation by a listener owner's task-reaping select.

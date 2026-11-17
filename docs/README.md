@@ -64,8 +64,8 @@ protocol and SDK specifications, architecture docs, and maintainer workflows.
   Internal architecture of `crates/locho-core`, `PeerSession` supervision, and
   shared protocol extraction.
 - **[Stress & Soak Test Harness (`tests/perf/README.md`)](../tests/perf/README.md)** —
-  Running native Unix stream smoke/stress/soak tests and Docker HTTP/TCP load
-  tests.
+  Native and remote-pair workload profiles, recovery/resource checks, and Docker
+  HTTP/TCP load tests.
 - **[Browser Soak Tests (`packages/locho-web/tests/SOAK.md`)](../packages/locho-web/tests/SOAK.md)** —
   Running sustained browser and service-worker metadata soak tests.
 - **[Release Checklist (`releasing.md`)](releasing.md)** — Maintainer checklist

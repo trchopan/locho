@@ -63,6 +63,41 @@ async fn bind_listener(address: &attach_config::ListenerAddress) -> Result<Bound
     }
 }
 
+fn listener_bind_context(
+    service: &str,
+    address: &attach_config::ListenerAddress,
+    error: &anyhow::Error,
+) -> String {
+    let address_in_use = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::AddrInUse)
+    });
+
+    match (address, address_in_use) {
+        (attach_config::ListenerAddress::Tcp(address), true) => {
+            let suggested_address = SocketAddr::new(
+                address.ip(),
+                address.port().checked_add(1).unwrap_or(0),
+            );
+            format!(
+                "could not bind local listener for service {service:?} at {address}: address already in use. Hint: choose another address with `--listen` (for example, `--listen {suggested_address}`), or stop the process using {address}"
+            )
+        }
+        (attach_config::ListenerAddress::Unix(path), true) => format!(
+            "could not bind local listener for service {service:?} at Unix socket {}: address already in use. Hint: choose another path with `--listen-unix` or stop the process using this socket",
+            path.display()
+        ),
+        (attach_config::ListenerAddress::Tcp(address), false) => format!(
+            "could not bind local listener for service {service:?} at {address}"
+        ),
+        (attach_config::ListenerAddress::Unix(path), false) => format!(
+            "could not bind local listener for service {service:?} at Unix socket {}",
+            path.display()
+        ),
+    }
+}
+
 type HttpStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, anyhow::Error>> + Send>>;
 type HttpResponse = Response<StreamBody<HttpStream>>;
 
@@ -232,11 +267,6 @@ async fn run_attachments(
             .transpose()
             .context("invalid LOCHO_TEST_DIRECT_ADDR")?,
     };
-    let endpoint = tokio::select! {
-        biased;
-        _ = shutdown_signal.recv() => return Ok(()),
-        result = relay::endpoint_builder(relay_settings.as_ref()).bind() => result?,
-    };
     let endpoint_addr = direct_address
         .map(|address| EndpointAddr::new(node_id).with_ip_addr(address))
         .unwrap_or_else(|| EndpointAddr::new(node_id));
@@ -245,14 +275,15 @@ async fn run_attachments(
         let listener = tokio::select! {
             biased;
             _ = shutdown_signal.recv() => return Ok(()),
-            result = bind_listener(&attachment.listen) => result,
-        }
-        .with_context(|| {
-            format!(
-                "bind listener for service {:?}",
-                attachment.capability.service
-            )
-        })?;
+            result = bind_listener(&attachment.listen) => result.map_err(|error| {
+                let context = listener_bind_context(
+                    &attachment.capability.service,
+                    &attachment.listen,
+                    &error,
+                );
+                error.context(context)
+            }),
+        }?;
         listeners.push((
             listener,
             attachment.capability.clone(),
@@ -261,6 +292,11 @@ async fn run_attachments(
         ));
         tokio::task::yield_now().await;
     }
+    let endpoint = tokio::select! {
+        biased;
+        _ = shutdown_signal.recv() => return Ok(()),
+        result = relay::endpoint_builder(relay_settings.as_ref()).bind() => result?,
+    };
     tokio::select! {
         biased;
         _ = shutdown_signal.recv() => return Ok(()),
@@ -857,6 +893,56 @@ fn error_response(status: StatusCode) -> HttpResponse {
 mod tests {
     use super::*;
     use locho_core::session::{next_backoff, reconnect_delay};
+
+    #[test]
+    fn tcp_listener_address_in_use_error_suggests_an_alternative() {
+        let error = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "Address already in use",
+        ));
+        let context = listener_bind_context(
+            "files",
+            &attach_config::ListenerAddress::Tcp("127.0.0.1:8765".parse().unwrap()),
+            &error,
+        );
+
+        assert!(context.contains("service \"files\""));
+        assert!(context.contains("127.0.0.1:8765"));
+        assert!(context.contains("--listen 127.0.0.1:8766"));
+    }
+
+    #[test]
+    fn unix_listener_address_in_use_error_suggests_an_alternative_path() {
+        let error = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "Address already in use",
+        ));
+        let context = listener_bind_context(
+            "files",
+            &attach_config::ListenerAddress::Unix("/tmp/files.sock".into()),
+            &error,
+        );
+
+        assert!(context.contains("/tmp/files.sock"));
+        assert!(context.contains("--listen-unix"));
+    }
+
+    #[test]
+    fn other_listener_bind_errors_include_the_requested_address() {
+        let error = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Permission denied",
+        ));
+        let context = listener_bind_context(
+            "files",
+            &attach_config::ListenerAddress::Tcp("127.0.0.1:8765".parse().unwrap()),
+            &error,
+        );
+
+        assert!(context.contains("service \"files\""));
+        assert!(context.contains("127.0.0.1:8765"));
+        assert!(!context.contains("address already in use"));
+    }
 
     #[test]
     fn transport_path_labels() {
