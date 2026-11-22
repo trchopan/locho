@@ -58,7 +58,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           python3 -m unittest discover -s tests/release -p test_verify_upgrade.py -v
-          python3 -m unittest discover -s tests/perf -p test_unix_streams.py -v
+          python3 -m unittest discover -s tests/perf -p 'test_*.py' -v
           python3 -m unittest discover -s tests/perf/loadgen -p test_loadgen.py -v
 
       - name: Run Unix CI verification gate

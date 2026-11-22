@@ -188,8 +188,9 @@ class Fixture:
     count. Repeated or out-of-order sequence numbers fail instead of replaying.
     """
 
-    def __init__(self, address):
+    def __init__(self, address, observer=None):
         self.address = address
+        self.observer = observer
         self.server = None
         self.writers = set()
         self.tasks = set()
@@ -216,6 +217,12 @@ class Fixture:
         self.accepted += 1
         self.writers.add(writer)
         self.tasks.add(asyncio.current_task())
+        frame_info = None
+
+        def observe(phase, **fields):
+            if self.observer and frame_info is not None:
+                self.observer(phase, frame_info | fields, reader, writer)
+
         try:
             while True:
                 try:
@@ -227,14 +234,24 @@ class Fixture:
                 magic, mode, identity, sequence, size = HEADER.unpack(header)
                 require(magic == b"LUT1" and mode in (0, 1, 2), "invalid fixture frame")
                 require(size <= MAX_PAYLOAD, "fixture payload exceeds bound")
+                frame_info = dict(identity=identity.hex(), sequence=sequence, mode=mode, size=size)
+                observe("request_header")
+
+                async def receive_payload():
+                    data = await reader.readexactly(size)
+                    observe("request_read_complete", request_payload_consumed=len(data))
+                    return data
+
                 if mode == 2:
                     expected = payload(size, identity, sequence)
                     async def send():
                         writer.write(header + expected)
+                        observe("response_queued", response_wire_queued=HEADER.size + size)
                         await writer.drain()
-                    data, _ = await asyncio.gather(reader.readexactly(size), send())
+                        observe("response_drained")
+                    data, _ = await asyncio.gather(receive_payload(), send())
                 else:
-                    data = await reader.readexactly(size)
+                    data = await receive_payload()
                 require(data == payload(size, identity, sequence), "upstream checksum mismatch")
                 if sequence <= self.highwater.get(identity, -1):
                     self.duplicates += 1
@@ -243,11 +260,15 @@ class Fixture:
                         "fixture identity budget exceeded")
                 self.highwater[identity] = sequence
                 self.messages += 1
+                observe("request_validated")
                 if mode:
                     require(await reader.read(1) == b"", "half-close fixture expected EOF")
+                    observe("request_eof")
                 if mode != 2:
                     writer.write(header + data)
+                    observe("response_queued", response_wire_queued=HEADER.size + size)
                     await writer.drain()
+                    observe("response_drained")
                 if mode:
                     break
         except (ConnectionError, asyncio.IncompleteReadError):
@@ -256,9 +277,12 @@ class Fixture:
         except AssertionError:
             self.errors += 1
         finally:
-            await close(writer)
-            self.writers.discard(writer)
-            self.tasks.discard(asyncio.current_task())
+            try:
+                observe("connection_closing")
+            finally:
+                await close(writer)
+                self.writers.discard(writer)
+                self.tasks.discard(asyncio.current_task())
 
     async def stop(self):
         if self.server:

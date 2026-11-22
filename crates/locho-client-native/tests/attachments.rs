@@ -21,14 +21,30 @@ struct Host {
 }
 impl Host {
     async fn start(key: SecretKey, address: Option<SocketAddr>) -> Self {
-        let mut builder = Endpoint::builder(presets::N0)
-            .secret_key(key)
-            .relay_mode(RelayMode::Disabled)
-            .alpns(vec![ALPN.to_vec()]);
-        if let Some(SocketAddr::V4(address)) = address {
-            builder = builder.bind_addr(address).unwrap();
-        }
-        let endpoint = builder.bind().await.unwrap();
+        let bind_v4 = match address {
+            Some(SocketAddr::V4(address)) => address,
+            Some(SocketAddr::V6(_)) => unreachable!("test host uses IPv4 loopback"),
+            None => std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+        };
+        let endpoint = timeout(DEADLINE, async {
+            loop {
+                let builder = Endpoint::builder(presets::N0)
+                    .secret_key(key.clone())
+                    .relay_mode(RelayMode::Disabled)
+                    .alpns(vec![ALPN.to_vec()])
+                    .bind_addr(bind_v4)
+                    .unwrap();
+                match builder.bind().await {
+                    Ok(endpoint) => break endpoint,
+                    Err(_) if address.is_some() => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    Err(error) => panic!("failed to bind test host endpoint: {error:#}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out rebinding test host endpoint");
         let port = endpoint
             .bound_sockets()
             .into_iter()
