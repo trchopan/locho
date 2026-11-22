@@ -10,7 +10,7 @@ use std::path::Path;
 
 const DEFAULT_QUIC_ADDRESS_DISCOVERY: bool = true;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RelayFile {
     #[serde(default)]
@@ -19,30 +19,40 @@ struct RelayFile {
     relays: Vec<RelayEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RelayEntry {
     url: String,
+    #[serde(default)]
+    token: Option<String>,
     #[serde(default)]
     token_env: Option<String>,
     #[serde(default = "default_quic_address_discovery")]
     quic_address_discovery: bool,
 }
 
-fn parse(contents: &str) -> Result<RelaySettings> {
+fn parse(contents: &str) -> Result<(RelaySettings, bool)> {
     // TOML errors can include source excerpts containing credentials.
     let file: RelayFile = toml::from_str(contents)
         .map_err(|_| anyhow::anyhow!("failed to parse relay configuration"))?;
+    let mut has_inline_token = false;
     let options = file
         .relays
         .into_iter()
         .enumerate()
         .map(|(index, entry)| {
-            let auth_token = entry
-                .token_env
-                .as_deref()
-                .map(|name| read_token(name, index + 1))
-                .transpose()?;
+            let relay_index = index + 1;
+            let auth_token = match (entry.token, entry.token_env.as_deref()) {
+                (Some(_), Some(_)) => {
+                    bail!("relay {} cannot set both token and token_env", relay_index)
+                }
+                (Some(token), None) => {
+                    has_inline_token = true;
+                    Some(validate_inline_token(token, relay_index)?)
+                }
+                (None, Some(name)) => Some(read_token(name, relay_index)?),
+                (None, None) => None,
+            };
             Ok(RelayOptions {
                 url: entry.url,
                 auth_token,
@@ -50,17 +60,53 @@ fn parse(contents: &str) -> Result<RelaySettings> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(RelaySettings::new(file.include_n0_relays, options)?)
+    Ok((
+        RelaySettings::new(file.include_n0_relays, options)?,
+        has_inline_token,
+    ))
 }
 
 pub(crate) fn load(path: Option<&Path>) -> Result<Option<RelaySettings>> {
     path.map(|path| {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read relay configuration {}", path.display()))?;
-        parse(&contents)
-            .with_context(|| format!("relay configuration check failed for {}", path.display()))
+        let (settings, has_inline_token) = parse(&contents)
+            .with_context(|| format!("relay configuration check failed for {}", path.display()))?;
+        if has_inline_token {
+            require_private_permissions(path).with_context(|| {
+                format!("relay configuration check failed for {}", path.display())
+            })?;
+        }
+        Ok(settings)
     })
     .transpose()
+}
+
+fn require_private_permissions(_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = std::fs::metadata(_path)
+            .with_context(|| format!("failed to inspect {}", _path.display()))?;
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            bail!(
+                "relay configuration with inline token has overly broad permissions ({mode:04o}); require owner-only permissions (0600)"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_inline_token(token: String, index: usize) -> Result<String> {
+    if validate_token(&token).is_err() {
+        bail!(
+            "relay {} authentication token is not a valid bearer token",
+            index
+        )
+    }
+    Ok(token)
 }
 
 pub(crate) fn endpoint_builder(settings: Option<&RelaySettings>) -> Builder {
@@ -195,7 +241,7 @@ mod tests {
 
     #[test]
     fn parses_custom_only_relay_configuration() {
-        let settings = parse(
+        let (settings, has_inline_token) = parse(
             r#"
                 [[relays]]
                 url = "https://relay.example.org"
@@ -204,6 +250,7 @@ mod tests {
         )
         .unwrap();
 
+        assert!(!has_inline_token);
         let (relays, include_n0_relays) = settings.report();
         assert!(!include_n0_relays);
         assert_eq!(relays.len(), 1);
@@ -214,7 +261,7 @@ mod tests {
 
     #[test]
     fn merges_custom_relays_with_n0_relays() {
-        let settings = parse(
+        let (settings, has_inline_token) = parse(
             r#"
                 include_n0_relays = true
 
@@ -224,6 +271,7 @@ mod tests {
         )
         .unwrap();
 
+        assert!(!has_inline_token);
         let (relays, include_n0_relays) = settings.report();
         assert!(include_n0_relays);
         assert_eq!(relays.len(), 1);
@@ -239,7 +287,7 @@ mod tests {
     fn resolves_auth_token_without_leaking_it_in_errors() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("LOCHO_RELAY_TEST_TOKEN", "secret/token=with+base64");
-        let settings = parse(
+        let (settings, has_inline_token) = parse(
             r#"
                 [[relays]]
                 url = "https://relay.example.org"
@@ -249,6 +297,7 @@ mod tests {
         .unwrap();
         std::env::remove_var("LOCHO_RELAY_TEST_TOKEN");
 
+        assert!(!has_inline_token);
         let (relays, _) = settings.report();
         let relay = settings.mode().relay_map().get(&relays[0].url).unwrap();
         assert_eq!(
@@ -256,6 +305,117 @@ mod tests {
             Some("secret/token=with+base64")
         );
         assert!(!format!("{settings:?}").contains("secret/token=with+base64"));
+    }
+
+    #[test]
+    fn resolves_inline_token_and_redacts_secrets_in_debug_and_errors() {
+        let (settings, has_inline_token) = parse(
+            r#"
+                [[relays]]
+                url = "https://relay.example.org"
+                token = "inline-secret/token=with+base64"
+            "#,
+        )
+        .unwrap();
+
+        assert!(has_inline_token);
+        let (relays, _) = settings.report();
+        let relay = settings.mode().relay_map().get(&relays[0].url).unwrap();
+        assert_eq!(
+            relay.auth_token.as_deref(),
+            Some("inline-secret/token=with+base64")
+        );
+        assert!(!format!("{settings:?}").contains("inline-secret/token=with+base64"));
+
+        for invalid_token in ["", "inline-secret\r\n"] {
+            let error = parse(&format!(
+                "[[relays]]\nurl = \"https://relay.example.org\"\ntoken = {invalid_token:?}\n"
+            ))
+            .unwrap_err();
+            let rendered = format!("{error:#} {error:?}");
+            assert!(rendered.contains("relay 1 authentication token is not a valid bearer token"));
+            assert!(!rendered.contains("inline-secret"));
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_inline_token_and_token_env_without_leaking_secrets() {
+        let error = parse(
+            r#"
+                [[relays]]
+                url = "https://relay.example.org"
+                token = "inline-secret-value"
+                token_env = "LOCHO_SECRET_ENV_NAME"
+            "#,
+        )
+        .unwrap_err();
+        let rendered = format!("{error:#} {error:?}");
+        assert!(rendered.contains("relay 1 cannot set both token and token_env"));
+        assert!(!rendered.contains("inline-secret-value"));
+        assert!(!rendered.contains("LOCHO_SECRET_ENV_NAME"));
+    }
+
+    #[test]
+    fn load_accepts_private_inline_token_file_and_enforces_unix_permissions() {
+        let path = std::env::temp_dir().join(format!(
+            "locho-relay-inline-{}-{}.toml",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::write(
+            &path,
+            "[[relays]]\nurl = \"https://relay.example.org\"\ntoken = \"inline-file-secret\"\n",
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let error = load(Some(&path)).unwrap_err();
+            let rendered = format!("{error:#} {error:?}");
+            assert!(rendered.contains("overly broad permissions"));
+            assert!(rendered.contains("0600"));
+            assert!(!rendered.contains("inline-file-secret"));
+
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let settings = load(Some(&path)).unwrap().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let (relays, _) = settings.report();
+        let relay = settings.mode().relay_map().get(&relays[0].url).unwrap();
+        assert_eq!(relay.auth_token.as_deref(), Some("inline-file-secret"));
+        assert!(!format!("{settings:?}").contains("inline-file-secret"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_allows_non_inline_token_env_file_with_standard_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("LOCHO_RELAY_MODE_TEST_TOKEN", "env-file-secret");
+        let path = std::env::temp_dir().join(format!(
+            "locho-relay-env-{}-{}.toml",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::write(
+            &path,
+            "[[relays]]\nurl = \"https://relay.example.org\"\ntoken_env = \"LOCHO_RELAY_MODE_TEST_TOKEN\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let settings = load(Some(&path)).unwrap().unwrap();
+        let _ = std::fs::remove_file(&path);
+        std::env::remove_var("LOCHO_RELAY_MODE_TEST_TOKEN");
+
+        let (relays, _) = settings.report();
+        let relay = settings.mode().relay_map().get(&relays[0].url).unwrap();
+        assert_eq!(relay.auth_token.as_deref(), Some("env-file-secret"));
     }
 
     #[test]
@@ -278,7 +438,12 @@ mod tests {
 
     #[test]
     fn malformed_configuration_does_not_echo_source_credentials() {
-        let error = parse("[[relays]]\nurl = \"https://private-secret@relay.example.org\"\nunknown = \"private-secret\"").unwrap_err();
-        assert!(!format!("{error:#} {error:?}").contains("private-secret"));
+        for source in [
+            "[[relays]]\nurl = \"https://private-secret@relay.example.org\"\nunknown = \"private-secret\"",
+            "[[relays]]\nurl = \"https://relay.example.org\"\ntoken = \"private-secret\"\nmalformed = [",
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(!format!("{error:#} {error:?}").contains("private-secret"));
+        }
     }
 }

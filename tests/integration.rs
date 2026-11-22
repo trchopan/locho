@@ -861,6 +861,119 @@ fn diagnose_reports_configuration_without_capabilities() {
     assert!(!stdout.contains("diagnostic-secret"));
     assert!(!stdout.contains("service-secret"));
 
+    let inline_relay_path = state_dir.path().join("relay-inline.toml");
+    fs::write(
+        &inline_relay_path,
+        "include_n0_relays = false\n\n[[relays]]\nurl = \"https://relay.example.org\"\ntoken = \"inline-relay-secret\"\nquic_address_discovery = false\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&inline_relay_path, fs::Permissions::from_mode(0o644)).unwrap();
+        for args in [
+            vec![
+                "host",
+                "--config",
+                config_path.to_str().unwrap(),
+                "--relay-config",
+                inline_relay_path.to_str().unwrap(),
+            ],
+            vec![
+                "attach",
+                &host_key.public().to_string(),
+                "database:tcp:service-secret",
+                "--relay-config",
+                inline_relay_path.to_str().unwrap(),
+            ],
+            vec![
+                "diagnose",
+                "--config",
+                config_path.to_str().unwrap(),
+                "--relay-config",
+                inline_relay_path.to_str().unwrap(),
+            ],
+        ] {
+            let output = Command::new(locho_binary())
+                .env("LOCHO_STATE_DIR", state_dir.path())
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            let combined = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(combined.contains("overly broad permissions"));
+            assert!(!combined.contains("inline-relay-secret"));
+        }
+        fs::set_permissions(&inline_relay_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let output = Command::new(locho_binary())
+        .env("LOCHO_STATE_DIR", state_dir.path())
+        .args(["diagnose", "--config"])
+        .arg(&config_path)
+        .args(["--relay-config"])
+        .arg(&inline_relay_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "inline relay diagnose failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("relay configuration: custom (1 relays, include_n0_relays=false)"));
+    assert!(stdout.contains("relay: https://relay.example.org/ (QAD disabled)"));
+    assert!(!stdout.contains("inline-relay-secret"));
+    assert!(!stderr.contains("inline-relay-secret"));
+
+    let conflicting_relay_path = state_dir.path().join("relay-conflict.toml");
+    fs::write(
+        &conflicting_relay_path,
+        "include_n0_relays = false\n\n[[relays]]\nurl = \"https://relay.example.org\"\ntoken = \"inline-relay-secret\"\ntoken_env = \"LOCHO_TEST_RELAY_TOKEN\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&conflicting_relay_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    for args in [
+        vec![
+            "host",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--relay-config",
+            conflicting_relay_path.to_str().unwrap(),
+        ],
+        vec![
+            "attach",
+            &host_key.public().to_string(),
+            "database:tcp:service-secret",
+            "--relay-config",
+            conflicting_relay_path.to_str().unwrap(),
+        ],
+    ] {
+        let output = Command::new(locho_binary())
+            .env("LOCHO_STATE_DIR", state_dir.path())
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let combined = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains("cannot set both token and token_env"));
+        assert!(!combined.contains("inline-relay-secret"));
+        assert!(!combined.contains("LOCHO_TEST_RELAY_TOKEN"));
+    }
+
     fs::write(
         &config_path,
         "[[services]]\nname = \"database\"\ntype = \"tcp\"\n",
