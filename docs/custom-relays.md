@@ -16,33 +16,45 @@ include_n0_relays = false
 
 [[relays]]
 url = "https://relay.example.org"
+# Provide at most one of `token` or `token_env`:
 token_env = "LOCHO_RELAY_TOKEN"
+# token = "replace-with-a-secret"
 quic_address_discovery = true
 ```
 
 ### Configuration Fields
 
-- **`include_n0_relays`** (`bool`, required):
+- **`include_n0_relays`** (`bool`, optional, defaults to `false`):
   - `false`: Use only the custom relays listed in `[[relays]]` for relay
     transport.
   - `true`: Include both the custom relays and the default N0 relays as
     connectivity candidates.
-- **`url`** (`string`, required): HTTPS URL of the `iroh-relay` server. Plain
-  `http://` relay URLs are rejected; the relay must present a TLS certificate
-  trusted by the normal system root store.
+- **`url`** (`string`, required): HTTPS base URL of the `iroh-relay` server.
+  Plain `http://` relay URLs are rejected; the relay must present a TLS
+  certificate trusted by the normal system root store.
+- **`token`** (`string`, optional): Inline relay bearer token. Cannot be combined
+  with `token_env` on the same relay entry. When any relay entry sets `token`,
+  `relay.toml` is treated as a secret file: keep it out of version control and,
+  on Unix, restrict permissions to owner-only (`0600`; any group or other
+  permission bits are rejected).
 - **`token_env`** (`string`, optional): Name of an environment variable
-  containing the relay bearer token. The token value is read from the
-  environment at runtime and is never printed by `locho` or included in normal
-  diagnostics.
+  containing the relay bearer token. Cannot be combined with `token` on the same
+  relay entry. The token value is read from the environment at runtime.
 - **`quic_address_discovery`** (`bool`, optional, defaults to `true`): Enables
   QUIC Address Discovery (QAD) on the relay's default QAD UDP port (`7842`). Set
   this to `false` when the relay is behind an HTTPS-only reverse proxy that does
   not forward UDP port `7842`.
 
+Token values (whether inline or read from `token_env`) are validated as HTTP
+bearer tokens and are never printed in logs, errors, debug output, or
+diagnostics.
+
 ## Running with a Custom Relay
 
 Supply the same relay configuration to the host, attachment, and diagnostic
-commands:
+commands.
+
+With an environment variable (`token_env`):
 
 ```sh
 export LOCHO_RELAY_TOKEN="replace-with-a-secret"
@@ -50,6 +62,14 @@ locho host --config locho.toml --relay-config relay.toml
 locho share api --config locho.toml --relay-config relay.toml
 locho attach <host-id> api:http:<secret> --relay-config relay.toml
 locho diagnose --host-id <host-id> --relay-config relay.toml
+```
+
+Or with a single protected `relay.toml` containing an inline `token`:
+
+```sh
+chmod 600 relay.toml
+locho host --config locho.toml --relay-config relay.toml
+locho attach <host-id> api:http:<secret> --relay-config relay.toml
 ```
 
 When `--relay-config` is passed to `locho share` or `locho rotate-secret`, the

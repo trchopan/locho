@@ -262,8 +262,8 @@ locho attach <host-id> api:http:<secret> --direct-address 192.0.2.10:12345 --lis
   socket upstreams and attaching local Unix socket listeners (`--listen-unix`),
   path length limits, idle policies, and directory security.
 - **[Custom iroh Relays](docs/custom-relays.md)** — Configuring self-hosted
-  `iroh-relay` servers (`relay.toml`), bearer token environment variables, QUIC
-  Address Discovery, and manual relay verification.
+  `iroh-relay` servers (`relay.toml`), inline or environment-variable bearer
+  tokens, QUIC Address Discovery, and manual relay verification.
 - **[Portable Tickets v1](docs/tickets.md)** — Generating and consuming
   `locho1:` single-service tickets with optional peer relay hints.
 

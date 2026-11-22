@@ -4,6 +4,11 @@ All notable changes to `locho` are documented here.
 
 ## Unreleased
 
+- Supports inline relay bearer tokens (`token`) alongside `token_env` in
+  `--relay-config` TOML files across `host`, `attach`, and `diagnose`, rejecting
+  conflicting auth fields, requiring owner-only (`0600`) file permissions on
+  Unix when inline tokens are present, and redacting tokens from errors and
+  diagnostics.
 - Keeps TCP/Unix and HTTP attachment listeners bound during transient accept
   failures, including descriptor exhaustion, with capped backoff and cancellable
   recovery. Adds isolated TCP/Unix low-descriptor-limit regressions and logs an

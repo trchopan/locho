@@ -26,8 +26,8 @@ protocol and SDK specifications, architecture docs, and maintainer workflows.
   TCP capabilities to/from filesystem Unix stream sockets on macOS and Linux,
   idle timeout policies, and listener security.
 - **[Custom iroh Relays (`custom-relays.md`)](custom-relays.md)** — Configuring
-  self-hosted `iroh-relay` servers (`relay.toml`), bearer token environment
-  variables, QUIC Address Discovery (QAD), and manual relay verification.
+  self-hosted `iroh-relay` servers (`relay.toml`), inline or environment-variable
+  bearer tokens, QUIC Address Discovery (QAD), and manual relay verification.
 - **[Portable Single-Service Tickets v1 (`tickets.md`)](tickets.md)** —
   Specification and CLI/SDK usage for `locho1:` portable bearer tickets and
   peer relay hints.

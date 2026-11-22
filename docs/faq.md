@@ -205,9 +205,10 @@ To use a self-hosted relay, pass the same `--relay-config PATH` file to the
 host, attachment, and diagnostic commands. The file can select custom-only
 operation or merge custom relays with the N0 relays. Relay selection is not a
 strict priority order: iroh prefers a working direct path and measures relay
-reachability and latency. Optional bearer tokens are read from environment
-variables named by `token_env` and are not included in diagnostics. See
-[custom iroh relays](custom-relays.md) for configuration and verification.
+reachability and latency. Optional bearer tokens can be supplied either via an
+inline `token` in a protected (`0600` on Unix) `relay.toml` or from environment
+variables named by `token_env`, and are never included in diagnostics or errors.
+See [custom iroh relays](custom-relays.md) for configuration and verification.
 
 Custom-only means custom relay transport only. iroh's current N0 discovery
 services remain enabled, so a connection by bare host ID may still require
@@ -219,8 +220,8 @@ is valid on the attachment machine.
 locho does not host the relay server itself. Follow the
 [version-matched `iroh-relay` server documentation](https://github.com/n0-computer/iroh/tree/v1.4.1/iroh-relay)
 for deployment, TLS, QAD, access control, and metrics. The relay server's
-access-token configuration is separate from locho's client-side `token_env`
-setting.
+access-token configuration is separate from locho's client-side `token` /
+`token_env` settings.
 
 If peer discovery cannot advertise a reachable host address, start the host with
 `--bind-address ADDRESS` and pass that address to the attachment with
