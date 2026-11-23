@@ -2,7 +2,12 @@
 
 All notable changes to `locho` are documented here.
 
-## Unreleased
+## [1.3.1] - 2026-11-23
+
+This maintenance release hardens CLI attachment listener recovery under
+transient resource exhaustion, adds opt-in independent-tier DNS fallback racing,
+and supports inline bearer tokens in owner-only custom relay configuration
+files.
 
 - Supports inline relay bearer tokens (`token`) alongside `token_env` in
   `--relay-config` TOML files across `host`, `attach`, and `diagnose`, rejecting
@@ -21,6 +26,16 @@ All notable changes to `locho` are documented here.
   see [DNS recovery](docs/dns-recovery.md).
 - Adds generic macOS SSH attachment configuration and recovery guidance in
   [macOS SSH tunnel hardening](docs/macos-ssh-tunnel.md).
+
+No host-state or capability migration is required; wire protocol `locho/3`,
+ticket format `1`, host-state schema `2`, and `iroh` `1.4.1` are unchanged.
+Upgrading replaces only the CLI executable and retains host identity and service
+capabilities. The independently versioned `locho_web` (npm) and `locho_flutter`
+(pub.dev) SDK packages remain in beta at `0.1.0-beta.3`; a CLI upgrade does not
+update installed SDK packages. See
+[SDK and prerelease provenance](docs/sdk-releases.md).
+
+Linux ARM64 artifacts are cross-compiled; native verification is pending.
 
 ## [1.3.0] - 2026-10-28
 

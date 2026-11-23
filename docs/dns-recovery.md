@@ -13,7 +13,7 @@ to changing application resolution behavior.
 
 ## Opt-in independent-tier racing
 
-Current source supports this per-process option:
+CLI `1.3.1` and later support this per-process option:
 
 ```sh
 LOCHO_DNS_EAGER_FALLBACK=1 locho host --config locho.toml
@@ -25,7 +25,7 @@ It affects DNS used by CLI endpoints in host, attachment, and diagnostic command
 with or without custom relays. It does not configure the native, Flutter, or
 browser SDKs, change upstream HTTP-client DNS, or modify system DNS settings.
 Only the value `1` enables it; unset the variable to retain the default behavior.
-The official `1.3.0` release artifact does not include this source change.
+Earlier releases (`1.3.0` and older) do not include this option.
 
 The system and iroh's existing public fallback resolvers run as independent tiers.
 This avoids unreachable system servers occupying all query slots in a merged
