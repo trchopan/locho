@@ -18,5 +18,8 @@ install-updater = false
 github-build-setup = "../../scripts/release-build-setup.yml"
 post-announce-jobs = ["./cleanup-release-assets"]
 
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 [dist.github-action-commits]
 "actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1"
