@@ -87,11 +87,11 @@ The CLI logs an estimated attachment descriptor budget at startup on Unix. Its
 connection budget is not an exact descriptor count: discovery, relay connections,
 DNS, logs, and runtime resources add variable overhead.
 
-Current source retains TCP/Unix and HTTP attachment listeners across transient
+CLI `1.3.1` and later retain TCP/Unix and HTTP attachment listeners across transient
 accept errors, including descriptor exhaustion, using bounded, cancellable
 backoff. This permits recovery when resources are released; it does not fix leaks,
 guarantee new connections during exhaustion, or prevent other components from
-failing. The official `1.3.0` binary predates this listener-recovery change.
+failing. Earlier releases (`1.3.0` and older) predate this listener-recovery change.
 
 ## Upgrade and rollback safely
 

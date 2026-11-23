@@ -42,7 +42,7 @@ Released binaries are published on the
 - macOS `x86_64` and Apple silicon (`ARM64`)
 - Windows `x86_64`
 
-### Stable Release (`1.3.0`)
+### Stable Release (`1.3.1`)
 
 On Linux and macOS:
 
@@ -62,7 +62,7 @@ Get-Content .\locho-installer.ps1
 
 ### Client SDKs (Beta)
 
-The CLI `latest` installers follow the stable CLI release (`1.3.0`). Browser
+The CLI `latest` installers follow the stable CLI release (`1.3.1`). Browser
 (`locho_web`) and Flutter (`locho_flutter`) SDKs are independently versioned and
 published in beta at `0.1.0-beta.3`; see
 [SDK and prerelease provenance](docs/sdk-releases.md) for installation

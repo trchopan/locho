@@ -27,8 +27,8 @@ current SDK beta targets are `locho_web` and `locho_flutter` `0.1.0-beta.3`.
       upgrade.
        Run `python3 scripts/verify-upgrade.py --previous-binary <released-1.2.0>
        --candidate-binary <packaged-candidate>` with Python 3.11+ and OpenSSL.
-       Repeat for the latest CLI prerelease using the checksum-verified binary
-       and an explicit `--previous-version 1.3.0-beta.3`; exact
+       Repeat for the previous stable CLI release using the checksum-verified
+       binary and an explicit `--previous-version 1.3.0`; exact
        version/clean-provenance checks remain required for both baselines.
 - [ ] Verify stale capabilities fail after rotation and unaffected services keep
       working.
@@ -55,7 +55,7 @@ release notes must state that verification is pending.
 - [ ] Update `Cargo.toml` and `Cargo.lock` to the final version.
 - [ ] Confirm the final notes are in the versioned changelog entry.
 - [ ] Run the complete release gate again from a clean checkout.
-- [ ] Create and push the matching CLI tag, for example `v1.3.0`.
+- [ ] Create and push the matching CLI tag, for example `v1.3.1`.
 - [ ] Do not create SDK version tags without reviewing the CLI version-tag workflow.
 - [ ] Confirm beta releases are marked prerelease and the stable latest-release
       installers continue to select the stable release.

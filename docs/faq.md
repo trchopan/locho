@@ -64,7 +64,7 @@ host holds the state lock while running, then restart it to load the replacement
 Yes. The CLI can generate a portable ticket with
 `locho share SERVICE --config PATH --ticket`. The `locho_web` and
 `locho_flutter` SDKs are independently versioned; their current beta targets
-are `0.1.0-beta.3`, not the CLI's `1.3.0`. The linked registry history records
+are `0.1.0-beta.3`, not the CLI's `1.3.1`. The linked registry history records
 which versions are actually published; updating the CLI alone does not update SDKs.
 Both use TCP service
 capabilities and the existing `locho/3` protocol. Browser HTTP runs over

@@ -18,7 +18,7 @@ Configure services -> Start host -> Share a service capability -> Attach locally
 
 ## 1.0–1.3 Status: Stable Core Complete
 
-The stable release channel (currently `1.3.0`) delivers the core service-tunnel
+The stable release channel (currently `1.3.1`) delivers the core service-tunnel
 workflow:
 
 - Multiple named HTTP and TCP services in one host process.
